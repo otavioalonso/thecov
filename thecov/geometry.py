@@ -272,7 +272,7 @@ class BoxGeometry(Geometry):
         self._cosmo = cosmo
 
 
-class SurveyGeometry(Geometry, base.FourierBinned):
+class SurveyGeometry(Geometry, base.LinearBinning):
     '''Class that represents the geometry of a survey in cut-sky.
 
     Warning

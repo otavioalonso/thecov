@@ -28,6 +28,103 @@ __all__ = ['GaussianCovariance',
            'SuperSampleCovariance']
 
 
+class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
+    '''Covariance matrix of power spectrum multipoles in a given geometry.
+
+    Attributes
+    ----------
+    geometry : geometry.Geometry
+        Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
+    '''
+
+    def __init__(self, geometry=None):
+        base.MultipoleFourierCovariance.__init__(self)
+        self.logger = logging.getLogger('PowerSpectrumCovariance')
+
+        self.geometry = geometry
+
+        self._pk = {}
+        self._alpha = None
+
+        self.pk_renorm = 1
+
+    @property
+    def alpha(self):
+        '''The value of alpha. This is the alpha used in the Pk measurements.
+           It can be different from the alpha used in the geometry object.
+
+        Returns
+        -------
+        float
+            The value of alpha.
+        '''
+        if self._alpha is None:
+            return self.geometry.alpha
+        return self._alpha
+    
+    @alpha.setter
+    def alpha(self, alpha):
+        '''Sets the value of alpha. This is the alpha used in the P(k) measurements.
+           It can be different from the alpha used in the geometry object.
+
+        Parameters
+        ----------
+        alpha : float
+            The value of alpha.
+        '''
+        self._alpha = alpha
+
+    def compute_covariance(self):
+        '''Compute the covariance matrix for the given geometry and power spectra.
+
+        Parameters
+        ----------
+        ells : tuple, optional
+            Multipoles of the power spectra to have the covariance calculated for.
+        '''
+
+        if isinstance(self.geometry, geometry.BoxGeometry):
+            return self._compute_covariance_box()
+
+        if isinstance(self.geometry, geometry.SurveyGeometry):
+            return self._compute_covariance_survey()
+
+    def _compute_covariance_box(self):
+        raise NotImplementedError
+
+    def _compute_covariance_survey(self):
+        raise NotImplementedError
+
+    @property
+    def shotnoise(self):
+        '''Shotnoise of the sample in the same normalization as the power spectrum.
+
+        Returns
+        -------
+        float
+            Shotnoise value.'''
+        
+        if isinstance(self.geometry, geometry.SurveyGeometry):
+            return self.pk_renorm * (1 + self.alpha) * self.geometry.I('12')/self.geometry.I('22')
+        elif isinstance(self.geometry, geometry.BoxGeometry):
+            return self.pk_renorm * self.geometry.shotnoise
+
+    def set_shotnoise(self, shotnoise):
+        '''Determines the relative normalization of the power spectrum by comparing
+           the estimated FKP shotnoise with the given shotnoise value.
+
+        Parameters
+        ----------
+        shotnoise : float
+            shotnoise with same normalization as the power spectrum.
+        '''
+
+        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
+        self.logger.info(f'Forcing it to be {shotnoise}.')
+
+        self.pk_renorm *= shotnoise / self.shotnoise
+        self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')
+
 class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
 
