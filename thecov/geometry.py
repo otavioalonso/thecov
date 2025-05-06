@@ -10,8 +10,7 @@ SurveyGeometry
     Class that represents the geometry of a survey in cut-sky.
 """
 
-import os, time, pickle
-from abc import ABC
+import os, time
 import itertools as itt
 import multiprocessing as mp
 import logging
@@ -20,56 +19,16 @@ import numpy as np
 
 from tqdm import tqdm as shell_tqdm
 
+import mockfactory
+from pypower import CatalogMesh
+
 from . import base, utils, math
 
 __all__ = ['BoxGeometry',
            'SurveyGeometry']
 
-# Window functions needed for Gaussian covariance calculation
-W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12xxxy', '12xxxz', '12xxyy', '12xxyz', '12xxzz', '12xyyy', '12xyyz', '12xyzz', '12xzzz', '12yyyy', '12yyyz', '12yyzz', '12yzzz',
-            '12zzzz', '22', '22xx', '22xy', '22xz', '22yy', '22yz', '22zz', '22xxxx', '22xxxy', '22xxxz', '22xxyy', '22xxyz', '22xxzz', '22xyyy', '22xyyz', '22xyzz', '22xzzz', '22yyyy', '22yyyz', '22yyzz', '22yzzz', '22zzzz']
-
-class Geometry(ABC):
-
-    def save(self, filename):
-        utils.mkdir(os.path.dirname(filename))
-        
-        ext = os.path.splitext(filename)[1]
-
-        start = time.time()
-        if ext == '.gz':
-            import gzip
-            with gzip.open(filename, 'wb') as f:
-                pickle.dump(self, f)
-        elif ext == '.xz':
-            import lzma
-            with lzma.open(filename, 'wb') as f:
-                pickle.dump(self, f)
-        else:
-            with open(filename, 'wb') as f:
-                pickle.dump(self, f)
-
-        self.logger.info(f'Saved to {filename} in {time.time() - start:.3f} s.')
-
-    def load(self, filename):
-        start = time.time()
-
-        ext = os.path.splitext(filename)[1]
-        if ext == '.gz':
-            import gzip
-            with gzip.open(filename, 'rb') as f:
-                obj = pickle.load(f)
-        elif ext == '.xz':
-            import lzma
-            with lzma.open(filename, 'rb') as f:
-                obj = pickle.load(f)
-        else:
-            with open(filename, 'rb') as f:
-                obj = pickle.load(f)
-        
-        self.__dict__.update(obj.__dict__)
-        self.logger.info(f'Loaded from {filename} in {time.time() - start:.3f} s.')
-
+class Geometry(base.Object):
+    pass
 class BoxGeometry(Geometry):
     '''Class that represents the geometry of a periodic cubic box.
 
@@ -273,116 +232,98 @@ class BoxGeometry(Geometry):
 
 
 class SurveyGeometry(Geometry, base.LinearBinning):
-    '''Class that represents the geometry of a survey in cut-sky.
 
-    Warning
-    -------
-    Does not run with MPI.
-
-    Attributes
-    ----------
-    randoms : Catalog
-        Catalog of randoms, with (at least) column 'POSITION'. (Optionally: WEIGHT, WEIGHT_FKP, NZ).
-    nmesh : int
-        Number of mesh points in each dimension to be used in the calculation of the FFTs.
-    boxsize : float
-        Size of the box.
-    boxpad : float
-        Box padding.
-    kmodes_sampled : int
-        Number of k modes to be sampled in the calculation of the window kernels.
-    alpha : float
-        Factor to multiply the number density of the randoms. Default is 1.0.
-    nthreads : int
-        Number of threads to be used in the calculation of the window kernels.
-    resume_file : str
-        Name of the file to save the window kernels as they are calculated. If the file exists, the
-        calculation is resumed from it.
-    tqdm : callable
-        Function to be used for progress bar. Default is tqdm from tqdm package.
-
-    Methods
-    -------
-    set_kbins(kmin, kmax, dk)
-        Set the k bins to be used in the calculation of the covariance.
-    compute_window_kernels
-        Compute the window kernels to be used in the calculation of the covariance.
-    load_resume_file(filename)
-        Load the window kernels from a file.
-
-    Notes
-    -----
-    The window kernels are computed using the method described in [1]_.
-
-    References
-    ----------
-    .. [1] https://arxiv.org/abs/1910.02914
-    '''
-
-    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax_window=0.02, kmodes_sampled=5000, alpha=1.0, nthreads=None, tqdm=shell_tqdm, **kwargs):
+    def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, ellmax=4, **kwargs):
 
         base.FourierBinned.__init__(self)
 
-        self.logger = logging.getLogger('SurveyGeometry')
+        self.logger = logging.getLogger('Window')
+        self.tqdm = shell_tqdm
 
-        self.alpha = alpha
-        self.kmodes_sampled = kmodes_sampled
+        self._alpha1 = alpha1
+        self._alpha2 = alpha1 if alpha2 is None else alpha2
 
-        # self._shotnoise = None
-        self.nthreads = nthreads
-        if self.nthreads is None:
-            self.nthreads = int(os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
+        self._kmax = kmax
+        self._ellmax = ellmax
 
-        self.logger.debug(f'{self.nthreads} threads available.')
+        self._randoms = [randoms1]
+        self._mesh = []
 
-        self.tqdm = tqdm
+        if randoms2 is not None:
+            self._randoms.append(randoms2)
 
-        self._resume_file = None
+        largest_boxsize = 0
+        largest_nmesh = 0
 
-        from mockfactory import Catalog
-        from pypower import CatalogMesh
-        self._randoms = Catalog(randoms)
-        for name in ['WEIGHT', 'WEIGHT_FKP']:
-            if name not in self._randoms: self._randoms[name] = np.ones(self._randoms.size, dtype='f8')
-        if 'NZ' not in self._randoms:
-            self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
-            from mockfactory import RedshiftDensityInterpolator
-            import healpy as hp
-            nside = 512
-            distance = np.sqrt(np.sum(randoms['POSITION']**2, axis=-1))
-            xyz = randoms['POSITION'] / distance[:, None]
-            hpixel = hp.vec2pix(nside, *xyz.T)
-            unique_hpixels = np.unique(hpixel)
-            fsky = len(unique_hpixels) / hp.nside2npix(nside)
-            self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
-            nbar = RedshiftDensityInterpolator(z=distance, fsky=fsky)
-            self._randoms['NZ'] = self.alpha * nbar(distance)
-        if nmesh is None and cellsize is None:
-            # Pick value that will give at least k_mask = kmax_window in the FFTs
-            cellsize = np.pi / kmax_window / (1. + 1e-9)
+        for randoms, alpha in zip(self._randoms, [self._alpha1, self._alpha2]):
+            if not isinstance(randoms, mockfactory.Catalog):
+                randoms = mockfactory.Catalog(randoms)
 
-        self._mesh = CatalogMesh(data_positions=self._randoms['POSITION'], data_weights=self._randoms['WEIGHT'],
-                                 position_type='pos', nmesh=nmesh, cellsize=cellsize, boxsize=boxsize, boxpad=boxpad, dtype='c16',
-                                 **{'interlacing': 3, 'resampler': 'tsc', **kwargs})
-        self.logger.info(f'Using box size {self._mesh.boxsize}, box center {self._mesh.boxcenter} and nmesh {self._mesh.nmesh}.')
-        self.boxsize = self._mesh.boxsize[0]
-        self.nmesh = self._mesh.nmesh[0]
-        assert np.allclose(self._mesh.boxsize, self.boxsize) and np.all(self._mesh.nmesh == self.nmesh)
+            # Check if the randoms have weights, otherwise set them to 1
+            for name in ['WEIGHT', 'WEIGHT_FKP']:
+                if name not in randoms:
+                    self.logger.warning(f'{name} column not found in randoms. Setting it to 1.')
+                    self.randoms[name] = np.ones(self.randoms.size, dtype='f8')
 
-        self.logger.info(f'Fundamental wavenumber of window FFTs = {self.kfun}.')
-        self.logger.info(f'Nyquist wavenumber of window FFTs = {self.knyquist}.')
+            # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
+            if 'NZ' not in self.randoms:
+                self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
+                import healpy as hp
+                nside = 512
+                distance = np.sqrt(np.sum(randoms['POSITION']**2, axis=-1))
+                xyz = randoms['POSITION'] / distance[:, None]
+                hpixel = hp.vec2pix(nside, *xyz.T)
+                unique_hpixels = np.unique(hpixel)
+                fsky = len(unique_hpixels) / hp.nside2npix(nside)
+                self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
+                nbar = mockfactory.RedshiftDensityInterpolator(z=distance, fsky=fsky)
+                self.randoms['NZ'] = alpha * nbar(distance)
 
-        if self.knyquist < kmax_window:
-            self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required kmax_window = {kmax_window}.')
+            # Check if the randoms have nmesh and cellsize, otherwise set them using the kmax parameter
+            if nmesh is None and cellsize is None:
+                # Pick value that will give at least k_mask = kmax_window in the FFTs
+                cellsize = np.pi / kmax / (1. + 1e-9)
 
-        self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
+            self._mesh.append(CatalogMesh(
+                    data_positions=randoms['POSITION'],
+                    data_weights=randoms['WEIGHT'],
+                    position_type='pos',
+                    nmesh=nmesh,
+                    cellsize=cellsize,
+                    boxsize=boxsize,
+                    boxpad=boxpad,
+                    dtype='c16',
+                    **{'interlacing': 3, 'resampler': 'tsc', **kwargs}
+                ))
+            
+            if self._mesh.boxsize[0] > largest_boxsize:
+                largest_boxsize = self._mesh.boxsize[0]
 
-        self.WinKernel = None
-        self.WinKernel_error = None
+            if self._mesh.nmesh[0] > largest_nmesh:
+                largest_nmesh = self._mesh.nmesh[0]
+
+        # If there are multiple windows, set the box size and nmesh to the largest values
+        if len(self._mesh) > 1:
+            for mesh in self._mesh:
+                mesh._set_box(nmesh=largest_nmesh, boxsize=largest_boxsize, wrap=False)
+
+        # Log the box size and nmesh
+        
+        self.boxsize = self._mesh[0].boxsize[0]
+        self.nmesh = self._mesh[0].nmesh[0]
+        self.logger.info(f'Using box size {self.boxsize}, box center {self._mesh[0].boxcenter} and nmesh {self.nmesh}.')
+
+        self.logger.info(f'Fundamental wavenumber of window meshes = {self.kfun}.')
+        self.logger.info(f'Nyquist wavenumber of window meshes = {self.knyquist}.')
+
+        if self.knyquist < kmax:
+            self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {kmax}.')
+
+        self.logger.info(f'Average of {self._mesh[0].data_size / self.nmesh**3} objects per voxel.')
 
     def __getstate__(self):
         state = self.__dict__.copy()
-        for key in ['logger', 'nthreads', 'tqdm', '_randoms', '_mesh', '_resume_file']:
+        for key in ['logger', 'tqdm', '_randoms', '_mesh', '_resume_file']:
             del state[key]
         return state
     
@@ -397,82 +338,16 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         return 2 * np.pi / self.boxsize
     
     @property
-    def alpha(self):
-        return self._alpha
-
-    @alpha.setter
-    def alpha(self, alpha):
-        self._alpha = alpha
-        self.clean()
-
-    def W_cat(self, W):
-        '''Returns the window function Wij for the objects in the catalog.
-           If it has not been computed yet, it is computed.
-
-        Parameters
-        ----------
-        W : str
-            Window function label (e.g. '12', '22', '12xx', '22xy', etc.)
-
-        Returns
-        -------
-        array_like
-            Window function Wij.
-        '''
-        w = W.lower().replace("w", "")
-
-        if f'W{w}' not in self._randoms.columns():
-            self._randoms[f'W{w}'] = self._randoms['NZ']**(
-                int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1]) * self._randoms[f'WEIGHT'] * self.alpha
-
-        return self._randoms[f'W{w}']
-
-    @utils.cache_method
-    def I(self, W):
-        '''Computes the integral Iij of the window function Wij.
-
-        Parameters
-        ----------
-        W : str
-            Window function label.
-
-        Returns
-        -------
-        float
-            Integral Iij of the window function Wij.
-        '''
-        w = W.lower().replace("i", "").replace("w", "")
-        self.W_cat(w)
-        return self._randoms[f'W{w}'].sum().tolist()
-
-    def W(self, W):
-        '''Returns an FFT of the window function Wij. If it has not been computed yet, it is computed.
-
-        Parameters
-        ----------
-        W : str
-            Window function label.
-
-        Returns
-        -------
-        array_like
-            FFT of the window function Wij.
-        '''
-        if not hasattr(self, '_W'):
-            self._W = {}
-        w = W.lower().replace("w", "")
-        if w not in self._W:
-            self.W_cat(w)
-            if 'x' in w or 'y' in w or 'z' in w:
-                self.compute_cartesian_ffts(w)
-            else:
-                self.set_cartesian_fft(f'W{w}', self.get_fft(f'W{w}'))
-        return self._W[w]
-
+    def alpha1(self):
+        return self._alpha1
+    
     @property
-    def kfun(self):
-        """Fundamental wavenumber of the box."""
-        return 2 * np.pi / self.boxsize
+    def alpha2(self):
+        return self._alpha2
+    
+    @property
+    def alpha(self):
+        return self.alpha1
 
     @property
     def ikgrid(self):
@@ -483,175 +358,81 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             iik[iik >= self.nmesh // 2] -= self.nmesh
             ikgrid.append(iik)
         return ikgrid
-
-    def get_mesh(self,label):
-        """Returns a mesh object for the window function Wij.
-        
-        Parameters
-        ----------
-        label : str
-            Window function label.
-            
-        Returns
-        -------
-            Mesh
-                Mesh object for the window function Wij."""
-        weights = self.W_cat(label) if 'w' in label.lower() else self.randoms[label]
-        return self._mesh.clone(data_positions=self.randoms['POSITION'],
-                                data_weights=weights,
-                                position_type='pos',
-                                ).to_mesh(compensate=True)
-
-    def get_fft(self, label):
-        """Returns the FFT of the window function Wij.
-        
-        Parameters
-        ----------
-        label : str
-            Window function label.
-            
-        Returns
-        -------
-            array_like
-                FFT of the window function Wij."""
-        toret = self.get_mesh(label).r2c()
-        toret *= self.nmesh**3
-        return toret.value
     
-    def compute_pypower(self, label1, label2=None, *args, **kwargs):
-        if label2 is None:
-            label2 = label1
+    def I(self, nbar_power, fkp_power):
+        return (self._randoms[0]['NZ']**(nbar_power-1) * \
+                self._randoms[0]['WEIGHT_FKP']**fkp_power * \
+                self._randoms[0]['WEIGHT'] * \
+                self.alpha1).sum().tolist()
+    
+    @staticmethod
+    def _shotnoise_mesh(mesh, randoms, alpha):
+        """Compute the shotnoise mesh S_AB = nbar * fkp^2."""
 
-        mesh1 = self.get_mesh(label1)
-        mesh2 = mesh1 if label2 == label1 else self.get_mesh(label2)
+        return mesh.clone(
+            data_positions=randoms['POSITION'],
+            data_weights=randoms['WEIGHT_FKP']**2 * randoms[f'WEIGHT'] * alpha,
+            position_type='pos',
+        ).to_mesh(compensate=True)
 
-        from pypower import MeshFFTPower
-        return MeshFFTPower(mesh1=mesh1, mesh2=mesh2, *args, **kwargs)
-        
-    def compute_power(self, label1, label2=None, kedges='auto'):
-        if label2 is None:
-            label2 = label1
+    def mesh(self, ell, m, shotnoise=False, fourier=False):
+        """Compute the product of meshes and multiply by real Ylm evaluated at the same coordinates.
 
-        fourier1 = self.get_fft(label1)
+        Parameters
+        ----------
+        ell : int
+            Degree of the spherical harmonic.
 
-        if label1 == label2:
-            fourier2 = fourier1
+        m : int
+            Order of the spherical harmonic.
+
+        shotnoise : bool, optional
+            If True, the shotnoise mesh is used instead of the original mesh. Default is False.
+
+        fourier : bool, optional
+            If True, the Fourier transform of the mesh is returned. Default is False.
+
+        Returns
+        -------
+        mesh
+            Resulting mesh after computation.
+        """
+
+        assert ell >= 0, "ell must be non-negative"
+        assert abs(m) <= ell, "m must be less than or equal to ell"
+
+        Ylm = math.get_real_Ylm(ell, m)
+
+        # Initialize the result mesh
+        if shotnoise:
+            result = SurveyGeometry._shotnoise_mesh(self._mesh[0], self.randoms[0], self.alpha1)
         else:
-            fourier2 = self.get_fft(label2)
+            result = self._mesh[0].copy()
 
-        power = fourier1 * fourier2.conj()
+        # Iterate over slabs to save memory
+        for slab in range(len(self._mesh[0])):
+            # Multiply by other mesh (or by itself) to obtain W_AB
+            if len(self._randoms) == 1:
+                result[slab, ...] *= result[slab, ...]
+            else:
+                if shotnoise:
+                    result[slab, ...] *= SurveyGeometry._shotnoise_mesh(self._mesh[1], self.randoms[1], self.alpha2)
+                else:
+                    result[slab, ...] *= self._mesh[1][slab]
 
-        kx, ky, kz = np.meshgrid(*self.ikgrid)
-        kpower = np.sqrt(kx**2 + ky**2 + kz**2) * self.kfun
+            # Multiply by real Ylm evaluated at the same coordinates
+            result[slab, ...] *= Ylm(self._mesh[0].x[slab], self._mesh[0].y[slab], self._mesh[0].z[slab])
 
-        if kedges == 'self':
-            kedges = self.kedges
-        elif kedges == 'auto':
-            kedges = np.arange(0, self.knyquist + self.kfun/2, self.kfun)
+            if fourier:
+                # pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
+                result[slab, ...] *= self.nmesh**3
 
-        ibin = np.digitize(kpower, kedges)
-
-        pk = np.array([power[ibin == i].mean() for i in range(1, len(kedges))])
-        pk = pk.real if label1 == label2 else pk
-
-        return kedges, pk
+        return result.value if not fourier else result.r2c().value
     
-    def compute_Qmus(self, W1, W2=None, sedges=None, *args, **kwargs):
-        if W2 is None:
-            W2 = W1
-        from pycorr import TwoPointCounter
 
-        muedges = np.linspace(-1, 1., 201)
-
-        edges = (np.geomspace(1, 3400., 441) if sedges is None else sedges, muedges)
-        
-        pos = self.randoms['POSITION'].T
-
-        counts = TwoPointCounter(mode='smu',
-                                 edges=edges,
-                                 positions1=pos,
-                                 positions2=None if W1 == W2 else pos,
-                                 weights1=self.W_cat(W1),
-                                 weights2=None if W1 == W2 else self.W_cat(W2),
-                                 *args, **kwargs)
-
-        v = 2. / 3. * np.pi * edges[0][:, None]**3 * edges[1]
-        dv = np.diff(np.diff(v, axis=0), axis=-1)
-
-        Qmus = counts.wcounts/dv
-
-        savg = counts.sepavg()
-
-        return savg, muedges, Qmus
-    
-    def compute_cartesian_ffts(self, W):
-        '''Computes the FFT of the window function Wij.
-
-        Parameters
-        ----------
-        W : str
-            Window function label.
-        '''
-        w = W.lower().replace('w', '').replace('x', '').replace('y', '').replace('z', '')
-        self.W_cat(w)
-
-        x = self.randoms['POSITION'].T
-
-        with self.tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
-            self.set_cartesian_fft(f'W{w}', self.get_fft(f'W{w}'))
-            pbar.update(1)
-
-            for (i, i_label), (j, j_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2):
-                label = f'W{w}{i_label}{j_label}'
-                self.randoms[label] = self.randoms[f'W{w}'] * \
-                    x[i] * x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
-                self.set_cartesian_fft(label, self.get_fft(label))
-
-                pbar.update(1)
-
-            for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4):
-                label = f'W{w}{i_label}{j_label}{k_label}{l_label}'
-                self.randoms[label] = self.randoms[f'W{w}'] * x[i] * \
-                    x[j] * x[k] * x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
-                self.set_cartesian_fft(label, self.get_fft(label))
-
-                pbar.update(1)
-
-        if self._resume_file is not None and not self._resume_file_readonly:
-            self.save(self._resume_file)
-
-    def set_cartesian_fft(self, label, W):
-        '''Set the FFT of the window function Wij.
-
-        Parameters
-        ----------
-        label : str
-            Window function label.
-        W : array_like
-            FFT of the window function Wij.
-        '''
-        w = label.lower().replace('w', '')
-        # Create object proper for multiprocessing
-        self._W[w] = np.frombuffer(mp.RawArray('d', 2 * int(self.nmesh)**3)).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
-        self._W[w][...] = W
-
-    @property
-    def randoms(self):
-        return self._randoms
-
-    @property
-    def kbins(self):
-        return len(self.kmid)
+    # -------------- OLD -----------------
 
     def compute_window_power(self):
-
-        if self._window_power is not None:
-            return self._window_power
-        
-        self.W('22xx')
-        self.W('10xx')
-            
-        self.logger.info('Computing window power spectra.')
 
         ikx, iky, ikz = np.meshgrid(*self.ikgrid)
         ikr = np.sqrt(ikx**2 + iky**2 + ikz**2)
@@ -661,30 +442,6 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         ikr[ikr == np.inf] = 0.
         kr = ikr * self.kfun
     
-        W22_L0 = self.W('22')
-    
-        W22_L2 = 1.5*(self.W('22xx')*kx**2+self.W('22yy')*ky**2+self.W('22zz')*kz**2+2.*self.W('22xy')*kx*ky+2.*self.W('22yz')*ky*kz+2.*self.W('22xz')*kz*kx) - 0.5*W22_L0
-                
-        W22_L4 = 35./8.*(self.W('22xxxx')*kx**4 +self.W('22yyyy')*ky**4+self.W('22zzzz')*kz**4 \
-                +4.*self.W('22xxxy')*kx**3*ky +4.*self.W('22xxxz')*kx**3*kz +4.*self.W('22xyyy')*ky**3*kx \
-                +4.*self.W('22yyyz')*ky**3*kz +4.*self.W('22xzzz')*kz**3*kx +4.*self.W('22yzzz')*kz**3*ky \
-                +6.*self.W('22xxyy')*kx**2*ky**2+6.*self.W('22xxzz')*kx**2*kz**2+6.*self.W('22yyzz')*ky**2*kz**2 \
-                +12.*self.W('22xxyz')*kx**2*ky*kz+12.*self.W('22xyyz')*ky**2*kx*kz +12.*self.W('22xyzz')*kz**2*kx*ky) \
-                -5./2.*W22_L2 -7./8.*W22_L0
-
-        W10_L0 = self.W('10')
-    
-        W10_L2 = 1.5*(self.W('10xx')*kx**2+self.W('10yy')*ky**2+self.W('10zz')*kz**2+2.*self.W('10xy')*kx*ky+2.*self.W('10yz')*ky*kz+2.*self.W('10xz')*kz*kx) - 0.5*W10_L0
-                
-        W10_L4 = 35./8.*(self.W('10xxxx')*kx**4 +self.W('10yyyy')*ky**4+self.W('10zzzz')*kz**4 \
-                +4.*self.W('10xxxy')*kx**3*ky +4.*self.W('10xxxz')*kx**3*kz +4.*self.W('10xyyy')*ky**3*kx \
-                +4.*self.W('10yyyz')*ky**3*kz +4.*self.W('10xzzz')*kz**3*kx +4.*self.W('10yzzz')*kz**3*ky \
-                +6.*self.W('10xxyy')*kx**2*ky**2+6.*self.W('10xxzz')*kx**2*kz**2+6.*self.W('10yyzz')*ky**2*kz**2 \
-                +12.*self.W('10xxyz')*kx**2*ky*kz+12.*self.W('10xyyz')*ky**2*kx*kz +12.*self.W('10xyzz')*kz**2*kx*ky) \
-                -5./2.*W10_L2 -7./8.*W10_L0
-        
-        self.logger.info('Binning window power spectra.')
-
         if not self.is_kbins_set:
             self.set_kbins(0, self.knyquist, self.kfun)
         
@@ -736,18 +493,6 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         kavg = self._window_power[-1]
         return [InterpolatedUnivariateSpline(kavg, Pwin) for Pwin in self._window_power[:-1]]
 
-    def get_window_kernels(self):
-        '''Returns the window kernels to be used in the calculation of the covariance.
-
-        Returns
-        -------
-        array_like
-            Window kernels to be used in the calculation of the covariance.
-        '''
-        if self.WinKernel is None or np.isnan(self.WinKernel).any():
-            self.compute_window_kernels()
-        return self.WinKernel
-    
     @property
     def delta_k_max(self):
         return self.nmesh // 2 - 1
@@ -942,233 +687,6 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             # W corresponds to W22(k) and Wc corresponds to conjugate of W22(k)
             # L(i) refers to multipoles
 
-            W_L0 = W['22']
-            Wc_L0 = np.conj(W['22'])
-
-            xx = W['22xx']*k1xh**2 + W['22yy']*k1yh**2 + W['22zz']*k1zh**2 + 2. * \
-                W['22xy']*k1xh*k1yh + 2.*W['22yz'] * \
-                k1yh*k1zh + 2.*W['22xz']*k1zh*k1xh
-            W_k1L2 = 1.5*xx - 0.5*W['22']
-            W_k2L2 = 1.5*(W['22xx']*k2xh**2 + W['22yy']*k2yh**2 + W['22zz']*k2zh**2
-                          + 2.*W['22xy']*k2xh*k2yh + 2.*W['22yz']*k2yh*k2zh + 2.*W['22xz']*k2zh*k2xh) - 0.5*W['22']
-            Wc_k1L2 = np.conj(W_k1L2)
-            Wc_k2L2 = np.conj(W_k2L2)
-
-            W_k1L4 = 35./8.*(W['22xxxx']*k1xh**4 + W['22yyyy']*k1yh**4 + W['22zzzz']*k1zh**4
-                             + 4.*W['22xxxy']*k1xh**3*k1yh + 4.*W['22xxxz'] *
-                             k1xh**3*k1zh + 4.*W['22xyyy']*k1yh**3*k1xh
-                             + 4.*W['22yyyz']*k1yh**3*k1zh + 4.*W['22xzzz'] *
-                             k1zh**3*k1xh + 4.*W['22yzzz']*k1zh**3*k1yh
-                             + 6.*W['22xxyy']*k1xh**2*k1yh**2 + 6.*W['22xxzz'] *
-                             k1xh**2*k1zh**2 + 6.*W['22yyzz']*k1yh**2*k1zh**2
-                             + 12.*W['22xxyz']*k1xh**2*k1yh*k1zh + 12.*W['22xyyz']*k1yh**2*k1xh*k1zh + 12.*W['22xyzz']*k1zh**2*k1xh*k1yh) \
-                - 5./2.*W_k1L2 - 7./8.*W_L0
-
-            Wc_k1L4 = np.conj(W_k1L4)
-
-            k1k2 = W['22xxxx']*(k1xh*k2xh)**2 + W['22yyyy']*(k1yh*k2yh)**2+W['22zzzz']*(k1zh*k2zh)**2 \
-                + W['22xxxy']*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
-                + W['22xxxz']*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
-                + W['22yyyz']*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
-                + W['22yzzz']*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
-                + W['22xyyy']*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
-                + W['22xzzz']*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
-                + W['22xxyy']*(k1xh**2*k2yh**2 + k1yh**2*k2xh**2 + 4.*k1xh*k1yh*k2xh*k2yh) \
-                + W['22xxzz']*(k1xh**2*k2zh**2 + k1zh**2*k2xh**2 + 4.*k1xh*k1zh*k2xh*k2zh) \
-                + W['22yyzz']*(k1yh**2*k2zh**2 + k1zh**2*k2yh**2 + 4.*k1yh*k1zh*k2yh*k2zh) \
-                + W['22xyyz']*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
-                + W['22xxyz']*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
-                + W['22xyzz']*(k1yh*k1xh*k2zh**2 + k1zh**2*k2yh *
-                               k2xh + 2.*k1zh*k2zh*(k1xh*k2yh + k1yh*k2xh))*2
-
-            W_k2L4 = 35./8.*(W['22xxxx']*k2xh**4 + W['22yyyy']*k2yh**4 + W['22zzzz']*k2zh**4
-                             + 4.*W['22xxxy']*k2xh**3*k2yh + 4.*W['22xxxz'] *
-                             k2xh**3*k2zh + 4.*W['22xyyy']*k2yh**3*k2xh
-                             + 4.*W['22yyyz']*k2yh**3*k2zh + 4.*W['22xzzz'] *
-                             k2zh**3*k2xh + 4.*W['22yzzz']*k2zh**3*k2yh
-                             + 6.*W['22xxyy']*k2xh**2*k2yh**2 + 6.*W['22xxzz'] *
-                             k2xh**2*k2zh**2 + 6.*W['22yyzz']*k2yh**2*k2zh**2
-                             + 12.*W['22xxyz']*k2xh**2*k2yh*k2zh + 12.*W['22xyyz']*k2yh**2*k2xh*k2zh + 12.*W['22xyzz']*k2zh**2*k2xh*k2yh) \
-                - 5./2.*W_k2L2 - 7./8.*W_L0
-
-            Wc_k2L4 = np.conj(W_k2L4)
-
-            W_k1L2_k2L2 = 9./4.*k1k2 - 3./4.*xx - 1./2.*W_k2L2
-            # approximate as 6th order FFTs not simulated
-            W_k1L2_k2L4 = 2/7.*W_k1L2 + 20/77.*W_k1L4
-            W_k1L4_k2L2 = W_k1L2_k2L4  # approximate
-            W_k1L4_k2L4 = 1/9.*W_L0 + 100/693.*W_k1L2 + 162/1001.*W_k1L4
-
-            Wc_k1L2_k2L2 = np.conj(W_k1L2_k2L2)
-            Wc_k1L2_k2L4 = np.conj(W_k1L2_k2L4)
-            Wc_k1L4_k2L2 = Wc_k1L2_k2L4
-            Wc_k1L4_k2L4 = np.conj(W_k1L4_k2L4)
-
-            k1k2W12 = np.conj(W['12xxxx'])*(k1xh*k2xh)**2 + np.conj(W['12yyyy'])*(k1yh*k2yh)**2 + np.conj(W['12zzzz'])*(k1zh*k2zh)**2 \
-                + np.conj(W['12xxxy'])*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
-                + np.conj(W['12xxxz'])*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
-                + np.conj(W['12yyyz'])*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
-                + np.conj(W['12yzzz'])*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
-                + np.conj(W['12xyyy'])*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
-                + np.conj(W['12xzzz'])*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
-                + np.conj(W['12xxyy'])*(k1xh**2*k2yh**2 + k1yh**2*k2xh**2 + 4.*k1xh*k1yh*k2xh*k2yh) \
-                + np.conj(W['12xxzz'])*(k1xh**2*k2zh**2 + k1zh**2*k2xh**2 + 4.*k1xh*k1zh*k2xh*k2zh) \
-                + np.conj(W['12yyzz'])*(k1yh**2*k2zh**2 + k1zh**2*k2yh**2 + 4.*k1yh*k1zh*k2yh*k2zh) \
-                + np.conj(W['12xyyz'])*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
-                + np.conj(W['12xxyz'])*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
-                + np.conj(W['12xyzz'])*(k1yh*k1xh*k2zh**2 + k1zh**2*k2yh *
-                               k2xh + 2.*k1zh*k2zh*(k1xh*k2yh + k1yh*k2xh))*2
-
-            xxW12 = np.conj(W['12xx'])*k1xh**2 + np.conj(W['12yy'])*k1yh**2 + np.conj(W['12zz'])*k1zh**2 \
-                + 2.*np.conj(W['12xy'])*k1xh*k1yh + 2.*np.conj(W['12yz']) * \
-                k1yh*k1zh + 2.*np.conj(W['12xz'])*k1zh*k1xh
-
-            W12c_L0 = np.conj(W['12'])
-            W12_k1L2 = 1.5*xxW12 - 0.5*np.conj(W['12'])
-            W12_k1L4 = 35./8.*(np.conj(W['12xxxx'])*k1xh**4 + np.conj(W['12yyyy'])*k1yh**4 + np.conj(W['12zzzz'])*k1zh**4
-                               + 4.*np.conj(W['12xxxy'])*k1xh**3*k1yh + 4.*np.conj(W['12xxxz']) *
-                               k1xh**3*k1zh + 4.*np.conj(W['12xyyy'])*k1yh**3*k1xh
-                               + 6.*np.conj(W['12xxyy'])*k1xh**2*k1yh**2 + 6.*np.conj(W['12xxzz']) *
-                               k1xh**2*k1zh**2 + 6.*np.conj(W['12yyzz'])*k1yh**2*k1zh**2
-                               + 12.*np.conj(W['12xxyz'])*k1xh**2*k1yh*k1zh + 12.*np.conj(W['12xyyz'])*k1yh**2*k1xh*k1zh + 12.*np.conj(W['12xyzz'])*k1zh**2*k1xh*k1yh) \
-                - 5./2.*W12_k1L2 - 7./8.*W12c_L0
-
-            W12_k1L4_k2L2 = 2/7.*W12_k1L2 + 20/77.*W12_k1L4
-            W12_k1L4_k2L4 = 1/9.*W12c_L0 + 100/693.*W12_k1L2 + 162/1001.*W12_k1L4
-
-            W12_k2L2 = 1.5*(np.conj(W['12xx'])*k2xh**2 + np.conj(W['12yy'])*k2yh**2 + np.conj(W['12zz'])*k2zh**2
-                            + 2.*np.conj(W['12xy'])*k2xh*k2yh + 2.*np.conj(W['12yz'])*k2yh*k2zh + 2.*np.conj(W['12xz'])*k2zh*k2xh) - 0.5*np.conj(W['12'])
-
-            W12_k2L4 = 35./8.*(np.conj(W['12xxxx'])*k2xh**4 + np.conj(W['12yyyy'])*k2yh**4 + np.conj(W['12zzzz'])*k2zh**4
-                               + 4.*np.conj(W['12xxxy'])*k2xh**3*k2yh + 4.*np.conj(W['12xxxz']) *
-                               k2xh**3*k2zh + 4.*np.conj(W['12xyyy'])*k2yh**3*k2xh
-                               + 4.*np.conj(W['12yyyz'])*k2yh**3*k2zh + 4.*np.conj(W['12xzzz']) *
-                               k2zh**3*k2xh + 4.*np.conj(W['12yzzz'])*k2zh**3*k2yh
-                               + 6.*np.conj(W['12xxyy'])*k2xh**2*k2yh**2 + 6.*np.conj(W['12xxzz']) *
-                               k2xh**2*k2zh**2 + 6.*np.conj(W['12yyzz'])*k2yh**2*k2zh**2
-                               + 12.*np.conj(W['12xxyz'])*k2xh**2*k2yh*k2zh + 12.*np.conj(W['12xyyz'])*k2yh**2*k2xh*k2zh + 12.*np.conj(W['12xyzz'])*k2zh**2*k2xh*k2yh) \
-                - 5./2.*W12_k2L2 - 7./8.*W12c_L0
-
-            W12_k1L2_k2L2 = 9./4.*k1k2W12 - 3./4.*xxW12 - 1./2.*W12_k2L2
-
-            W_k1L2_Sumk2L22 = 1/5.*W_k1L2 + 2/7.*W_k1L2_k2L2 + 18/35.*W_k1L2_k2L4
-            W_k1L2_Sumk2L24 = 2/7.*W_k1L2_k2L2 + 20/77.*W_k1L2_k2L4
-            W_k1L4_Sumk2L22 = 1/5.*W_k1L4 + 2/7.*W_k1L4_k2L2 + 18/35.*W_k1L4_k2L4
-            W_k1L4_Sumk2L24 = 2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4
-            W_k1L4_Sumk2L44 = 1/9.*W_k1L4 + 100/693.*W_k1L4_k2L2 + 162/1001.*W_k1L4_k2L4
-
-            C00exp = [Wc_L0 * W_L0, Wc_L0 * W_k2L2, Wc_L0 * W_k2L4,
-                      Wc_k1L2*W_L0, Wc_k1L2*W_k2L2, Wc_k1L2*W_k2L4,
-                      Wc_k1L4*W_L0, Wc_k1L4*W_k2L2, Wc_k1L4*W_k2L4]
-
-            C00exp += [2.*W_L0 * W12c_L0, W_k1L2*W12c_L0,         W_k1L4 * W12c_L0,
-                       W_k2L2*W12c_L0, W_k2L4*W12c_L0, np.conj(W12c_L0)*W12c_L0]
-
-            C22exp = [Wc_k2L2*W_k1L2 + Wc_L0*W_k1L2_k2L2,
-                      Wc_k2L2*W_k1L2_k2L2 + Wc_L0*W_k1L2_Sumk2L22,
-                      Wc_k2L2*W_k1L2_k2L4 + Wc_L0*W_k1L2_Sumk2L24,
-                      Wc_k1L2_k2L2*W_k1L2 + Wc_k1L2*W_k1L2_k2L2,
-                      Wc_k1L2_k2L2*W_k1L2_k2L2 + Wc_k1L2*W_k1L2_Sumk2L22,
-                      Wc_k1L2_k2L2*W_k1L2_k2L4 + Wc_k1L2*W_k1L2_Sumk2L24,
-                      Wc_k1L4_k2L2*W_k1L2 + Wc_k1L4*W_k1L2_k2L2,
-                      Wc_k1L4_k2L2*W_k1L2_k2L2 + Wc_k1L4*W_k1L2_Sumk2L22,
-                      Wc_k1L4_k2L2*W_k1L2_k2L4 + Wc_k1L4*W_k1L2_Sumk2L24]
-
-            C22exp += [W_k1L2*W12_k2L2 + W_k2L2*W12_k1L2 + W_k1L2_k2L2*W12c_L0+W_L0*W12_k1L2_k2L2,
-
-                       0.5*((1/5.*W_L0+2/7.*W_k1L2 + 18/35.*W_k1L4)*W12_k2L2 + W_k1L2_k2L2*W12_k1L2
-                            + (1/5.*W_k2L2+2/7.*W_k1L2_k2L2 + 18/35.*W_k1L4_k2L2)*W12c_L0 + W_k1L2*W12_k1L2_k2L2),
-
-                       0.5*((2/7.*W_k1L2+20/77.*W_k1L4)*W12_k2L2 + W_k1L4_k2L2*W12_k1L2
-                            + (2/7.*W_k1L2_k2L2+20/77.*W_k1L4_k2L2)*W12c_L0 + W_k1L4*W12_k1L2_k2L2),
-
-                       0.5*(W_k1L2_k2L2*W12_k2L2 + (1/5.*W_L0 + 2/7.*W_k2L2 + 18/35.*W_k2L4)*W12_k1L2
-                            + (1/5.*W_k1L2 + 2/7.*W_k1L2_k2L2 + 18/35.*W_k1L2_k2L4)*W12c_L0 + W_k2L2*W12_k1L2_k2L2),
-
-                       0.5*(W_k1L2_k2L4*W12_k2L2 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L2
-                            + W_k2L4*W12_k1L2_k2L2 + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L2_k2L4)*W12c_L0),
-
-                       np.conj(W12_k1L2_k2L2)*W12c_L0 + np.conj(W12_k1L2)*W12_k2L2]
-
-            C44exp = [Wc_k2L4 * W_k1L4 + Wc_L0 * W_k1L4_k2L4,
-                      Wc_k2L4 * W_k1L4_k2L2 + Wc_L0 * W_k1L4_Sumk2L24,
-                      Wc_k2L4 * W_k1L4_k2L4 + Wc_L0 * W_k1L4_Sumk2L44,
-                      Wc_k1L2_k2L4*W_k1L4 + Wc_k1L2*W_k1L4_k2L4,
-                      Wc_k1L2_k2L4*W_k1L4_k2L2 + Wc_k1L2*W_k1L4_Sumk2L24,
-                      Wc_k1L2_k2L4*W_k1L4_k2L4 + Wc_k1L2*W_k1L4_Sumk2L44,
-                      Wc_k1L4_k2L4*W_k1L4 + Wc_k1L4*W_k1L4_k2L4,
-                      Wc_k1L4_k2L4*W_k1L4_k2L2 + Wc_k1L4*W_k1L4_Sumk2L24,
-                      Wc_k1L4_k2L4*W_k1L4_k2L4 + Wc_k1L4*W_k1L4_Sumk2L44]
-
-            C44exp += [W_k1L4 * W12_k2L4 + W_k2L4*W12_k1L4
-                       + W_k1L4_k2L4*W12c_L0 + W_L0 * W12_k1L4_k2L4,
-
-                       0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)*W12_k2L4 + W_k1L2_k2L4*W12_k1L4
-                            + (2/7.*W_k1L2_k2L4 + 20/77.*W_k1L4_k2L4)*W12c_L0 + W_k1L2 * W12_k1L4_k2L4),
-
-                       0.5*((1/9.*W_L0 + 100/693.*W_k1L2 + 162/1001.*W_k1L4)*W12_k2L4 + W_k1L4_k2L4*W12_k1L4
-                            + (1/9.*W_k2L4 + 100/693.*W_k1L2_k2L4 + 162/1001.*W_k1L4_k2L4)*W12c_L0 + W_k1L4 * W12_k1L4_k2L4),
-
-                       0.5*(W_k1L4_k2L2*W12_k2L4 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L4
-                            + W_k2L2*W12_k1L4_k2L4 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12c_L0),
-
-                       0.5*(W_k1L4_k2L4*W12_k2L4 + (1/9.*W_L0 + 100/693.*W_k2L2 + 162/1001.*W_k2L4)*W12_k1L4
-                            + W_k2L4*W12_k1L4_k2L4 + (1/9.*W_k1L4 + 100/693.*W_k1L4_k2L2 + 162/1001.*W_k1L4_k2L4)*W12c_L0),
-
-                       np.conj(W12_k1L4_k2L4)*W12c_L0 + np.conj(W12_k1L4)*W12_k2L4]  # 1/(nbar)^2
-
-            C20exp = [Wc_L0 * W_k1L2,   Wc_L0*W_k1L2_k2L2, Wc_L0 * W_k1L2_k2L4,
-                      Wc_k1L2*W_k1L2, Wc_k1L2*W_k1L2_k2L2, Wc_k1L2*W_k1L2_k2L4,
-                      Wc_k1L4*W_k1L2, Wc_k1L4*W_k1L2_k2L2, Wc_k1L4*W_k1L2_k2L4]
-
-            C20exp += [W_k1L2*W12c_L0 + W['22']*W12_k1L2,
-                       0.5*((1/5.*W['22'] + 2/7.*W_k1L2 + 18 /
-                            35.*W_k1L4)*W12c_L0 + W_k1L2*W12_k1L2),
-                       0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)
-                            * W12c_L0 + W_k1L4*W12_k1L2),
-                       0.5*(W_k1L2_k2L2*W12c_L0 + W_k2L2*W12_k1L2),
-                       0.5*(W_k1L2_k2L4*W12c_L0 + W_k2L4*W12_k1L2),
-                       np.conj(W12_k1L2)*W12c_L0]
-
-            C40exp = [Wc_L0*W_k1L4,   Wc_L0 * W_k1L4_k2L2, Wc_L0 * W_k1L4_k2L4,
-                      Wc_k1L2*W_k1L4, Wc_k1L2*W_k1L4_k2L2, Wc_k1L2*W_k1L4_k2L4,
-                      Wc_k1L4*W_k1L4, Wc_k1L4*W_k1L4_k2L2, Wc_k1L4*W_k1L4_k2L4]
-
-            C40exp += [W_k1L4*W12c_L0 + W['22']*W12_k1L4,
-                       0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)
-                            * W12c_L0 + W_k1L2*W12_k1L4),
-                       0.5*((1/9.*W['22'] + 100/693.*W_k1L2+162 /
-                            1001.*W_k1L4)*W12c_L0 + W_k1L4*W12_k1L4),
-                       0.5*(W_k1L4_k2L2*W12c_L0 + W_k2L2*W12_k1L4),
-                       0.5*(W_k1L4_k2L4*W12c_L0 + W_k2L4*W12_k1L4),
-                       np.conj(W12_k1L4)*W12c_L0]
-
-            C42exp = [Wc_k2L2*W_k1L4 + Wc_L0 * W_k1L4_k2L2,
-                      Wc_k2L2*W_k1L4_k2L2 + Wc_L0 * W_k1L4_Sumk2L22,
-                      Wc_k2L2*W_k1L4_k2L4 + Wc_L0 * W_k1L4_Sumk2L24,
-                      Wc_k1L2_k2L2*W_k1L4 + Wc_k1L2*W_k1L4_k2L2,
-                      Wc_k1L2_k2L2*W_k1L4_k2L2 + Wc_k1L2*W_k1L4_Sumk2L22,
-                      Wc_k1L2_k2L2*W_k1L4_k2L4 + Wc_k1L2*W_k1L4_Sumk2L24,
-                      Wc_k1L4_k2L2*W_k1L4 + Wc_k1L4*W_k1L4_k2L2,
-                      Wc_k1L4_k2L2*W_k1L4_k2L2 + Wc_k1L4*W_k1L4_Sumk2L22,
-                      Wc_k1L4_k2L2*W_k1L4_k2L4 + Wc_k1L4*W_k1L4_Sumk2L24]
-
-            C42exp += [W_k1L4*W12_k2L2 + W_k2L2*W12_k1L4
-                       + W_k1L4_k2L2*W12c_L0 + W['22']*W12_k1L4_k2L2,
-
-                       0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)*W12_k2L2 + W_k1L2_k2L2*W12_k1L4
-                            + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L4_k2L2)*W12c_L0 + W_k1L2 * W12_k1L4_k2L2),
-
-                       0.5*((1/9.*W['22'] + 100/693.*W_k1L2 + 162/1001.*W_k1L4)*W12_k2L2 + W_k1L4_k2L2*W12_k1L4
-                            + (1/9.*W_k2L2 + 100/693.*W_k1L2_k2L2 + 162/1001.*W_k1L4_k2L2)*W12c_L0 + W_k1L4*W12_k1L4_k2L2),
-
-                       0.5*(W_k1L4_k2L2*W12_k2L2 + (1/5.*W['22'] + 2/7.*W_k2L2 + 18/35.*W_k2L4)*W12_k1L4
-                            + W_k2L2*W12_k1L4_k2L2 + (1/5.*W_k1L4 + 2/7.*W_k1L4_k2L2 + 18/35.*W_k1L4_k2L4)*W12c_L0),
-
-                       0.5*(W_k1L4_k2L4*W12_k2L2 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L4
-                            + W_k2L4*W12_k1L4_k2L2 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12c_L0),
-
-                       np.conj(W12_k1L4_k2L2)*W12c_L0+np.conj(W12_k1L4)*W12_k2L2]  # 1/(nbar)^2
 
             for delta_k in range(-delta_k_max, delta_k_max + 1):
                 # k2_bin_index has shape (nmesh, nmesh, nmesh)
@@ -1185,61 +703,3 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                     WinKernel[delta_k + delta_k_max, term, 5] += np.sum(np.real(C42exp[term][modes]))
         
         return WinKernel
-
-    def load_resume_file(self, filename):
-        '''Load the window kernels from a file.
-
-        Parameters
-        ----------
-        filename : str
-            Name of the file to load the window kernels from.
-        '''
-        self.logger.info(f'Loading window kernels from {filename}.')
-        self.load(filename)
-        # Cartesian FFTs need to be loaded through the setter
-        for key in self._W:
-            self.set_cartesian_fft(key, self._W[key])
-
-    def set_resume_file(self, filename, readonly=False):
-        '''Set the resume file for the window kernels.
-
-        Parameters
-        ----------
-        filename : str
-            Name of the file to save the window kernels.
-        '''
-        self._resume_file = filename
-        self._resume_file_readonly = readonly
-
-        if self._resume_file is not None:
-            try:
-                self.load_resume_file(self._resume_file)
-                self.logger.warning(f'Loaded resume file {self._resume_file}. This might override your settings. See debug messages for more details on the loaded attributes.')
-            except FileNotFoundError:
-                self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
-                utils.mkdir(os.path.dirname(self._resume_file))
-                self.save(self._resume_file)
-
-    @classmethod
-    def from_window_kernels_file(cls, filename):
-        '''Create geometry object from window kernels file.
-
-        Parameters
-        ----------
-        filename : str
-            Name of the file to load the window kernels from.
-        '''
-        geometry = cls.__new__(cls)
-        geometry.load_resume_file(filename)
-        return geometry
-    
-    @property
-    def fkp_shotnoise(self):
-        return (1 + self.alpha)*self.I('12')/self.I('22')
-
-    @property
-    def shotnoise(self):
-        self.logger.warning('Using FKP shotnoise.')
-        return self.fkp_shotnoise
-
-

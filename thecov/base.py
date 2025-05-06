@@ -1,8 +1,7 @@
 '''Module containing basic classes to deal with covariance matrices.'''
 
 import os
-import itertools as itt
-import copy
+import time
 
 import numpy as np
 
@@ -13,8 +12,7 @@ __all__ = ['Covariance',
            'MultipoleCovariance',
            'LinearBinning',
            'FourierCovariance',
-           'MultipoleFourierCovariance',
-           'PowerSpectrumMultipolesCovariance']
+           'MultipoleFourierCovariance']
 
 
 class BaseClass:
@@ -60,12 +58,8 @@ class BaseClass:
 
     @classmethod
     def load(cls, filename):
-        start = time.time()
-        cls.log_info('Loading {}.'.format(filename))
         state = np.load(filename, allow_pickle=True)[()]
         new = cls.from_state(state)
-        if hasattr(self, 'logger'):
-            self.logger.info(f'Loaded from {filename} in {time.time() - start:.3f}s.')
         return new
 
 class Covariance(BaseClass):
@@ -711,7 +705,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
                                                k2[mask].reshape(-1, 1),
                                               cov[mask].reshape(-1, 1)], axis=1), fmt=fmt, header='ell1 ell2 kmid1 kmid2 cov')
     def loadcsv(self, filename):
-        raise Exception('Not implemented')
+        raise NotImplementedError
 
         # ell1, ell2, k1, k2, value = np.loadtxt(filename).T
 
