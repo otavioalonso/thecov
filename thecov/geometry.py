@@ -16,6 +16,7 @@ import multiprocessing as mp
 import logging
 
 import numpy as np
+import scipy as sp
 
 from tqdm import tqdm as shell_tqdm
 
@@ -375,7 +376,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             position_type='pos',
         ).to_mesh(compensate=True)
 
-    def mesh(self, ell, m, shotnoise=False, fourier=False):
+    def mesh(self, ell, m, shotnoise=False, fourier=False, threshold=None):
         """Compute the product of meshes and multiply by real Ylm evaluated at the same coordinates.
 
         Parameters
@@ -427,7 +428,14 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                 # pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
                 result[slab, ...] *= self.nmesh**3
 
-        return result.value if not fourier else result.r2c().value
+        result = result.value if not fourier else result.r2c().value
+
+        if threshold is not None:
+            # Convert the result to a sparse array to save memory
+            result[np.abs(result) < threshold] = 0
+            result = base.SparseNDArray.from_dense(result, shape_in=result.shape, shape_out=1)
+        
+        return result
     
 
     # -------------- OLD -----------------

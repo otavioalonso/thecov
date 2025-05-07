@@ -16,7 +16,7 @@ Example
 >>> covariance.compute_covariance_box()
 """
 
-import logging
+import logging, os
 import itertools as itt
 
 import numpy as np
@@ -28,6 +28,8 @@ __all__ = ['GaussianCovariance',
            'SuperSampleCovariance']
 
 
+cache_dir = os.path.join(os.path.dirname(__file__), "cache")
+os.makedirs(cache_dir, exist_ok=True)
 class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
     '''Covariance matrix of power spectrum multipoles in a given geometry.
 
@@ -225,30 +227,13 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
 
         return self
 
-    def _compute_covariance_survey(self):
-        '''Compute the covariance matrix for a survey geometry.
+    def _diagnose_covariance(self):
 
-        Returns
-        -------
-        self : GaussianCovariance
-            Covariance matrix.
-        '''
-
-        # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
-        def func(ik, jk): return self._get_cosmic_variance_term(ik, jk) + \
-            (1 + self.alpha) * self._get_mixed_term(ik, jk) + \
-            (1 + self.alpha)**2 * self._get_shotnoise_term(ik, jk)
-
-        self._set_survey_covariance(self._build_covariance_survey(func), self)
         eigvals = self.eigvals
         if (eigvals < 0).any():
             self.logger.warning(
                 f'Covariance matrix is not positive definite. Worst of {sum(eigvals < 0)} negative eigenvalues is {eigvals.min():.2e}.')
-            # extra_modes = int(0.2*self.geometry.kmodes_sampled)
-            # self.geometry.kmodes_sampled += extra_modes
-            # self.logger.warning(f'Sampling {extra_modes} more kmodes. Total = {self.geometry.kmodes_sampled}.')
-            # self.geometry.compute_window_kernels()
-            # self._compute_covariance_survey()
+
         self.logger.info(
             f'Condition number is {eigvals.max()/eigvals[eigvals > 0].min():.2e}.')
         self.logger.info(
@@ -256,8 +241,6 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
 
         if not np.allclose(self.cov, self.cov.T):
             self.logger.warning('Covariance matrix is not symmetric.')
-
-        return self
 
 
     def load_pypower_file(self, filename, **kwargs):
@@ -358,6 +341,59 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
                 self.pk_renorm = self.geometry.I(2,2) / pypower.wnorm * naverage
                 self.logger.info(
                     f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
+
+    def _compute_cosmic_variance(self):
+        
+        # Load mask coupling Gaunt coefficients if cache exists, otherwise compute them
+        filename = os.path.join(cache_dir, "cosmic_variance_coefficients.npz")
+
+        if os.path.exists(filename):
+            coefficients = base.SparseNDArray.load(filename)
+        else:
+            import sympy.physics.wigner
+            # Define the shape of the multi-dimensional sparse array
+            shape_out = (3, 3, 3, 3, 5, 5, 5, 5) # l1, l2, l3, l4, m1, m2, m3, m4
+            shape_in = (7, 7, 13, 13) # la, lb, ma, mb
+
+            coefficients = base.SparseNDArray(shape_out, shape_in)
+
+            for l1, l2, l3, l4 in itt.product((0,2,4), repeat=4):
+                for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
+                    for la in np.arange(np.abs(l1-l4), l1+l4+1, 2):
+                        for lb in np.arange(np.abs(l2-l3), l2+l3+1, 2):
+                            for ma, mb in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lb)]):
+                                value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
+                                                   sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
+                                if value != 0.:
+                                    coefficients[l1//2,l2//2,l3//2,l4//2,
+                                                m1//2+2,m2//2+2,m3//2+2,m4//2+2,
+                                                la//2,lb//2,
+                                                ma//2+6,mb//2+6] += value
+                                    
+                    for lc in np.arange(np.abs(l1-l2), l1+l2+1, 2):
+                        for la in np.arange(np.abs(lc-l4), lc+l4+1, 2):
+                            for ma, mc in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lc)]):
+                                value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
+                                                   sympy.physics.wigner.gaunt(lc,l4,la,mc,m4,ma))
+                                lb, mb = l3, m3
+                                if value != 0.:
+                                    coefficients[l1//2,l2//2,l3//2,l4//2,
+                                                m1//2+2,m2//2+2,m3//2+2,m4//2+2,
+                                                la//2,lb//2,
+                                                ma//2+6,mb//2+6] += value
+            coefficients.save(filename)
+        nmesh = 512
+        windows_ab = base.SparseNDArray(shape_out=(7,13), shape_in=(nmesh,nmesh,nmesh))
+        windows_cd = base.SparseNDArray(shape_out=(7,13), shape_in=(nmesh,nmesh,nmesh))
+        
+        ellmax = 12
+        
+        for iell, ell in enumerate(np.arange(0, ellmax, 2)):
+            for im, m in enumerate(np.arange(-ell, ell+1, 2)):
+                windows_ab[iell,im] = self.geometry['ab'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
+                windows_cd[iell,im] = self.geometry['cd'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
+        windows_prod = 
+                        
 
 
 class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):

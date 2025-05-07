@@ -1,11 +1,11 @@
 '''Module containing basic classes to deal with covariance matrices.'''
 
-import os
-import time
+import os, time, copy
 
 import numpy as np
+import scipy
 
-from . import utils, math, geometry
+from . import utils, math
 import logging
 
 __all__ = ['Covariance',
@@ -770,3 +770,166 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         self._mshape = (size, size)
         self.foreach(lambda cov: cov.set_kbins(kmin, kmax, dk, nmodes))
         return super().set_kbins(kmin, kmax, dk, nmodes)
+
+class SparseNDArray:
+    """
+    A class to represent a sparse ND array using scipy.sparse.csr_matrix.
+    Indices are split between shape_out and shape_in, as if the array is
+    a 2D matrix (shape_out x shape_in). Matrix multiplication is done using
+    the @ operator and requires the shapes to be compatible, i.e., shape_in
+    of the leftmost array must match shape_out of the rightmost array.
+    """
+    def __init__(self, shape_out, shape_in):
+        self.shape_in = np.asarray(shape_in).astype(int)
+        self.shape_out = np.asarray(shape_out).astype(int)
+        self._matrix = scipy.sparse.csr_matrix((np.prod(shape_out), np.prod(shape_in)))
+
+    def _nd_to_2d_indices(self, *indices):
+        indices = np.asarray(indices).astype(int)
+        if len(indices) == len(self.shape_out) + len(self.shape_in):
+            i = np.ravel_multi_index(indices[:len(self.shape_out)], self.shape_out)
+            j = np.ravel_multi_index(indices[len(self.shape_out):], self.shape_in)
+            return i,j
+        elif len(indices) == len(self.shape_out):
+            i = np.ravel_multi_index(indices, self.shape_out)
+            # j = np.arange(np.prod(self.shape_in))
+            return i
+        
+    
+    def __setitem__(self, indices, value):
+        indices = np.asarray(indices).astype(int)
+        if len(indices) == len(self.shape_out) + len(self.shape_in):
+            try:
+                self._matrix[self._nd_to_2d_indices(*indices)] = value
+            except IndexError:
+                raise IndexError(f"Indices {indices} are out of bounds for array with shape shape_out={self.shape_out}, shape_in={self.shape_in}.")
+        elif len(indices) == len(self.shape_out):
+            if isinstance(value, SparseNDArray):
+                self._matrix[self._nd_to_2d_indices(*indices)] = value._matrix
+            else:
+                self._matrix[self._nd_to_2d_indices(*indices)] = value.flatten()
+        else:
+            raise ValueError(f"Invalid number of indices: {len(indices)}. Expected {len(self.shape_out) + len(self.shape_in)} or {len(self.shape_out)}.")
+
+    def __getitem__(self, indices):
+        indices = np.asarray(indices).astype(int)
+        return self._matrix[self._nd_to_2d_indices(*indices)]
+
+    def __repr__(self):
+        return f"SparseNDArray(shape_out={self.shape_out} -> {np.prod(self.shape_out)}, shape_in={self.shape_in} -> {np.prod(self.shape_in)}, nnz={self._matrix.nnz})"
+    
+    def to_dense(self):
+        """
+        Convert the sparse matrix back to a dense ND array.
+        """
+        return self._matrix.toarray().reshape(self.shape_out.tolist() + self.shape_in.tolist())
+
+    @staticmethod
+    def from_dense(dense_array, shape_out=None, shape_in=None):
+        """
+        Create a SparseNDArray from a dense array.
+        """
+        if shape_out is None:
+            shape_out = dense_array.shape[:-len(dense_array.shape)//2]
+        if shape_in is None:
+            shape_in = dense_array.shape[len(dense_array.shape)//2:]
+        sparse_array = SparseNDArray(shape_in, shape_out)
+        sparse_array._matrix = scipy.sparse.csr_matrix(dense_array.reshape(np.prod(shape_out), np.prod(shape_in)))
+        return sparse_array
+    
+    def __add__(self, other):
+        if isinstance(other, SparseNDArray):
+            assert (self.shape_in == other.shape_in) and (self.shape_out == other.shape_out), \
+                "Shapes do not match for multiplication."
+            
+            import copy
+            other = copy.deepcopy(other)
+            other._matrix += self._matrix
+            return other
+        else:
+            raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
+        
+    def __mul__(self, other):
+        if isinstance(other, SparseNDArray):
+            assert (self.shape_in == other.shape_in) and (self.shape_out == other.shape_out), \
+                "Shapes do not match for multiplication."
+            
+            import copy
+            other = copy.deepcopy(other)
+            other._matrix *= self._matrix
+            return other
+        else:
+            raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
+        
+    def __matmul__(self, other):
+        if isinstance(other, SparseNDArray):
+            assert (np.all(self.shape_in == other.shape_out)), \
+                "Shapes do not match for matrix multiplication."
+            other = copy.deepcopy(other)
+            other._matrix = self._matrix.dot(other._matrix)
+            other.shape_out = self.shape_out
+            return other
+        elif isinstance(other, np.ndarray):
+            result = copy.deepcopy(self)
+            result._matrix = scipy.sparse.csr_matrix(self._matrix.dot(other.reshape(np.prod(self.shape_in), -1)))
+            result.shape_in = other.shape[len(self.shape_in):]
+            return result
+        
+        else:
+            raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
+        
+    def __sizeof__(self):
+        return self._matrix.data.nbytes + self._matrix.indptr.nbytes + self._matrix.indices.nbytes
+    
+    def save(self, filename):
+        """
+        Save the sparse matrix to a file.
+        """
+        np.savez(filename,
+                 data=self._matrix.data,
+                 indices=self._matrix.indices,
+                 indptr=self._matrix.indptr,
+                 shape=self._matrix.shape,
+                 shape_out=self.shape_out,
+                 shape_in=self.shape_in)
+
+    @classmethod
+    def load(cls, filename):
+        """
+        Load the sparse matrix from a file.
+        """
+        loader = np.load(filename)
+        obj = cls(loader['shape_out'], loader['shape_in'])
+        obj._matrix = scipy.sparse.csr_matrix((loader['data'],
+                                               loader['indices'],
+                                               loader['indptr']),
+                                               shape=loader['shape'])
+        return obj
+
+    def reshape(self, shape_out=None, shape_in=None):
+        """
+        Reshape the sparse matrix.
+        """
+        result = copy.deepcopy(self)
+        result._matrix = self._matrix.reshape(np.prod(shape_out), np.prod(shape_in))
+        if shape_out is not None:
+            result.shape_out = shape_out
+        if shape_in is not None:
+            result.shape_in = shape_in
+        return result
+
+    def transpose(self):
+        """
+        Transpose the sparse matrix.
+        """
+        result = copy.deepcopy(self)
+        result._matrix = self._matrix.transpose()
+        result.shape_out, result.shape_in = self.shape_in, self.shape_out
+        return result
+    
+    @property
+    def T(self):
+        """
+        Transpose the sparse matrix.
+        """
+        return self.transpose()
