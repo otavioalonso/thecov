@@ -351,24 +351,32 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             coefficients = base.SparseNDArray.load(filename)
         else:
             import sympy.physics.wigner
-            # Define the shape of the multi-dimensional sparse array
-            shape_out = (3, 3, 3, 3, 5, 5, 5, 5) # l1, l2, l3, l4, m1, m2, m3, m4
-            shape_in = (7, 7, 13, 13) # la, lb, ma, mb
 
-            coefficients = base.SparseNDArray(shape_out, shape_in)
+            # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
+            # shape_in =  la, lb, ma, mb
+            # Only including positive m values, as -m is equivalent to m
+            # when Ylm is real and m is even
+            coefficients = base.SparseNDArray(shape_out=(3,3,3,3,3,3,3,3), shape_in=(7,7,7,7))
 
             for l1, l2, l3, l4 in itt.product((0,2,4), repeat=4):
                 for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
                     for la in np.arange(np.abs(l1-l4), l1+l4+1, 2):
                         for lb in np.arange(np.abs(l2-l3), l2+l3+1, 2):
                             for ma, mb in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lb)]):
+
                                 value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
                                                    sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
                                 if value != 0.:
-                                    coefficients[l1//2,l2//2,l3//2,l4//2,
-                                                m1//2+2,m2//2+2,m3//2+2,m4//2+2,
-                                                la//2,lb//2,
-                                                ma//2+6,mb//2+6] += value
+                                    # Taking absolute values of all m as -m is equivalent to m
+                                    # when Ylm is real and m is even
+                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
+                                    ma, mb = np.abs(ma), np.abs(mb)
+                                    coefficients[l1//2,l2//2,
+                                                 l3//2,l4//2,
+                                                 m1//2,m2//2,
+                                                 m3//2,m4//2,
+                                                 la//2,lb//2,
+                                                 ma//2,mb//2] += value
                                     
                     for lc in np.arange(np.abs(l1-l2), l1+l2+1, 2):
                         for la in np.arange(np.abs(lc-l4), lc+l4+1, 2):
@@ -377,23 +385,37 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
                                                    sympy.physics.wigner.gaunt(lc,l4,la,mc,m4,ma))
                                 lb, mb = l3, m3
                                 if value != 0.:
-                                    coefficients[l1//2,l2//2,l3//2,l4//2,
-                                                m1//2+2,m2//2+2,m3//2+2,m4//2+2,
-                                                la//2,lb//2,
-                                                ma//2+6,mb//2+6] += value
+                                    # Taking absolute values of all m as -m is equivalent to m
+                                    # when Ylm is real and m is even
+                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
+                                    ma, mb = np.abs(ma), np.abs(mb)
+                                    coefficients[l1//2,l2//2,
+                                                 l3//2,l4//2,
+                                                 m1//2,m2//2,
+                                                 m3//2,m4//2,
+                                                 la//2,lb//2,
+                                                 ma//2,mb//2] += value
             coefficients.save(filename)
+
         nmesh = 512
-        windows_ab = base.SparseNDArray(shape_out=(7,13), shape_in=(nmesh,nmesh,nmesh))
-        windows_cd = base.SparseNDArray(shape_out=(7,13), shape_in=(nmesh,nmesh,nmesh))
+        windows_ab = base.SparseNDArray(shape_out=(7,7), shape_in=(nmesh,nmesh,nmesh))
+        windows_cd = base.SparseNDArray(shape_out=(7,7), shape_in=(nmesh,nmesh,nmesh))
         
         ellmax = 12
         
         for iell, ell in enumerate(np.arange(0, ellmax, 2)):
-            for im, m in enumerate(np.arange(-ell, ell+1, 2)):
+            for im, m in enumerate(np.arange(0, ell+1, 2)):
                 windows_ab[iell,im] = self.geometry['ab'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
                 windows_cd[iell,im] = self.geometry['cd'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
-        windows_prod = 
-                        
+
+        windows_prod = base.SparseNDArray(shape_out=(7,7,7,7), shape_in=(nmesh,nmesh,nmesh))
+
+        for l1, l2 in itt.product((0,2,4), repeat=2):
+            for m1, m2 in itt.product(*[np.arange(0, l+1, 2) for l in (l1, l2)]):
+                windows_prod[l1//2,l2//2,m1//2,m2//2] = windows_ab[l1//2,m1//2]*windows_cd[l2//2,m2//2]
+        # l1, l2, l3, l4, m1, m2, m3, m4, 
+        coefficients @ windows_prod
+
 
 
 class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
