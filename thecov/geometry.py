@@ -28,7 +28,7 @@ from . import base, utils, math
 __all__ = ['BoxGeometry',
            'SurveyGeometry']
 
-class Geometry(base.Object):
+class Geometry(base.BaseClass):
     pass
 class BoxGeometry(Geometry):
     '''Class that represents the geometry of a periodic cubic box.
@@ -236,7 +236,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
 
     def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, ellmax=4, **kwargs):
 
-        base.FourierBinned.__init__(self)
+        base.LinearBinning.__init__(self)
 
         self.logger = logging.getLogger('Window')
         self.tqdm = shell_tqdm
@@ -267,7 +267,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                     self.randoms[name] = np.ones(self.randoms.size, dtype='f8')
 
             # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
-            if 'NZ' not in self.randoms:
+            if 'NZ' not in randoms:
                 self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
                 import healpy as hp
                 nside = 512
@@ -297,11 +297,11 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                     **{'interlacing': 3, 'resampler': 'tsc', **kwargs}
                 ))
             
-            if self._mesh.boxsize[0] > largest_boxsize:
-                largest_boxsize = self._mesh.boxsize[0]
+            if self._mesh[-1].boxsize[0] > largest_boxsize:
+                largest_boxsize = self._mesh[-1].boxsize[0]
 
-            if self._mesh.nmesh[0] > largest_nmesh:
-                largest_nmesh = self._mesh.nmesh[0]
+            if self._mesh[-1].nmesh[0] > largest_nmesh:
+                largest_nmesh = self._mesh[-1].nmesh[0]
 
         # If there are multiple windows, set the box size and nmesh to the largest values
         if len(self._mesh) > 1:
@@ -317,7 +317,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         self.logger.info(f'Fundamental wavenumber of window meshes = {self.kfun}.')
         self.logger.info(f'Nyquist wavenumber of window meshes = {self.knyquist}.')
 
-        if self.knyquist < kmax:
+        if kmax is not None and self.knyquist < kmax:
             self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {kmax}.')
 
         self.logger.info(f'Average of {self._mesh[0].data_size / self.nmesh**3} objects per voxel.')
@@ -408,21 +408,20 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         if shotnoise:
             result = SurveyGeometry._shotnoise_mesh(self._mesh[0], self.randoms[0], self.alpha1)
         else:
-            result = self._mesh[0].copy()
+            result = self._mesh[0].copy().to_mesh(compensate=True)
+
+        
+        if len(self._randoms) > 1 and not shotnoise:
+            result *= self._mesh[1].to_mesh(compensate=True)
 
         # Iterate over slabs to save memory
-        for slab in range(len(self._mesh[0])):
+        for slab in range(result.shape[0]):
             # Multiply by other mesh (or by itself) to obtain W_AB
-            if len(self._randoms) == 1:
+            if len(self._randoms) == 1 or shotnoise:
                 result[slab, ...] *= result[slab, ...]
-            else:
-                if shotnoise:
-                    result[slab, ...] *= SurveyGeometry._shotnoise_mesh(self._mesh[1], self.randoms[1], self.alpha2)
-                else:
-                    result[slab, ...] *= self._mesh[1][slab]
 
             # Multiply by real Ylm evaluated at the same coordinates
-            result[slab, ...] *= Ylm(self._mesh[0].x[slab], self._mesh[0].y[slab], self._mesh[0].z[slab])
+            result[slab, ...] *= Ylm(result.x[0][slab], result.x[1][0], result.x[2][0])
 
             if fourier:
                 # pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
@@ -433,7 +432,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         if threshold is not None:
             # Convert the result to a sparse array to save memory
             result[np.abs(result) < threshold] = 0
-            result = base.SparseNDArray.from_dense(result, shape_in=result.shape, shape_out=1)
+            result = base.SparseNDArray.from_dense(result, shape_in=(self.nmesh,self.nmesh), shape_out=self.nmesh)
         
         return result
     

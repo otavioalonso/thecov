@@ -418,7 +418,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
 
 
 
-class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
+class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -608,7 +608,7 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
         return self
 
 
-class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
+class SuperSampleCovariance(PowerSpectrumMultipolesCovariance):
     '''Regular super sample covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
