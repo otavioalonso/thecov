@@ -2,6 +2,7 @@
 """
 import numpy as np
 import scipy
+import os
 
 def r2c_to_c2c_3d(fourier):
     """Completes a 3D Fourier array generated using PFFT's r2c method with the elements
@@ -301,3 +302,30 @@ def get_real_Ylm(ell, m, modules=None):
     Ylm.l = ell
     Ylm.m = m
     return Ylm
+
+def get_lebedev_points(degree):
+
+    available_degrees = np.array([3, 5, 7, 9, 11, 13, 15, 17,
+                                 19, 21, 23, 25, 27, 29, 31, 35,
+                                 41, 47, 53, 59, 65, 71, 77, 83,
+                                 89, 95, 101, 107, 113, 119, 125, 131])
+
+    if degree not in available_degrees:
+        raise ValueError("Error in lebedev_rule: invalid value for degree. Must be one of", available_degrees)
+
+    # load in pre-computed points on the unit sphere
+    data_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/lebedev_points.npy")
+    lebedev_points = np.load(data_dir)
+
+    # extract relavent points corresponding to the desired degree
+    idx = np.where(lebedev_points[:,0] == degree)[0]
+    theta = (lebedev_points[idx,1]) * (np.pi / 180)
+    phi = lebedev_points[idx,2] * (np.pi / 180)
+    weights = lebedev_points[idx,3]
+
+    # convert to (x,y,z) coordinates
+    x = np.sin(phi)*np.cos(theta)
+    y = np.sin(phi)*np.sin(theta)
+    z = np.cos(phi)
+
+    return x, y, z, weights

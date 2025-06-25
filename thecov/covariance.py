@@ -21,7 +21,7 @@ import itertools as itt
 
 import numpy as np
 
-from . import base, geometry, math
+from . import base, survey_geometry, math
 
 __all__ = ['GaussianCovariance',
            'TrispectrumCovariance',

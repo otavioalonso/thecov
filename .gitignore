@@ -1,4 +1,3 @@
-data/
 *.npz
 *egg-info
 build/
