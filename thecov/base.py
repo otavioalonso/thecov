@@ -724,7 +724,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         # ells_both_ways = len(value) == (len(ells)*kbins)**2
         # ells_one_way   = len(value) == (len(ells)**2 + len(ells))/2 * kbins**2
 
-        # assert ells_one_way or ells_both_ways, 'length of covariance file doesn\'nt match'
+        # assert ells_one_way or ells_both_ways, 'length of covariance file doesn\'t match'
 
         # self.set_kbins(kmin, kmax, dk)
 
@@ -869,6 +869,7 @@ class SparseNDArray:
             other._matrix = self._matrix.dot(other._matrix)
             other.shape_out = self.shape_out
             return other
+        
         elif isinstance(other, np.ndarray):
             result = copy.deepcopy(self)
             result._matrix = scipy.sparse.csr_matrix(self._matrix.dot(other.reshape(np.prod(self.shape_in), -1)))
@@ -933,3 +934,28 @@ class SparseNDArray:
         Transpose the sparse matrix.
         """
         return self.transpose()
+    
+    # def outer(self, other):
+    #     """
+    #     Compute the outer product of two SparseNDArrays. 
+    #     """
+    #     if isinstance(other, SparseNDArray):
+    #         assert (self.shape_in == other.shape_in), \
+    #             "Shapes do not match for outer product."
+
+    #         result_shape_out =  np.atleast_1d(self.shape_out).tolist() + np.atleast_1d(other.shape_out).tolist()
+
+    #         result = SparseNDArray(shape_out=result_shape_out, shape_in=self.shape_in)
+
+    #         # Perform the equivalent of np.einsum('ab,cb->acb', sparse_matrix_a, sparse_matrix_b)
+    #         result._matrix = scipy.sparse.csr_matrix(
+    #             (self._matrix.data[:, None] * other._matrix.data[None, :],
+    #              (np.outer(self._matrix.indices, np.ones(other._matrix.shape[1], dtype=int)).flatten(),
+    #              np.outer(np.ones(self._matrix.shape[0], dtype=int), other._matrix.indices).flatten())),
+    #             shape=(np.prod(result_shape_out), np.prod(other.shape_out))
+    #         )
+
+    #         return result
+    #     else:
+    #         raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
+

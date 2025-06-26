@@ -61,6 +61,44 @@ def sample_from_shell(rmin, rmax, discrete=True):
 
     return x,y,z,r
 
+def lebedev_sampling(rmin, rmax, lebedev_degree=25, discrete=True):
+    """Sample lebedev points + weights within a spherical shell.
+
+    Parameters
+    ----------
+    rmin : float
+        Minimum radius of the shell.
+    rmax : float
+        Maximum radius of the shell.
+    lebedev_degree: int
+        Degree for generating Lebedev points on the unit sphere
+    discrete : bool, optional
+        If True, the sampled point will be rounded to the nearest integer.
+        Default is True.
+
+    Returns
+    -------
+    x,y,z,r : float
+        Coordinates of the sampled point.
+
+    Raises
+    -------
+    ValueError: if lebedev_degree is invalid
+    """
+
+    r = rmin + (rmax - rmin) * np.random.rand()
+    # NOTE: right now this function loads a ~1.2MB file every time it's called, so
+    # there is room for optimization here
+    x, y, z, w = get_lebedev_points(lebedev_degree, r)
+
+    if(discrete):
+        x,y,z = int(np.round(x)), int(np.round(y)), int(np.round(z))
+        r = np.sqrt(x**2 + y**2 + z**2)
+        if(r < rmin or r > rmax):
+            return lebedev_sampling(rmin, rmax, discrete=True)
+
+    return x,y,z,r,w
+
 def sample_from_cube(rmin, rmax, dr, max_modes=np.inf):
 
     iL = int(np.ceil(rmax))
@@ -91,10 +129,10 @@ def sample_from_cube(rmin, rmax, dr, max_modes=np.inf):
                                    iz[mask],
                                    ir[mask]]).T)
         Nmodes.append(N)
-
     return modes, Nmodes
 
-def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05):
+
+def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05, sample_mode="lebedev"):
     import logging
 
     logger = logging.getLogger('SampleModes')
@@ -106,16 +144,28 @@ def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05):
 
     # Uses full cube from k = 0 to k_shell
     cube_modes, cube_nmodes = sample_from_cube(kmin / kfun, k_shell / kfun, dk / kfun, max_modes=max_modes)
-
+    cube_weights = np.ones_like(cube_modes)[:,:,0] / np.array(cube_nmodes)[:, np.newaxis]
+    
     # Uses spherical shell approximation from k = k_shell to kmax
     kedges_shell = np.arange(k_shell, kmax + dk/2, dk)
-    shell_modes = [np.array([sample_from_shell(kmin / kfun, kmax / kfun) for _ in range(
-                    max_modes)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
     shell_nmodes = nmodes(boxsize**3, kedges_shell[:-1], kedges_shell[1:])
-
-    logger.info(f'Sampled {len(cube_modes)} bins from cube and {len(shell_modes)} bins from shell approximation.')
-
-    return cube_modes + shell_modes, np.array(cube_nmodes + list(shell_nmodes))
+    
+    if sample_mode == "monte-carlo":
+        shell_modes = [np.array([sample_from_shell(kmin / kfun, kmax / kfun) for _ in range(
+                        max_modes)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
+        shell_weights = np.ones((len(shell_modes), max_modes)) / max_modes
+        
+        return cube_modes + shell_modes, np.array(cube_nmodes + list(shell_nmodes)), list(cube_weights) + list(shell_weights)
+        
+    elif sample_mode == "lebedev":
+        output = [np.array([lebedev_sampling(kmin / kfun, kmax / kfun, discrete=False) for _ in range(
+                        max_modes)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
+        output = np.transpose(output, (0, 1, 3, 2))
+        output = output.reshape(-1, output.shape[1]*output.shape[2], output.shape[3])
+        shell_weights = shell_modes[:,:,-1]
+        shell_modes = shell_modes[:,:,:-1]
+        
+        return cube_modes + list(shell_modes), np.array(cube_nmodes + list(shell_nmodes)), list(cube_weights) + list(shell_weights)
 
 def nmodes(volume, kmin, kmax):
     '''Compute the number of modes in a given shell.
@@ -303,7 +353,7 @@ def get_real_Ylm(ell, m, modules=None):
     Ylm.m = m
     return Ylm
 
-def get_lebedev_points(degree):
+def get_lebedev_points(degree, r=1.):
 
     available_degrees = np.array([3, 5, 7, 9, 11, 13, 15, 17,
                                  19, 21, 23, 25, 27, 29, 31, 35,
@@ -324,8 +374,8 @@ def get_lebedev_points(degree):
     weights = lebedev_points[idx,3]
 
     # convert to (x,y,z) coordinates
-    x = np.sin(phi)*np.cos(theta)
-    y = np.sin(phi)*np.sin(theta)
-    z = np.cos(phi)
+    x = r*np.sin(phi)*np.cos(theta)
+    y = r*np.sin(phi)*np.sin(theta)
+    z = r*np.cos(phi)
 
     return x, y, z, weights
