@@ -21,7 +21,7 @@ import itertools as itt
 
 import numpy as np
 
-from . import base, survey_geometry, math
+from . import base, geometry, math
 
 __all__ = ['GaussianCovariance',
            'TrispectrumCovariance',
@@ -31,11 +31,11 @@ __all__ = ['GaussianCovariance',
 cache_dir = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(cache_dir, exist_ok=True)
 class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
-    '''Covariance matrix of power spectrum multipoles in a given geometry.
+    '''Parent Covariance matrix of power spectrum multipoles class in a given geometry.
 
     Attributes
     ----------
-    geometry : geometry.Geometry
+    geometry : survey_geometry.Geometry
         Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
     '''
 
@@ -47,7 +47,9 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
 
         self._pk = {}
         self._alpha = None
-
+        self.num_tracers = geometry.get_num_tracers()
+        # total number of auto + cross spectra
+        num_spectra = self.num_tracers * (self.num_tracers+1)/2
         self.pk_renorm = 1
 
     @property
@@ -61,7 +63,8 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
             The value of alpha.
         '''
         if self._alpha is None:
-            return self.geometry.alpha
+            return self.geometry.alphas()
+        
         return self._alpha
     
     @alpha.setter
@@ -96,6 +99,43 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
 
     def _compute_covariance_survey(self):
         raise NotImplementedError
+
+    def _build_covariance_survey(self, func):
+
+        # If kbins are set for the covariance matrix but not for the geometry,
+        # set them for the geometry as well
+        if self.is_kbins_set and not self.geometry.is_kbins_set:
+            self.geometry.set_kbins(self.kmin, self.kmax, self.dk)
+
+        cov = np.zeros((self.kbins, self.kbins, 6, self.num_spectra))
+        for ki in range(self.kbins):
+            # Iterate delta_k_max bins either side of the diagonal
+            for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max + 1, self.kbins)):
+                tracer_idx = 0
+                for A, B in itt.product(range(self.num_tracers), repeat=2):
+                    if B < A: continue
+                    for C, D in itt.product(range(self.num_tracers), repeat=2):
+                        if D < C: continue
+                        cov[ki, kj, :, tracer_idx] = func(ki, kj, A, B, C, D)
+                        tracer_idx += 1
+
+        cov *= (self.pk_renorm / self.geometry.I_AB / self.geometry.I_CD)
+        return cov
+
+    @staticmethod
+    def _set_survey_covariance(cov_array, covariance=None):
+        if covariance is None:
+            covariance = base.MultipoleFourierCovariance()
+
+        for tracer_idx in range(cov_array.shape[2]):
+            covariance.set_ell_cov(0, 0, cov_array[:, :, 0])
+            covariance.set_ell_cov(2, 2, cov_array[:, :, 1])
+            covariance.set_ell_cov(4, 4, cov_array[:, :, 2])
+            covariance.set_ell_cov(0, 2, cov_array[:, :, 3])
+            covariance.set_ell_cov(0, 4, cov_array[:, :, 4])
+            covariance.set_ell_cov(2, 4, cov_array[:, :, 5])
+
+        return covariance
 
     @property
     def shotnoise(self):
@@ -137,11 +177,11 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
     '''
 
     def __init__(self, geometry=None):
-        PowerSpectrumMultipolesCovariance.__init__(
-            self, geometry=geometry)
+        super.__init__(self, geometry=geometry)
+
         self.logger = logging.getLogger('GaussianCovariance')
 
-    def set_galaxy_pk_multipole(self, pk, ell, has_shotnoise=False):
+    def set_galaxy_pk_multipole(self, pk, ell, tracer1=0, tracer2=0, has_shotnoise=False):
         '''Set the input power spectrum to be used for the covariance calculation.
 
         Parameters
@@ -150,27 +190,45 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             Power spectrum.
         ell : int
             Multipole of the power spectrum.
+        tracer1 : int
+            Index of the first tracer the power spectrum corresponds to
+            If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+        tracer2 : int
+            Index of the second tracer the power spectrum corresponds to. 
+            If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
         has_shotnoise : bool, optional
             Whether the power spectrum has shotnoise included or not.
         '''
 
-        assert len(
-            pk) == self.kbins, 'Power spectrum must have the same number of bins as the covariance matrix.'
+        if len(pk) != self.kbins:
+            raise ValueError(f"Error in PowerSpectrumMultipolesCovariance.set_galaxy_pk_multipole: Power spectrum must have the same number of k-bins ({len(pk)}) as the covariance matrix ({self.kbins}).")
+
+        if tracer1 >= self.num_tracers or tracer2 >= self.num_tracers:
+            raise ValueError(f"Error in PowerSpectrumMultipolesCovariance.set_galaxy_pk_multipole: Requested tracer combo ({tracer1}, {tracer2}) must both be < total number of tracers ({self.num_tracers})")
 
         if ell == 0 and has_shotnoise:
-            self.logger.info(
-                f'Removing shotnoise = {self.shotnoise} from ell = 0.')
-            self._pk[ell] = pk - self.shotnoise
-        else:
-            self._pk[ell] = pk
+            self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
+            pk = pk - self.shotnoise
+        
+        self._pk[ell, tracer1, tracer2] = pk
+        if tracer1 != tracer2: # <- assuming cross spectra are symmetric (P(t1, t2) = P(t2, t1))
+            self._pk[ell, tracer2, tracer1] = pk
 
-    def get_pk(self, ell, force_return=False, remove_shotnoise=True, renorm=True):
+    def get_pk(self, ell, tracer1=0, tracer2=0, force_return=False, remove_shotnoise=True, renorm=True):
         '''Get the input power spectrum to be used for the covariance calculation.
 
         Parameters
         ----------
         ell : int
             Multipole of the power spectrum.
+
+        tracer1 : int
+            Index of the first tracer the power spectrum corresponds to
+            If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+
+        tracer2 : int
+            Index of the second tracer the power spectrum corresponds to. 
+            If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
 
         force_return : bool, float, optional
             If the power spectrum for the given ell is not set, return a zero array if True or the specified value if a float.
@@ -182,7 +240,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         pk_renorm = self.pk_renorm if renorm else 1.0
 
         if ell in self._pk.keys():
-            pk = self._pk[ell]
+            pk = self._pk[ell, tracer1, tracer2]
             if (not remove_shotnoise) and ell == 0:
                 self.logger.info(
                     f'Adding shotnoise = {self.shotnoise} to ell = 0.')
@@ -227,6 +285,41 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
 
         return self
 
+    def _compute_covariance_survey(self):
+        '''Compute the covariance matrix for a survey geometry.
+
+        Returns
+        -------
+        self : GaussianCovariance
+            Covariance matrix.
+        '''
+
+        # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
+        # TODO: Impliment mixed and shotnoise terms
+        def func(ik, jk, A, B, C, D): return self._get_cosmic_variance_term(ik, jk, A, B, C, D)# + \
+            #(1 + self.alpha) * self._get_mixed_term(ik, jk) + \
+            #(1 + self.alpha)**2 * self._get_shotnoise_term(ik, jk)
+
+        self._set_survey_covariance(self._build_covariance_survey(func), self)
+        eigvals = self.eigvals
+        if (eigvals < 0).any():
+            self.logger.warning(
+                f'Covariance matrix is not positive definite. Worst of {sum(eigvals < 0)} negative eigenvalues is {eigvals.min():.2e}.')
+            # extra_modes = int(0.2*self.geometry.kmodes_sampled)
+            # self.geometry.kmodes_sampled += extra_modes
+            # self.logger.warning(f'Sampling {extra_modes} more kmodes. Total = {self.geometry.kmodes_sampled}.')
+            # self.geometry.compute_window_kernels()
+            # self._compute_covariance_survey()
+        self.logger.info(
+            f'Condition number is {eigvals.max()/eigvals[eigvals > 0].min():.2e}.')
+        self.logger.info(
+            f'Lowest positive eigval is {eigvals[eigvals > 0].min():.2e}.')
+
+        if not np.allclose(self.cov, self.cov.T):
+            self.logger.warning('Covariance matrix is not symmetric.')
+
+        return self
+
     def _diagnose_covariance(self):
 
         eigvals = self.eigvals
@@ -242,7 +335,6 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         if not np.allclose(self.cov, self.cov.T):
             self.logger.warning('Covariance matrix is not symmetric.')
 
-
     def load_pypower_file(self, filename, **kwargs):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
@@ -250,6 +342,12 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         ----------
         filename : str
             Name of the pypower file containing the power spectrum.
+        tracer1 : int
+            Index of the first tracer the pypower file corresponds to
+            If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+        tracer2 : int
+            Index of the second tracer the pypower file corresponds to. 
+            If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
         remove_shotnoise : bool, optional
             Whether pypower should be used to remove the shotnoise from the power spectrum monopole.
             If None, will be determined based on the geometry used.
@@ -261,13 +359,19 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         pypower = PowerSpectrumMultipoles.load(filename)
         return self.load_pypower(pypower, **kwargs)
 
-    def load_pypower(self, pypower, remove_shotnoise=None, set_shotnoise=False, naverage=1):
+    def load_pypower(self, pypower, tracer1=0, tracer2=0, remove_shotnoise=None, set_shotnoise=False, naverage=1):
         '''Load power spectrum from pypower object and set it to be used for the covariance calculation.
 
         Parameters
         ----------
         pypower : PowerSpectrumMultipoles
             pypower object containing the power spectrum.
+        tracer1 : int
+            Index of the first tracer the pypower file corresponds to
+            If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+        tracer2 : int
+            Index of the second tracer the pypower file corresponds to. 
+            If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
         remove_shotnoise : bool, optional
             Whether pypower should be used to remove the shotnoise from the power spectrum monopole.
             If None, will be determined based on the geometry used.
@@ -323,9 +427,9 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         P0, P2, P4 = pypower[imin:imax:di].get_power(
             remove_shotnoise=remove_shotnoise, complex=False)
 
-        self.set_galaxy_pk_multipole(P0, 0, has_shotnoise=not remove_shotnoise)
-        self.set_galaxy_pk_multipole(P2, 2)
-        self.set_galaxy_pk_multipole(P4, 4)
+        self.set_galaxy_pk_multipole(P0, 0, tracer1, tracer2, has_shotnoise=not remove_shotnoise)
+        self.set_galaxy_pk_multipole(P2, 2, tracer1, tracer2)
+        self.set_galaxy_pk_multipole(P4, 4, tracer1, tracer2)
 
         self.alpha = pypower.attrs['sum_data_weights1'] / \
             pypower.attrs['sum_randoms_weights1']
@@ -342,80 +446,50 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
                 self.logger.info(
                     f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
-    def _compute_cosmic_variance(self):
-        
-        # Load mask coupling Gaunt coefficients if cache exists, otherwise compute them
-        filename = os.path.join(cache_dir, "cosmic_variance_coefficients.npz")
+    def _get_cosmic_variance_term(self, jk, ik, A, B, C, D):
+        """Calculates elements of the cosmic variance term"""
+        WinKernel = self.geometry.get_window_kernels()
 
-        if os.path.exists(filename):
-            coefficients = base.SparseNDArray.load(filename)
-        else:
-            import sympy.physics.wigner
+        delta_k = jk - ik + self.geometry.delta_k_max
 
-            # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
-            # shape_in =  la, lb, ma, mb
-            # Only including positive m values, as -m is equivalent to m
-            # when Ylm is real and m is even
-            coefficients = base.SparseNDArray(shape_out=(3,3,3,3,3,3,3,3), shape_in=(7,7,7,7))
+        P_AB = np.array([self.get_pk(0, A, B, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, A, B, force_return=True),
+                         self.get_pk(4, A, B, force_return=True)])
 
-            for l1, l2, l3, l4 in itt.product((0,2,4), repeat=4):
-                for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
-                    for la in np.arange(np.abs(l1-l4), l1+l4+1, 2):
-                        for lb in np.arange(np.abs(l2-l3), l2+l3+1, 2):
-                            for ma, mb in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lb)]):
+        P_CD = np.array([self.get_pk(0, C, D, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, C, D, force_return=True),
+                         self.get_pk(4, C, D, force_return=True)])
 
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
-                                                   sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
-                                if value != 0.:
-                                    # Taking absolute values of all m as -m is equivalent to m
-                                    # when Ylm is real and m is even
-                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
-                                    ma, mb = np.abs(ma), np.abs(mb)
-                                    coefficients[l1//2,l2//2,
-                                                 l3//2,l4//2,
-                                                 m1//2,m2//2,
-                                                 m3//2,m4//2,
-                                                 la//2,lb//2,
-                                                 ma//2,mb//2] += value
-                                    
-                    for lc in np.arange(np.abs(l1-l2), l1+l2+1, 2):
-                        for la in np.arange(np.abs(lc-l4), lc+l4+1, 2):
-                            for ma, mc in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lc)]):
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                   sympy.physics.wigner.gaunt(lc,l4,la,mc,m4,ma))
-                                lb, mb = l3, m3
-                                if value != 0.:
-                                    # Taking absolute values of all m as -m is equivalent to m
-                                    # when Ylm is real and m is even
-                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
-                                    ma, mb = np.abs(ma), np.abs(mb)
-                                    coefficients[l1//2,l2//2,
-                                                 l3//2,l4//2,
-                                                 m1//2,m2//2,
-                                                 m3//2,m4//2,
-                                                 la//2,lb//2,
-                                                 ma//2,mb//2] += value
-            coefficients.save(filename)
+        cov = np.zeros(3, 3)
+        for ell1, ell2, ell3, ell4 in itt.product((0,1,2), repeat=4):
+            cov[ell1, ell2] += WinKernel[ik, delta_k, ell1, ell2, ell3, ell4] * \
+                                         P_AB[ik, ell3] * P_CD[jk, ell4]
 
-        nmesh = 512
-        windows_ab = base.SparseNDArray(shape_out=(7,7), shape_in=(nmesh,nmesh,nmesh))
-        windows_cd = base.SparseNDArray(shape_out=(7,7), shape_in=(nmesh,nmesh,nmesh))
-        
-        ellmax = 12
-        
-        for iell, ell in enumerate(np.arange(0, ellmax, 2)):
-            for im, m in enumerate(np.arange(0, ell+1, 2)):
-                windows_ab[iell,im] = self.geometry['ab'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
-                windows_cd[iell,im] = self.geometry['cd'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
+        return cov.flatten()
 
-        windows_prod = base.SparseNDArray(shape_out=(7,7,7,7), shape_in=(nmesh,nmesh,nmesh))
+    def _get_mixed_term(self, jk, ik, A, B, C, D):
 
-        for l1, l2 in itt.product((0,2,4), repeat=2):
-            for m1, m2 in itt.product(*[np.arange(0, l+1, 2) for l in (l1, l2)]):
-                windows_prod[l1//2,l2//2,m1//2,m2//2] = windows_ab[l1//2,m1//2]*windows_cd[l2//2,m2//2]
-        # l1, l2, l3, l4, m1, m2, m3, m4, 
-        coefficients @ windows_prod
+        delta_k = jk - ik + self.geometry.delta_k_max
 
+        P_AC = np.array([self.get_pk(0, A, C, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, A, C, force_return=True),
+                         self.get_pk(4, A, C, force_return=True)])
+
+        P_AD = np.array([self.get_pk(0, A, D, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, A, D, force_return=True),
+                         self.get_pk(4, A, D, force_return=True)])
+
+        P_BC = np.array([self.get_pk(0, B, C, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, B, C, force_return=True),
+                         self.get_pk(4, B, C, force_return=True)])
+
+        P_BD = np.array([self.get_pk(0, B, D, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, B, D, force_return=True),
+                         self.get_pk(4, B, D, force_return=True)])
+        raise NotImplementedError
+
+    def _get_shotnoise_term(self, jk, ik, A, B, C, D):
+        raise NotImplementedError
 
 
 class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):

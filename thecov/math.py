@@ -144,7 +144,7 @@ def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05, 
 
     # Uses full cube from k = 0 to k_shell
     cube_modes, cube_nmodes = sample_from_cube(kmin / kfun, k_shell / kfun, dk / kfun, max_modes=max_modes)
-    cube_weights = np.ones_like(cube_modes)[:,:,0] / np.array(cube_nmodes)[:, np.newaxis]
+    cube_weights = np.ones(len(cube_modes)) / len(cube_modes)
     
     # Uses spherical shell approximation from k = k_shell to kmax
     kedges_shell = np.arange(k_shell, kmax + dk/2, dk)
@@ -153,9 +153,11 @@ def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05, 
     if sample_mode == "monte-carlo":
         shell_modes = [np.array([sample_from_shell(kmin / kfun, kmax / kfun) for _ in range(
                         max_modes)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
-        shell_weights = np.ones((len(shell_modes), max_modes)) / max_modes
+        shell_weights = np.ones(len(shell_modes)) / len(shell_modes)
+
+        logger.info(f'Sampled {len(cube_modes)} bins from cube and {len(shell_modes)} bins from shell approximation.')
         
-        return cube_modes + shell_modes, np.array(cube_nmodes + list(shell_nmodes)), list(cube_weights) + list(shell_weights)
+        return cube_modes + shell_modes, np.array(cube_nmodes + list(shell_nmodes)), np.concatenate((cube_weights, shell_weights))
         
     elif sample_mode == "lebedev":
         output = [np.array([lebedev_sampling(kmin / kfun, kmax / kfun, discrete=False) for _ in range(

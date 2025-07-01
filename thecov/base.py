@@ -959,3 +959,13 @@ class SparseNDArray:
     #     else:
     #         raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
 
+    @classmethod
+    def from_arrays(cls, data, indices, indptr, shape_out, shape_in):
+        """
+        Create a SparseNDArray from arrays of data, indices, and indptr, shape_out, and shape_in.
+        """
+        result = cls(shape_out, shape_in)
+        result._matrix = scipy.sparse.csr_matrix((data, indices, indptr), shape=(np.prod(shape_out), np.prod(shape_in)))
+        result.shape_out = shape_out
+        result.shape_in = shape_in
+        return result

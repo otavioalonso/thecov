@@ -10,5 +10,5 @@ __version__ = "0.1.0"
 __author__ = 'Otavio Alves'
 __credits__ = 'Dark Energy Spectroscopic Instrument'
 
-from .survey_geometry import SurveyGeometry
+from .geometry import SurveyGeometry
 from .covariance import GaussianCovariance

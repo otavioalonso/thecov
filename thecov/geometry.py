@@ -15,6 +15,7 @@ import itertools as itt
 
 from tqdm import tqdm as shell_tqdm
 import multiprocessing as mp
+import multiprocessing.shared_memory
 # from scipy.integrate import lebedev_rule
 
 import mockfactory
@@ -24,18 +25,20 @@ import functools
 
 from . import base, math
 
+MASK_ELL_MAX = 12
+PK_ELL_MAX = 4
+
 __all__ = ['SurveyWindow']
 
 class SurveyWindow(base.BaseClass, base.LinearBinning):
 
-    def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, dk=None, ellmax=4, shotnoise=False, **kwargs):
+    def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, dk=None, shotnoise=False, **kwargs):
 
         base.LinearBinning.__init__(self)
 
         self.logger = logging.getLogger('SurveyWindow')
         self.tqdm = shell_tqdm
 
-        self._ellmax = ellmax
         self._is_shotnoise = shotnoise
         self._kmax = kmax
         self._dk = dk
@@ -51,6 +54,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         )
         self.boxsize = self.mesh1.boxsize[0]
         self.nmesh = self.mesh1.nmesh[0]
+        self.I_1 = self.I(randoms1, alpha1, 1, 2)
 
         if randoms2 is not None:
 
@@ -68,6 +72,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
 
             self.boxsize = self.mesh2.boxsize[0]
             self.nmesh = self.mesh2.nmesh[0]
+            self.I_2 = self.I(randoms2, alpha2, 1, 2)
 
             self.mesh2 = self._parse_randoms(
                 randoms=randoms2,
@@ -185,12 +190,12 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
             iik[iik >= nmesh // 2] -= nmesh
             ikgrid.append(iik)
         return ikgrid
-    
-    def I(self, nbar_power, fkp_power):
-        return (self._randoms[0]['NZ']**(nbar_power-1) * \
-                self._randoms[0]['WEIGHT_FKP']**fkp_power * \
-                self._randoms[0]['WEIGHT'] * \
-                self.alpha1).sum().tolist()
+
+    def I(self, randoms, alpha, nbar_power, fkp_power):
+        return (randoms['NZ']**(nbar_power-1) * \
+                randoms['WEIGHT_FKP']**fkp_power * \
+                randoms['WEIGHT'] * \
+                alpha).sum().tolist()
     
     def _rebin_parameters(self, dk, kmax):
 
@@ -296,119 +301,117 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         
         return result
     
+# barebones class so covariance.py compiles without error for now
+class BoxGeometry(base.BaseClass, base.LinearBinning):
+
+    def __init__(self):
+        pass
+
 
 class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
     # survey window needs randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, ellmax=4, **kwargs):
-    def __init__(self, random_files, alphas, nmesh, boxsize, box_padding, kmax=0.2, dk=None, delta_k_max=3, ellmax=4, 
+    def __init__(self,
+                 randoms_a,      alpha_a,
+                 randoms_b=None, alpha_b=None,
+                 randoms_c=None, alpha_c=None,
+                 randoms_d=None, alpha_d=None,
+                 nmesh=None, boxsize=None, boxpad=2.,
+                 kmax=0.2, dk=None, mask_ellmax=12, pk_ellmax=4,
                  sample_mode="lebedev", lebedev_degree=25, nthreads=None):
 
         base.LinearBinning.__init__(self)
 
         self.logger = logging.getLogger('SurveyGeometry')
         self.tqdm = shell_tqdm
-
-        if   isinstance(random_files, list): self.num_tracers = len(random_files)
-        elif isinstance(random_files, str):  self.num_tracers = 1
-        self.alphas = alphas
-            
-        if self.num_tracers > 4 or self.num_tracers < 1:
-            raise ValueError(f"Error in SurveyGeometry.__init__: num_tracers must be between [1, 4] but is {self.num_tracers}")
-        if self.num_tracers >= 2 and self.num_tracers != len(alphas):
-            raise ValueError(f"Error in SurveyGeometry.__init__: number of alpha values provided ({len(alphas)}) not equal to number of tracers ({self.num_tracers})")
-        
-        self.nmesh = nmesh
-        self.boxsize = boxsize
-        self.box_padding = box_padding
-        self._kmax=kmax
-        self._dk = dk
-        self.delta_k_max = delta_k_max
-        self.ellmax = ellmax
+                
+        self.mask_ellmax = mask_ellmax
+        self.pk_ellmax = pk_ellmax
         self.sample_mode = sample_mode
         self.lebedev_degree = lebedev_degree
-        self.nthreads = nthreads
+        self.nthreads = nthreads if nthreads is not None else int(os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
 
-        # NOTE: This method + logic could instead go in SurveyWindow
-        self.load_randoms(random_files)
-
-        self._init_survey_windows()
-        self._init_ell_m_combos()
+        self._init_randoms(randoms_a, alpha_a, randoms_b, alpha_b, randoms_c, alpha_c, randoms_d, alpha_d)
+        self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmax=kmax, dk=dk)
     
-
-    def load_randoms(self, random_files):
-        """Loads random catalogs into mockfactory CatalogMesh objects"""
+    def _init_randoms(self, randoms_a, alpha_a,
+                            randoms_b, alpha_b,
+                            randoms_c, alpha_c,
+                            randoms_d, alpha_d):
         
-        self.randoms = []
-        for file in random_files:
-            self.logger.info(f"loading in {file}...")
-            self.randoms.append(mockfactory.Catalog.read(file))
+        self.randoms = {}
+        self.alphas = {}
+        
+        self.randoms['A'] = randoms_a
+        self.alphas['A'] = alpha_a
+        
+        if randoms_b is not None and alpha_b is not None:
+            self.randoms['B'] = randoms_b
+            self.alphas['B'] = alpha_b
+        
+        if randoms_c is not None and alpha_c is not None:
+            self.randoms['C'] = randoms_c
+            self.alphas['C'] = alpha_c
 
+        if randoms_d is not None and alpha_d is not None:
+            self.randoms['D'] = randoms_d
+            self.alphas['D'] = alpha_d
 
-    def _init_survey_windows(self):
-
-        self.W_AB, self.W_CD = None, None
-        if self.num_tracers == 1:
-            self.window_AB = SurveyWindow(self.randoms[0], self.alphas[0], None, None, 
-                                          self.nmesh, self._dk, self.boxsize, self.box_padding, self._kmax, self.ellmax, shotnoise=False)
+    def _init_survey_windows(self, **kwargs):
+        
+        if 'B' in self.randoms:
+            self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['B'], self.alphas['B'], **kwargs)
+        else:
+            self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], None, None, **kwargs)
+        if 'C' in self.randoms or 'D' in self.randoms:
+            if 'D' in self.randoms:
+                self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
+            else:
+                self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], None, None, **kwargs)
+        else:
             self.window_CD = self.window_AB
-        elif self.num_tracers == 2:
-            self.window_AB = SurveyWindow(self.randoms[0], self.alphas[0], self.randoms[1], self.alphas[1], 
-                                          self.nmesh, self._dk, self.boxsize, self.box_padding, self._kmax, self.ellmax, shotnoise=False)
-            self.window_CD = self.window_AB
-        elif self.num_tracers == 3:
-            self.window_AB = SurveyWindow(self.randoms[0], self.alphas[0], self.randoms[1], self.alphas[1], 
-                                          self.nmesh, self._dk, self.boxsize, self.box_padding, self._kmax, self.ellmax, shotnoise=False)
-            self.window_CD = SurveyWindow(self.randoms[2], self.alphas[2], None, None, 
-                                          self.nmesh, self._dk, self.boxsize, self.box_padding, self._kmax, self.ellmax, shotnoise=False)
-        elif self.num_tracers == 4:
-            self.window_AB = SurveyWindow(self.randoms[0], self.alphas[0], self.randoms[1], self.alphas[1], 
-                                          self.nmesh, self._dk, self.boxsize, self.box_padding, self._kmax, self.ellmax, shotnoise=False)
-            self.window_CD = SurveyWindow(self.randoms[2], self.alphas[2], self.randoms[3], self.alphas[3], 
-                                          self.nmesh, self._dk, self.boxsize, self.box_padding, self._kmax, self.ellmax, shotnoise=False)
+    
+    @property
+    def delta_k_max(self):
+        return self.nmesh // 2 - 1
 
-    def get_survey_window(self):
+    @functools.cache
+    def get_combined_survey_window(self):
 
-        self.W_ABCD = base.SparseNDArray(shape_out=(7,7,7,7), shape_in=(self.nmesh,self.nmesh,self.nmesh))
+        window_ABCD = base.SparseNDArray(shape_out=(MASK_ELL_MAX//2+1,MASK_ELL_MAX//2+1,2*MASK_ELL_MAX+1,2*MASK_ELL_MAX+1),
+                                         shape_in=(self.nmesh,self.nmesh,self.nmesh))
 
-        for la, lb in itt.product(range(0, self.ellmax+1, 2), repeat=2):
+        for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
             for ma in range(-la, la+1):
                 for mb in range(-lb, lb+1):
-                    self.W_ABCD[la,lb,ma,mb] = self.window_AB.mesh(la, ma) * self.window_CD.mesh(lb, mb)
+                    window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.mesh(la, ma) * self.window_CD.mesh(lb, mb)
 
-        return self.W_ABCD
+        return window_ABCD
 
-        # calls survey_window
-
-        if self.W_AB is None:
-            self.W_AB = base.SparseNDArray(shape_out=(7,7), shape_in=(self.nmesh,self.nmesh,self.nmesh))
-            self.W_CD = base.SparseNDArray(shape_out=(7,7), shape_in=(self.nmesh,self.nmesh,self.nmesh))
-            self.ikgrid = self.window_AB.ikgrid
-
-            #self.W_AB = np.zeros(len(self.ells_and_ms, self.nmesh, self.nmesh, self.nmesh))
-            #self.W_CD = np.zeros_like(self.W_AB) if self.num_tracers > 1 else None
-            for idx in range(len(self.ells_and_ms)):
-                ell = self.ells_and_ms[idx][0]
-                m = self.ells_and_ms[idx][1]
-                self.W_AB[ell, m] = self.window_AB.mesh(ell, m)
-                if self.num_tracers > 1: self.W_CD[ell, m] = self.window_CD.mesh(ell, m)
+    @property
+    def get_window_kernels(self):
+        return self.WinKernel
     
+    @property
+    def nmesh(self):
+        return self.window_AB.knmesh
+    
+    @property
+    def boxsize(self):
+        return self.window_AB.kboxsize
 
-    def _init_ell_m_combos(self):
-        """creates the unique combinations of l and m and stores them in a nested list"""
-        self.ells_and_ms = []
-        for ell in range(self.ellmax, step=2):
-            for m in range(-ell, ell+1):
-                self.ells_and_ms.append([ell, m])
+    @property
+    def get_num_tracers(self):
+        return self.num_tracers
 
-    # TODO: Possibly move this into math.py
     @staticmethod
-    def get_gaunt_coefficients(cache_dir=None):
+    def get_gaunt_coefficients(cache_dir=None, mask_ellmax=12, pk_ellmax=4):
         """Calculates all relavent Gaunt coefficients, or loads them from file"""
 
         # Load mask coupling Gaunt coefficients if cache exists, otherwise compute them
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
-        filename = os.path.join(cache_dir, "cosmic_variance_coefficients.npz")
+        filename = os.path.join(cache_dir, f"cosmic_variance_coefficients_{pk_ellmax}_{mask_ellmax}.npz")
 
         if os.path.exists(filename):
             return base.SparseNDArray.load(filename)
@@ -419,9 +422,11 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             # shape_in =  la, lb, ma, mb
             # Only including positive m values, as -m is equivalent to m
             # when Ylm is real and m is even
-            gaunt_coefficients = base.SparseNDArray(shape_out=(3,3,3,3,3,3,3,3), shape_in=(7,7,7,7))
+            shape_out = 4*[PK_ELL_MAX//2 + 1] + 4*[2*PK_ELL_MAX + 1]
+            shape_in = 2*[MASK_ELL_MAX//2 + 1] + 2*[2*MASK_ELL_MAX + 1]
+            gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
-            for l1, l2, l3, l4 in itt.product((0,2,4), repeat=4):
+            for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax + 1, 2), repeat=4):
                 for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
                     for la in np.arange(np.abs(l1-l4), l1+l4+1, 2):
                         for lb in np.arange(np.abs(l2-l3), l2+l3+1, 2):
@@ -432,14 +437,14 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                 if value != 0.:
                                     # Taking absolute values of all m as -m is equivalent to m
                                     # when Ylm is real and m is even
-                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
-                                    ma, mb = np.abs(ma), np.abs(mb)
+                                    # m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
+                                    # ma, mb = np.abs(ma), np.abs(mb)
                                     gaunt_coefficients[l1//2,l2//2,
-                                                            l3//2,l4//2,
-                                                            m1//2,m2//2,
-                                                            m3//2,m4//2,
-                                                            la//2,lb//2,
-                                                            ma//2,mb//2] += value
+                                                       l3//2,l4//2,
+                                                       m1+l1,m2+l2,
+                                                       m3+l3,m4+l4,
+                                                       la//2,lb//2,
+                                                       ma+la,mb+lb] += value
                                     
                     for lc in np.arange(np.abs(l1-l2), l1+l2+1, 2):
                         for la in np.arange(np.abs(lc-l4), lc+l4+1, 2):
@@ -450,90 +455,109 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                 if value != 0.:
                                     # Taking absolute values of all m as -m is equivalent to m
                                     # when Ylm is real and m is even
-                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
-                                    ma, mb = np.abs(ma), np.abs(mb)
+                                    # m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
+                                    # ma, mb = np.abs(ma), np.abs(mb)
                                     gaunt_coefficients[l1//2,l2//2,
-                                                            l3//2,l4//2,
-                                                            m1//2,m2//2,
-                                                            m3//2,m4//2,
-                                                            la//2,lb//2,
-                                                            ma//2,mb//2] += value
+                                                       l3//2,l4//2,
+                                                       m1+l1,m2+l2,
+                                                       m3+l3,m4+l4,
+                                                       la//2,lb//2,
+                                                       ma+la,mb+lb] += value
             gaunt_coefficients.save(filename)
 
         return gaunt_coefficients
 
+    def clean(self):
+        '''Clean window kernels and power spectra.'''
+        self.WinKernel = None
+        self.WinKernel_error = None
+        self._window_power = None
+        self._W = {}
+        self._I = {}
 
-    def compute_window_kernels_old(self):
-        '''Computes the window kernels to be used in the calculation of the covariance.
+    def compute_window_kernels(self):
 
-        Notes
-        -----
-        The window kernels are computed using the method described in [1]_.
+        # points on the unit sphere with corresponding integration weights
+        # x, y, z, w = math.get_lebedev_points(self.lebedev_degree)
 
-        References
-        ----------
-        .. [1] https://arxiv.org/abs/1910.02914
-        '''
+        # Gaunt coefficients
+        # cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/")
+        # self.get_gaunt_coefficients(mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
+        self.get_gaunt_coefficients()
 
-        # sample kmodes from each k1 bin
+        # W_AB * W_CD (outer product)
+        W_ABCD = self.get_combined_survey_window()
 
-        # SAMPLE FROM SHELL
-        # kfun = 2 * np.pi / self.boxsize
-        # kmodes = np.array([[math.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
-        #                    self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
-        # Nmodes = math.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
+        # create shared memory objects
+        shm_data = multiprocessing.shared_memory.SharedMemory(create=True, size=W_ABCD._matrix.data.nbytes*2)
+        shm_indices = multiprocessing.shared_memory.SharedMemory(create=True, size=W_ABCD._matrix.indices.nbytes)
+        shm_indptr = multiprocessing.shared_memory.SharedMemory(create=True, size=W_ABCD._matrix.indptr.nbytes)
 
-        # SAMPLE FROM CUBE
-        # kmodes, Nmodes = math.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
+        # create views to shared memory
+        data_shared = np.ndarray(W_ABCD._matrix.data.shape, dtype=W_ABCD._matrix.data.dtype, buffer=shm_data.buf)
+        indices_shared = np.ndarray(W_ABCD._matrix.indices.shape, dtype=W_ABCD._matrix.indices.dtype, buffer=shm_indices.buf)
+        indptr_shared = np.ndarray(W_ABCD._matrix.indptr.shape, dtype=W_ABCD._matrix.indptr.dtype, buffer=shm_indptr.buf)
 
-        # HYBRID SAMPLING
-        kmodes, Nmodes =  math.sample_kmodes(kmin=self.kmin,
-                                            kmax=self.kmax,
-                                            dk=self.dk,
-                                            boxsize=self.boxsize,
-                                            max_modes=self.kmodes_sampled,
-                                            k_shell_approx=0.1,
-                                            sample_mode="monte-carlo")
-
-        if len(kmodes) != self.kbins or len(Nmodes) != self.kbins:
-            raise ValueError(f'Error in thecov.utils.sample_kmodes: results should have length {self.kbins}, but had {len(kmodes)}. Parameters were kmin={self.kmin},kmax={self.kmax},dk={self.dk},boxsize={self.boxsize},max_modes={self.kmodes_sampled},k_shell_approx={0.1}).')
-
-        # Calculate window FFTs if they haven't been initialized yet
-        self.get_survey_window()
+        # copy data to shared memory objects
+        # NOTE: This operation duplicates W_ABCD temporarily, which might become a problem for large nmesh
+        np.copyto(data_shared, W_ABCD._matrix.data)
+        np.copyto(indices_shared, W_ABCD._matrix.indices)
+        np.copyto(indptr_shared, W_ABCD._matrix.indptr)
+        # del W_ABCD # <- W_ABCD now lives in shared memory, so delete old one
 
         init_params = {
-            'boxsize': self.boxsize,
+            'kfun':  2 * np.pi / self.boxsize,
             'dk': self.dk,
-            'nmesh': self.nmesh,
-            'ikgrid': self.ikgrid,
+            'ikgrid': self.window_AB.ikgrid,
             'delta_k_max': self.delta_k_max,
+            'mask_ellmax': self.mask_ellmax,
+            'pk_ellmax': self.pk_ellmax,
+            'sparse_shape': [W_ABCD._matrix.data.shape,
+                             W_ABCD._matrix.indices.shape,
+                             W_ABCD._matrix.indptr.shape,
+                             W_ABCD.shape_in,
+                             W_ABCD.shape_out],
         }
 
-        def init_worker(*args):
-            global shared_w
-            global shared_params
-            shared_w = {}
-            for w, l in zip(args, W_LABELS):
-                shared_w[l] = np.frombuffer(w).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
-            shared_params = args[-1]
+        # HYBRID SAMPLING
+        kmodes_sampled = 1000
+        kmodes, Nmodes, weights = math.sample_kmodes(kmin=self.kmin,
+                                                     kmax=self.kmax,
+                                                     dk=self.dk,
+                                                     boxsize=self.boxsize,
+                                                     max_modes=kmodes_sampled,
+                                                     k_shell_approx=0.1,
+                                                     sample_mode="monte-carlo")
 
-        if self.WinKernel is None and self.WinKernel_error is None:
-            # Format is [k1_bins, k2_bins, P_i x P_j term, Cov_ij]
-            self.WinKernel = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
+        def init_worker(data_name, indices_name, indptr_name, init_params):
+            global shared_params
+
+            # buffers for W_ABCD
+            global shared_data
+            global shared_indices
+            global shared_indptr
+
+            shared_data = multiprocessing.shared_memory.SharedMemory(name=data_name)
+            shared_indices = multiprocessing.shared_memory.SharedMemory(name=indices_name)
+            shared_indptr = multiprocessing.shared_memory.SharedMemory(name=indptr_name)
+
+            shared_params = init_params
+
+        
+        delta_k_max = self.nmesh // 2 - 1
+
+        if not hasattr(self, 'WinKernel') or self.WinKernel is None:
+            # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
+            self.WinKernel = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax, self.pk_ellmax, self.pk_ellmax, self.pk_ellmax])
             self.WinKernel.fill(np.nan)
 
-            self.WinKernel_error = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
-            self.WinKernel_error.fill(np.nan)
-
-        ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
-
+        #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
-
         for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
 
-            if self._resume_file is not None:
+            if hasattr(self, '_resume_file') and self._resume_file is not None:
                 # Skip rows that were already computed
-                if not np.isnan(self.WinKernel[i,0,0,0]):
+                if not np.isnan(self.WinKernel[i,0,0,0,0,0]):
                     # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
                     continue
 
@@ -545,133 +569,38 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
             with mp.Pool(processes=min(self.nthreads, len(chunks)),
                          initializer=init_worker,
-                         initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
-                
-                results = pool.map(self._compute_window_kernel_row_old, chunks)
-
-                self.WinKernel[i] = np.sum(results, axis=0) / kmodes_sampled
-
-                std_results = np.std(results, axis=0) / np.sqrt(len(results))
-                mean_results = np.mean(results, axis=0)
-                mean_results[std_results == 0] = 1
-                self.WinKernel_error[i] =  std_results / mean_results
-        
-                for k2_bin_index in range(0, 2*self.delta_k_max + 1):
-                    if (k2_bin_index + i - self.delta_k_max >= self.kbins or k2_bin_index + i - self.delta_k_max < 0):
-                        self.WinKernel[i, k2_bin_index, :, :] = 0
-                    else:
-                        self.WinKernel[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
-
-            self.WinKernel[i, ..., 0] *= ell_factor(0,0)
-            self.WinKernel[i, ..., 1] *= ell_factor(2,2)
-            self.WinKernel[i, ..., 2] *= ell_factor(4,4)
-            self.WinKernel[i, ..., 3] *= ell_factor(2,0)
-            self.WinKernel[i, ..., 4] *= ell_factor(4,0)
-            self.WinKernel[i, ..., 5] *= ell_factor(4,2)
-            
-            if self._resume_file is not None and (time.time() - last_save) > 600:
-                self.save(self._resume_file)
-                last_save = time.time()
-                
-        self.logger.info('Window kernels computed.')
-
-        if self._resume_file is not None:
-            self.save(self._resume_file)
-
-    def clean(self):
-        '''Clean window kernels and power spectra.'''
-        self.WinKernel = None
-        self.WinKernel_error = None
-        self._window_power = None
-        self._W = {}
-        self._I = {}
-
-    def compute_window_kernels_lebedev(self):
-
-        # points on the unit sphere with corresponding integration weights
-        x, y, z, w = math.get_lebedev_points(self.lebedev_degree)
-
-        # Gaunt coefficients
-        # cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/")
-        G = self.get_gaunt_coefficients()
-
-        # W_AB and W_CD
-        self.get_survey_window()
-        
-        init_params = {
-            'boxsize': self.boxsize,
-            'dk': self.dk,
-            'nmesh': self.nmesh,
-            'ikgrid': self.ikgrid,
-            'delta_k_max': self.delta_k_max,
-        }
-
-        # HYBRID SAMPLING
-        kmodes, Nmodes, weights = math.sample_kmodes(kmin=self.kmin,
-                                                     kmax=self.kmax,
-                                                     dk=self.dk,
-                                                     boxsize=self.boxsize,
-                                                     max_modes=kmodes_sampled,
-                                                     k_shell_approx=0.1,
-                                                     sample_mode="monte-carlo")
-
-        def init_worker(*args): #<- args is [W_AB, W_CD, ]
-            global shared_W_ABCD
-            global shared_params
-            global shared_G
-
-            for w_abcd, G, idx in zip(args):
-               shared_W_ABCD = np.frombuffer(args[0]).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
-            shared_G = G
-            shared_params = args[-1]
-
-        if self.WinKernel is None:
-            # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
-            self.WinKernel = np.empty([self.kbins, 2*self.delta_k_max+1, 3, 3, 3, 3])
-            self.WinKernel.fill(np.nan)
-
-        ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
-        last_save = time.time()
-        for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
-
-            if self._resume_file is not None:
-                # Skip rows that were already computed
-                if not np.isnan(self.WinKernel[i,0,0,0,0,0]):
-                    # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
-                    continue
-
-            init_params['k1_bin_index'] = i + self.kmin//self.dk
-            kmodes_sampled = len(km)
-
-            # Splitting k_bins in chunks to be sent to each worker
-            chunks = np.array_split(km, self.nthreads)
-
-            with mp.Pool(processes=min(self.nthreads, len(chunks)),
-                         initializer=init_worker,
-                         initargs=[*[self.W_AB[idx] for idx in self.ells_and_ms], 
-                                   *[self.W_CD[idx] for idx in self.ells_and_ms],
-                                   *G, init_params]) as pool:
+                         initargs=[shm_data.name,
+                                   shm_indices.name,
+                                   shm_indptr.name,
+                                   init_params]) as pool:
                 
                 results = pool.map(self._compute_window_kernel_row, chunks)
 
                 self.WinKernel[i] = np.sum(results * weights, axis=0) / kmodes_sampled
 
-                std_results = np.std(results * weights, axis=0) / np.sqrt(len(results))
-                avg_results = np.average(results * weights, weights=weights, axis=0)
-                avg_results[std_results == 0] = 1
-                self.WinKernel_error[i] =  std_results / avg_results
+                # std_results = np.std(results * weights, axis=0) / np.sqrt(len(results))
+                # avg_results = np.average(results, weights=weights, axis=0)
+                # avg_results[std_results == 0] = 1
+                # self.WinKernel_error[i] =  std_results / avg_results
         
-                for k2_bin_index in range(0, 2*self.delta_k_max + 1):
-                    if (k2_bin_index + i - self.delta_k_max >= self.kbins or k2_bin_index + i - self.delta_k_max < 0):
+                for k2_bin_index in range(0, 2*delta_k_max + 1):
+                    if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
                         self.WinKernel[i, k2_bin_index, :, :] = 0
                     else:
-                        self.WinKernel[i, k2_bin_index, :, :] = avg_results[i, k2_bin_index, :, :]
-        
-            if self._resume_file is not None and (time.time() - last_save) > 600:
+                        self.WinKernel[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
+
+            if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
                 self.save(self._resume_file)
                 last_save = time.time()
 
         self.logger.info('Window kernels computed.')
+
+        shm_data.close()
+        shm_data.unlink()
+        shm_indices.close()
+        shm_indices.unlink()
+        shm_indptr.close()
+        shm_indptr.unlink()
 
         if self._resume_file is not None:
             self.save(self._resume_file)
@@ -688,19 +617,28 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 The remaining dims correspond to specific ells
         '''
 
-        k1_bin_index = shared_params['k1_bin_index']
-        boxsize = shared_params['boxsize']
-        kfun = 2 * np.pi / boxsize
-        dk = shared_params['dk']
+        data = np.ndarray(shared_params['sparse_shape'][0], dtype=np.complex128, buffer=shared_data.buf)
+        indices = np.ndarray(shared_params['sparse_shape'][1], dtype=np.int32, buffer=shared_indices.buf)
+        indptr = np.ndarray(shared_params['sparse_shape'][2], dtype=np.int32, buffer=shared_indptr.buf)
 
-        G = shared_G
-        W = shared_w
+        W_ABCD = base.SparseNDArray.from_arrays(data, indices, indptr,
+                                                shape_in=shared_params['sparse_shape'][3],
+                                                shape_out=shared_params['sparse_shape'][4])
+        
+        k1_bin_index = shared_params['k1_bin_index']
+        kfun = shared_params['kfun']
+        dk = shared_params['dk']
+        pk_ellmax = shared_params['pk_ellmax']
+        mask_ellmax = shared_params['mask_ellmax']
+
+        G = SurveyGeometry.get_gaunt_coefficients(mask_ellmax=mask_ellmax,
+                                                  pk_ellmax=pk_ellmax)
 
         # The Gaussian covariance drops quickly away from diagonal.
         # Only delta_k_max points to each side of the diagonal are calculated.
         delta_k_max = shared_params['delta_k_max']
 
-        WinKernel = np.zeros((2*delta_k_max+1, 3,3,3,3))
+        WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax+1, pk_ellmax+1), dtype=np.float64)
         iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
 
         k2xh = np.zeros_like(iix)
@@ -736,22 +674,19 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             # k1_bin_index is a scalar
             
             # give 3x3x3x3 x nmesh x nmesh x nmesh
-            temp = np.sum(G @ np.einsum('ak,bk->abk', shared_W_AB, shared_W_CD), axis=[4,5,6,7])
+            result = G @ W_ABCD
+            print(result)
             
-            for l1, l2, l3, l4 in itt.product((0,2,4), repeat=4):
+            for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
                 for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
-                    Ylm_1 = math.get_real_Ylm(l1, m1)
-                    Ylm_2 = math.get_real_Ylm(l2, m2)
-                    Ylm_3 = math.get_real_Ylm(l3, m3)
-                    Ylm_4 = math.get_real_Ylm(l3, m4)
 
-                    temp[l1,l2,l3,l4] += Ylm_1(k1xh, k1yh, k1zh) * \
-                                         Ylm_2(k2xh, k2yh, k2zh) * \
-                                         Ylm_3(k1xh, k1yh, k1zh) * \
-                                         Ylm_4(k2xh, k2yh, k2zh)
+                    result[l1,l2,l3,l4] *= math.get_real_Ylm(l1, m1)(k1xh, k1yh, k1zh) * \
+                                           math.get_real_Ylm(l2, m2)(k2xh, k2yh, k2zh) * \
+                                           math.get_real_Ylm(l3, m3)(k1xh, k1yh, k1zh) * \
+                                           math.get_real_Ylm(l4, m4)(k2xh, k2yh, k2zh)
 
             for delta_k in range(-delta_k_max, delta_k_max + 1):
                 modes = (k2_bin_index - k1_bin_index == delta_k)
-                WinKernel[delta_k] = temp[modes]
+                WinKernel[delta_k] = result[modes]
 
         return WinKernel
