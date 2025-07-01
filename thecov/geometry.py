@@ -8,6 +8,7 @@ SurveyGeometry
 """
 
 import logging
+logging.basicConfig(level = logging.INFO)
 
 import numpy as np
 import os, time
@@ -28,7 +29,7 @@ from . import base, math
 MASK_ELL_MAX = 12
 PK_ELL_MAX = 4
 
-__all__ = ['SurveyWindow']
+__all__ = ['SurveyWindow', 'SurveyGeometry']
 
 class SurveyWindow(base.BaseClass, base.LinearBinning):
 
@@ -87,17 +88,17 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
             self.mesh1._set_box(nmesh=self.nmesh, boxsize=self.boxsize, wrap=False)
             self.mesh2._set_box(nmesh=self.nmesh, boxsize=self.boxsize, wrap=False)
         
-        self.logger.warn(f'Using box size {self.boxsize}, box center {self.mesh1.boxcenter} and nmesh {self.nmesh}.')
-        self.logger.warn(f'Fundamental wavenumber of window meshes = {self.kfun}.')
-        self.logger.warn(f'Nyquist wavenumber of window meshes = {self.knyquist}.')
+        self.logger.info(f'Using box size {self.boxsize}, box center {self.mesh1.boxcenter} and nmesh {self.nmesh}.')
+        self.logger.info(f'Fundamental wavenumber of window meshes = {self.kfun}.')
+        self.logger.info(f'Nyquist wavenumber of window meshes = {self.knyquist}.')
 
         if kmax is not None and self.knyquist < kmax:
             self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {kmax}.')
 
-        self.logger.warn(f'Average of {self.mesh1.data_size / self.nmesh**3} objects per voxel.')
+        self.logger.info(f'Average of {self.mesh1.data_size / self.nmesh**3} objects per voxel.')
 
         # Initialize rebin parameters
-        self._rebin_parameters(dk, kmax)
+        self._init_rebin_parameters(dk, kmax)
 
     def _parse_randoms(self, randoms, alpha, nmesh, cellsize, boxsize, boxpad, kmax):
         """Parse the randoms into a mesh, filling in missing information as needed."""
@@ -123,7 +124,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
             hpixel = hp.vec2pix(nside, *xyz.T)
             unique_hpixels = np.unique(hpixel)
             fsky = len(unique_hpixels) / hp.nside2npix(nside)
-            self.logger.warn(f'fsky estimated from randoms: {fsky:.3f}')
+            self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
             nbar = mockfactory.RedshiftDensityInterpolator(z=distance, weights=randoms['WEIGHT'], fsky=fsky)
             randoms['NZ'] = nbar(distance)
 
@@ -132,7 +133,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
             # Pick value that will give at least k_mask = kmax_window in the FFTs
             self.cellsize = np.pi / kmax / (1. + 1e-9)
 
-        self.logger.warn(f'Parsed randoms in {time.time() - start_time:.2f} seconds.')
+        self.logger.info(f'Parsed randoms in {time.time() - start_time:.2f} seconds.')
 
         return CatalogMesh(
                 data_positions=randoms['POSITION'],
@@ -197,7 +198,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
                 randoms['WEIGHT'] * \
                 alpha).sum().tolist()
     
-    def _rebin_parameters(self, dk, kmax):
+    def _init_rebin_parameters(self, dk, kmax):
 
         # If dk and kmax are provided, they determine the target boxsize and nmesh
         target_boxsize = 2*np.pi/dk
@@ -209,6 +210,10 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         # Rebin mesh to obtain the target nmesh
         rebin_factor = trim_to_nmesh//target_nmesh
 
+        if rebin_factor == 0:
+            self.logger.error(f"Rebin factor = 0 with the given values of dk ({dk}) and kmax ({kmax})! This might mean your nmesh is too small")
+            raise ZeroDivisionError
+
         # Ensure that trim_to_nmesh is a multiple of rebin_factor
         if (trim_to_nmesh % rebin_factor) != 0:
             trim_to_nmesh +=  rebin_factor - (trim_to_nmesh % rebin_factor)
@@ -216,6 +221,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         self.kboxsize = trim_to_nmesh/self.nmesh * self.boxsize
         self.knmesh = trim_to_nmesh//rebin_factor
 
+        # NOTE: idk if this return is necesary
         return trim_to_nmesh, rebin_factor
 
     @functools.cache
@@ -257,7 +263,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
                 position_type='pos',
             ).to_mesh(compensate=True)
 
-        self.logger.warn(f"Mesh computation with Ylm done in {time.time() - time_start:.2f} seconds")
+        self.logger.info(f"Mesh computation with Ylm done in {time.time() - time_start:.2f} seconds")
         time_start = time.time()
 
         if hasattr(self, 'mesh2'):
@@ -265,20 +271,20 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         else:
             result *= self.mesh1.to_mesh(compensate=True)
 
-        self.logger.warn(f"Second mesh computation done in {time.time() - time_start:.2f} seconds")
+        self.logger.info(f"Second mesh computation done in {time.time() - time_start:.2f} seconds")
 
         if self._dk is not None and self._kmax is not None:
             trim_to_nmesh, rebin_factor = self._rebin_parameters(self._dk, self._kmax)
             
             if trim_to_nmesh <= self.nmesh and self.kboxsize <= self.boxsize:
                 result = result[:trim_to_nmesh, :trim_to_nmesh, :trim_to_nmesh]
-                self.logger.warn(f"Trimmed mesh from {self.nmesh} to {trim_to_nmesh} and boxsize from {self.boxsize:.0f} to {self.kboxsize:.0f}.")
+                self.logger.info(f"Trimmed mesh from {self.nmesh} to {trim_to_nmesh} and boxsize from {self.boxsize:.0f} to {self.kboxsize:.0f}.")
 
                 # Sum mesh values in the new mesh
                 if rebin_factor > 1:
                     result = result.reshape((self.knmesh, rebin_factor, self.knmesh, rebin_factor, self.knmesh, rebin_factor)).sum(axis=(1, 3, 5))
 
-                self.logger.warn(f"Rebinned mesh from {trim_to_nmesh} to {result.shape[0]} with factor {rebin_factor}.")
+                self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result.shape[0]} with factor {rebin_factor}.")
 
 
         if hasattr(result, 'value'):
@@ -290,7 +296,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
             result *= self.knmesh**3
             time_start = time.time()
             result = np.fft.fftn(result, axes=(0, 1, 2), norm='backward')
-            self.logger.warn(f"Mesh Fourier transform done in {time.time() - time_start:.2f} seconds")
+            self.logger.info(f"Mesh Fourier transform done in {time.time() - time_start:.2f} seconds")
 
         # result = result.value if not fourier else result.r2c().value
 
@@ -483,9 +489,11 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         # Gaunt coefficients
         # cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/")
         # self.get_gaunt_coefficients(mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
+        self.logger.info("Calculating or loading Gaunt coefficients...")
         self.get_gaunt_coefficients()
 
         # W_AB * W_CD (outer product)
+        self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
         W_ABCD = self.get_combined_survey_window()
 
         # create shared memory objects
@@ -567,6 +575,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             # Splitting kmodes in chunks to be sent to each worker
             chunks = np.array_split(km, self.nthreads)
 
+            self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
             with mp.Pool(processes=min(self.nthreads, len(chunks)),
                          initializer=init_worker,
                          initargs=[shm_data.name,
