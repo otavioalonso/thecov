@@ -363,6 +363,7 @@ def get_lebedev_points(degree, r=1.):
                                  89, 95, 101, 107, 113, 119, 125, 131])
 
     if degree not in available_degrees:
+        
         raise ValueError("Error in lebedev_rule: invalid value for degree. Must be one of", available_degrees)
 
     # load in pre-computed points on the unit sphere

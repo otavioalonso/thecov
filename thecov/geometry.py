@@ -8,7 +8,7 @@ SurveyGeometry
 """
 
 import logging
-logging.basicConfig(level = logging.INFO)
+logging.basicConfig(level = logging.WARN)
 
 import numpy as np
 import os, time
@@ -33,16 +33,17 @@ __all__ = ['SurveyWindow', 'SurveyGeometry']
 
 class SurveyWindow(base.BaseClass, base.LinearBinning):
 
-    def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, dk=None, shotnoise=False, **kwargs):
+    def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmin=0.0, kmax=0.02, dk=None, shotnoise=False, **kwargs):
 
-        base.LinearBinning.__init__(self)
+        super().__init__(kmin, kmax, dk)
 
         self.logger = logging.getLogger('SurveyWindow')
+        self.logger.setLevel(logging.INFO)
         self.tqdm = shell_tqdm
 
         self._is_shotnoise = shotnoise
-        self._kmax = kmax
-        self._dk = dk
+        self.kmax = kmax
+        self.dk = dk
 
         self.mesh1 = self._parse_randoms(
             randoms=randoms1,
@@ -98,7 +99,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         self.logger.info(f'Average of {self.mesh1.data_size / self.nmesh**3} objects per voxel.')
 
         # Initialize rebin parameters
-        self._init_rebin_parameters(dk, kmax)
+        self._rebin_parameters(dk, kmax)
 
     def _parse_randoms(self, randoms, alpha, nmesh, cellsize, boxsize, boxpad, kmax):
         """Parse the randoms into a mesh, filling in missing information as needed."""
@@ -198,7 +199,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
                 randoms['WEIGHT'] * \
                 alpha).sum().tolist()
     
-    def _init_rebin_parameters(self, dk, kmax):
+    def _rebin_parameters(self, dk, kmax):
 
         # If dk and kmax are provided, they determine the target boxsize and nmesh
         target_boxsize = 2*np.pi/dk
@@ -263,7 +264,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
                 position_type='pos',
             ).to_mesh(compensate=True)
 
-        self.logger.info(f"Mesh computation with Ylm done in {time.time() - time_start:.2f} seconds")
+        self.logger.info(f"Mesh computation with Ylm ({ell}, {m}) done in {time.time() - time_start:.2f} seconds")
         time_start = time.time()
 
         if hasattr(self, 'mesh2'):
@@ -273,8 +274,8 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
 
         self.logger.info(f"Second mesh computation done in {time.time() - time_start:.2f} seconds")
 
-        if self._dk is not None and self._kmax is not None:
-            trim_to_nmesh, rebin_factor = self._rebin_parameters(self._dk, self._kmax)
+        if self.dk is not None and self.kmax is not None:
+            trim_to_nmesh, rebin_factor = self._rebin_parameters(self.dk, self.kmax)
             
             if trim_to_nmesh <= self.nmesh and self.kboxsize <= self.boxsize:
                 result = result[:trim_to_nmesh, :trim_to_nmesh, :trim_to_nmesh]
@@ -323,12 +324,14 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                  randoms_c=None, alpha_c=None,
                  randoms_d=None, alpha_d=None,
                  nmesh=None, boxsize=None, boxpad=2.,
-                 kmax=0.2, dk=None, mask_ellmax=12, pk_ellmax=4,
+                 kmin=0, kmax=0.2, dk=None, mask_ellmax=12, pk_ellmax=4,
                  sample_mode="lebedev", lebedev_degree=25, nthreads=None):
 
-        base.LinearBinning.__init__(self)
+        # set's k-binning
+        super().__init__(kmin, kmax, dk)
 
         self.logger = logging.getLogger('SurveyGeometry')
+        self.logger.setLevel(logging.INFO)
         self.tqdm = shell_tqdm
                 
         self.mask_ellmax = mask_ellmax
@@ -338,7 +341,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         self.nthreads = nthreads if nthreads is not None else int(os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
 
         self._init_randoms(randoms_a, alpha_a, randoms_b, alpha_b, randoms_c, alpha_c, randoms_d, alpha_d)
-        self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmax=kmax, dk=dk)
+        self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk)
     
     def _init_randoms(self, randoms_a, alpha_a,
                             randoms_b, alpha_b,
@@ -382,17 +385,25 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         return self.nmesh // 2 - 1
 
     @functools.cache
-    def get_combined_survey_window(self):
+    def get_combined_survey_window(self, cache_dir=None):
 
-        window_ABCD = base.SparseNDArray(shape_out=(MASK_ELL_MAX//2+1,MASK_ELL_MAX//2+1,2*MASK_ELL_MAX+1,2*MASK_ELL_MAX+1),
-                                         shape_in=(self.nmesh,self.nmesh,self.nmesh))
+        if cache_dir is None:
+            cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
+        filename = os.path.join(cache_dir, f"W_ABCD.npz")
 
-        for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
-            for ma in range(-la, la+1):
-                for mb in range(-lb, lb+1):
-                    window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.mesh(la, ma) * self.window_CD.mesh(lb, mb)
+        if os.path.exists(filename):
+            return base.SparseNDArray.load(filename)
+        else:
+            window_ABCD = base.SparseNDArray(shape_out=(MASK_ELL_MAX//2+1,MASK_ELL_MAX//2+1,2*MASK_ELL_MAX+1,2*MASK_ELL_MAX+1),
+                                            shape_in=(self.nmesh,self.nmesh,self.nmesh))
 
-        return window_ABCD
+            for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
+                for ma in range(-la, la+1):
+                    for mb in range(-lb, lb+1):
+                        window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.mesh(la, ma) * self.window_CD.mesh(lb, mb)
+
+            window_ABCD.save(filename)
+            return window_ABCD
 
     @property
     def get_window_kernels(self):
@@ -561,6 +572,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
+        self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
         for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
 
             if hasattr(self, '_resume_file') and self._resume_file is not None:
@@ -575,7 +587,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             # Splitting kmodes in chunks to be sent to each worker
             chunks = np.array_split(km, self.nthreads)
 
-            self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
             with mp.Pool(processes=min(self.nthreads, len(chunks)),
                          initializer=init_worker,
                          initargs=[shm_data.name,
@@ -684,7 +695,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             
             # give 3x3x3x3 x nmesh x nmesh x nmesh
             result = G @ W_ABCD
-            print(result)
             
             for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
                 for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
