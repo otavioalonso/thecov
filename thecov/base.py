@@ -806,6 +806,8 @@ class SparseNDArray:
         elif len(indices) == len(self.shape_out):
             if isinstance(value, SparseNDArray):
                 self._matrix[self._nd_to_2d_indices(*indices)] = value._matrix
+            elif isinstance(value, scipy.sparse.csr_matrix):
+                self._matrix[self._nd_to_2d_indices(*indices)] = value
             else:
                 self._matrix[self._nd_to_2d_indices(*indices)] = value.flatten()
         else:

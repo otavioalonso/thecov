@@ -506,6 +506,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         # W_AB * W_CD (outer product)
         self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
         W_ABCD = self.get_combined_survey_window()
+        print(W_ABCD.shape_in, W_ABCD.shape_out)
 
         # create shared memory objects
         shm_data = multiprocessing.shared_memory.SharedMemory(create=True, size=W_ABCD._matrix.data.nbytes*2)
@@ -562,12 +563,11 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
             shared_params = init_params
 
-        
         delta_k_max = self.nmesh // 2 - 1
 
         if not hasattr(self, 'WinKernel') or self.WinKernel is None:
             # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
-            self.WinKernel = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax, self.pk_ellmax, self.pk_ellmax, self.pk_ellmax])
+            self.WinKernel = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
             self.WinKernel.fill(np.nan)
 
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
@@ -658,7 +658,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         # Only delta_k_max points to each side of the diagonal are calculated.
         delta_k_max = shared_params['delta_k_max']
 
-        WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax+1, pk_ellmax+1), dtype=np.float64)
+        WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1), dtype=np.float64)
         iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
 
         k2xh = np.zeros_like(iix)
@@ -694,15 +694,29 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             # k1_bin_index is a scalar
             
             # give 3x3x3x3 x nmesh x nmesh x nmesh
-            result = G @ W_ABCD
-            
-            for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
-                for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
+            product = G @ W_ABCD
+            result = base.SparseNDArray([3,3,3,3], product.shape_in)
 
-                    result[l1,l2,l3,l4] *= math.get_real_Ylm(l1, m1)(k1xh, k1yh, k1zh) * \
-                                           math.get_real_Ylm(l2, m2)(k2xh, k2yh, k2zh) * \
-                                           math.get_real_Ylm(l3, m3)(k1xh, k1yh, k1zh) * \
-                                           math.get_real_Ylm(l4, m4)(k2xh, k2yh, k2zh)
+            for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
+                l1_idx = int(l1 / 2)
+                l2_idx = int(l2 / 2)
+                l3_idx = int(l3 / 2)
+                l4_idx = int(l4 / 2)
+                
+                for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
+                    m1_idx = int((m1 + l1) / 2)
+                    m2_idx = int((m2 + l2) / 2)
+                    m3_idx = int((m3 + l3) / 2)
+                    m4_idx = int((m4 + l4) / 2)
+
+                    # July 2nd debugging note: weird error when multiplying by Ylm when it isn't a float
+                    term = product[l1_idx,l2_idx,l3_idx,l4_idx,m1_idx,m2_idx,m3_idx,m4_idx]
+
+                    term = term * float(math.get_real_Ylm(l1, m1)(k1xh, k1yh, k1zh)) * \
+                                  float(math.get_real_Ylm(l2, m2)(k2xh, k2yh, k2zh)) * \
+                                  float(math.get_real_Ylm(l3, m3)(k1xh, k1yh, k1zh)) * \
+                                  float(math.get_real_Ylm(l4, m4)(k2xh, k2yh, k2zh))
+                    result[l1_idx,l2_idx,l3_idx,l4_idx] += term
 
             for delta_k in range(-delta_k_max, delta_k_max + 1):
                 modes = (k2_bin_index - k1_bin_index == delta_k)
