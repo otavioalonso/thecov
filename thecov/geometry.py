@@ -595,6 +595,8 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                    shm_indptr.name,
                                    init_params]) as pool:
                 
+                # July 3rd Debugging note: Fails here saying index 2 out of range
+                # perhaps there's some indexing / memory error with self.WinKernel?
                 results = pool.map(self._compute_window_kernel_row, chunks)
                 self.WinKernel[i] = np.sum(results, axis=0) * weights[i] / kmodes_sampled
 
