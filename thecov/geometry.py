@@ -334,6 +334,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         self.logger.setLevel(logging.INFO)
         self.tqdm = shell_tqdm
                 
+        #self.delta_k_max = 3
         self.mask_ellmax = mask_ellmax
         self.pk_ellmax = pk_ellmax
         self.sample_mode = sample_mode
@@ -506,7 +507,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         # W_AB * W_CD (outer product)
         self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
         W_ABCD = self.get_combined_survey_window()
-        print(W_ABCD.shape_in, W_ABCD.shape_out)
 
         # create shared memory objects
         shm_data = multiprocessing.shared_memory.SharedMemory(create=True, size=W_ABCD._matrix.data.nbytes*2)
@@ -563,6 +563,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
             shared_params = init_params
 
+        #delta_k_max = 3
         delta_k_max = self.nmesh // 2 - 1
 
         if not hasattr(self, 'WinKernel') or self.WinKernel is None:
@@ -595,8 +596,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                    init_params]) as pool:
                 
                 results = pool.map(self._compute_window_kernel_row, chunks)
-
-                self.WinKernel[i] = np.sum(results * weights, axis=0) / kmodes_sampled
+                self.WinKernel[i] = np.sum(results, axis=0) * weights[i] / kmodes_sampled
 
                 # std_results = np.std(results * weights, axis=0) / np.sqrt(len(results))
                 # avg_results = np.average(results, weights=weights, axis=0)
@@ -645,6 +645,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                                 shape_in=shared_params['sparse_shape'][3],
                                                 shape_out=shared_params['sparse_shape'][4])
         
+        # k1_bin_index is a scalar
         k1_bin_index = shared_params['k1_bin_index']
         kfun = shared_params['kfun']
         dk = shared_params['dk']
@@ -658,7 +659,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         # Only delta_k_max points to each side of the diagonal are calculated.
         delta_k_max = shared_params['delta_k_max']
 
-        WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1), dtype=np.float64)
+        WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1), dtype=np.complex128)
         iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
 
         k2xh = np.zeros_like(iix)
@@ -684,19 +685,19 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             k2r = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
 
             # to decide later which shell the k2 mode belongs to
+            # k2_bin_index has shape (nmesh, nmesh, nmesh)
             k2_bin_index = (k2r * kfun / dk).astype(int)
             k2r[k2r <= 1e-10] = np.inf
             k2xh /= k2r
             k2yh /= k2r
             k2zh /= k2r
-
-            # k2_bin_index has shape (nmesh, nmesh, nmesh)
-            # k1_bin_index is a scalar
             
-            # give 3x3x3x3 x nmesh x nmesh x nmesh
+            # multiply by Gaunt factors
+            # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
             product = G @ W_ABCD
-            result = base.SparseNDArray([3,3,3,3], product.shape_in)
+            result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
 
+            # multiply by Ylms
             for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
                 l1_idx = int(l1 / 2)
                 l2_idx = int(l2 / 2)
@@ -709,17 +710,20 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                     m3_idx = int((m3 + l3) / 2)
                     m4_idx = int((m4 + l4) / 2)
 
-                    # July 2nd debugging note: weird error when multiplying by Ylm when it isn't a float
-                    term = product[l1_idx,l2_idx,l3_idx,l4_idx,m1_idx,m2_idx,m3_idx,m4_idx]
+                    W_times_G = product[l1_idx,l2_idx,l3_idx,l4_idx,m1_idx,m2_idx,m3_idx,m4_idx]
 
-                    term = term * float(math.get_real_Ylm(l1, m1)(k1xh, k1yh, k1zh)) * \
-                                  float(math.get_real_Ylm(l2, m2)(k2xh, k2yh, k2zh)) * \
-                                  float(math.get_real_Ylm(l3, m3)(k1xh, k1yh, k1zh)) * \
-                                  float(math.get_real_Ylm(l4, m4)(k2xh, k2yh, k2zh))
-                    result[l1_idx,l2_idx,l3_idx,l4_idx] += term
+                    Ylms = math.get_real_Ylm(l1, m1)(k1xh, k1yh, k1zh) * \
+                           math.get_real_Ylm(l2, m2)(k2xh, k2yh, k2zh) * \
+                           math.get_real_Ylm(l3, m3)(k1xh, k1yh, k1zh) * \
+                           math.get_real_Ylm(l4, m4)(k2xh, k2yh, k2zh)
+                    if not isinstance(Ylms, float):
+                        Ylms = np.array(Ylms)
+                    
+                    result[:,:,:,l1_idx,l2_idx,l3_idx,l4_idx] += Ylms * W_times_G.toarray().reshape(product.shape_in)
 
             for delta_k in range(-delta_k_max, delta_k_max + 1):
                 modes = (k2_bin_index - k1_bin_index == delta_k)
-                WinKernel[delta_k] = result[modes]
+                if np.any(modes == True):
+                    WinKernel[delta_k] = np.sum(result[modes], axis=0)
 
         return WinKernel

@@ -808,6 +808,8 @@ class SparseNDArray:
                 self._matrix[self._nd_to_2d_indices(*indices)] = value._matrix
             elif isinstance(value, scipy.sparse.csr_matrix):
                 self._matrix[self._nd_to_2d_indices(*indices)] = value
+            elif isinstance(value, scipy.sparse.csc_matrix):
+                self._matrix[self._nd_to_2d_indices(*indices)] = value.T
             else:
                 self._matrix[self._nd_to_2d_indices(*indices)] = value.flatten()
         else:
@@ -860,9 +862,18 @@ class SparseNDArray:
             other = copy.deepcopy(other)
             other._matrix *= self._matrix
             return other
+        elif isinstance(other, scipy.sparse.csr_matrix):
+
+            import copy
+            result = copy.deepcopy(self)
+            result._matrix = self._matrix * other
+            return result
         else:
             raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
         
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
     def __matmul__(self, other):
         if isinstance(other, SparseNDArray):
             assert (np.all(self.shape_in == other.shape_out)), \
