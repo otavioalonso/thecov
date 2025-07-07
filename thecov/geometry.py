@@ -392,18 +392,22 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         
         self.randoms['A'] = randoms_a
         self.alphas['A'] = alpha_a
-        
+        self._num_tracers = 1
+
         if randoms_b is not None and alpha_b is not None:
             self.randoms['B'] = randoms_b
             self.alphas['B'] = alpha_b
+            self._num_tracers+=1
         
         if randoms_c is not None and alpha_c is not None:
             self.randoms['C'] = randoms_c
             self.alphas['C'] = alpha_c
+            self._num_tracers+=1
 
         if randoms_d is not None and alpha_d is not None:
             self.randoms['D'] = randoms_d
             self.alphas['D'] = alpha_d
+            self._num_tracers+=1
 
     def _init_survey_windows(self, **kwargs):
         
@@ -457,8 +461,8 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         return self.window_AB.kboxsize
 
     @property
-    def get_num_tracers(self):
-        return self.num_tracers
+    def num_tracers(self):
+        return self._num_tracers
 
     @staticmethod
     def get_gaunt_coefficients(cache_dir=None, mask_ellmax=12, pk_ellmax=4):

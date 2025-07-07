@@ -47,7 +47,7 @@ class BaseClass:
         """Save to ``filename``."""
         start = time.time()
         if not self.with_mpi or self.mpicomm.rank == 0:
-            
+
             utils.mkdir(os.path.dirname(filename))
             np.save(filename, self.__getstate__(), allow_pickle=True)
         # if self.with_mpi:
@@ -75,7 +75,7 @@ class Covariance(BaseClass):
         covariance : numpy.ndarray
             (n,n) numpy array with elements corresponding to the covariance.
         '''
-
+        super().__init__()
         self._cov = covariance
 
     @property
@@ -291,6 +291,7 @@ class MultipoleCovariance(Covariance):
     '''
 
     def __init__(self, symmetric=False):
+        super().__init__()
         self._multipole_covariance = {}
         self._symmetric = symmetric
 
@@ -495,7 +496,7 @@ class LinearBinning:
     def __init__(self, kmin=None, kmax=None, dk=None) -> None:
         self.kmin, self.kmax, self.dk = kmin, kmax, dk
 
-    def set_kbins(self, kmin, kmax, dk):
+    def set_kbins(self, kmin, kmax, dk, nmodes=None):
         '''This function defines the k-bins.
 
         Parameters
@@ -514,6 +515,7 @@ class LinearBinning:
         self.dk = dk
         self.kmax = kmax
         self.kmin = kmin
+        self._nmodes = nmodes
 
     @property
     def is_kbins_set(self):
@@ -620,6 +622,7 @@ class LinearBinning:
 class FourierCovariance(Covariance):
 
     def __init__(self, kbin1=None, kbin2=None):
+        super().__init__()
         if kbin2 is None:
             kbin2 = kbin1
 
@@ -663,8 +666,8 @@ class FourierCovariance(Covariance):
 class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
 
     def __init__(self):
-        MultipoleCovariance.__init__(self)
-        FourierCovariance.__init__(self)
+        super().__init__()
+        self.k_binning = LinearBinning()
         self.logger = logging.getLogger('MultipoleFourierCovariance')
 
     @property
@@ -769,7 +772,8 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         size = (np.round(size) if np.allclose(np.round(size), size) else size).astype(int)
         self._mshape = (size, size)
         self.foreach(lambda cov: cov.set_kbins(kmin, kmax, dk, nmodes))
-        return super().set_kbins(kmin, kmax, dk, nmodes)
+
+        return self.k_binning.set_kbins(kmin, kmax, dk, nmodes)
 
 class SparseNDArray:
     """

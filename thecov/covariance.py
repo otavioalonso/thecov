@@ -40,16 +40,17 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
     '''
 
     def __init__(self, geometry=None):
-        base.MultipoleFourierCovariance.__init__(self)
+        super().__init__()
         self.logger = logging.getLogger('PowerSpectrumCovariance')
 
         self.geometry = geometry
 
         self._pk = {}
         self._alpha = None
-        self.num_tracers = geometry.get_num_tracers()
+        # TODO: Put these in their own getter methods?
+        self.num_tracers = geometry.num_tracers
         # total number of auto + cross spectra
-        num_spectra = self.num_tracers * (self.num_tracers+1)/2
+        self.num_spectra = self.num_tracers * (self.num_tracers+1)/2
         self.pk_renorm = 1
 
     @property
@@ -177,7 +178,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
     '''
 
     def __init__(self, geometry=None):
-        super.__init__(self, geometry=geometry)
+        super().__init__(geometry=geometry)
 
         self.logger = logging.getLogger('GaussianCovariance')
 
@@ -200,8 +201,8 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             Whether the power spectrum has shotnoise included or not.
         '''
 
-        if len(pk) != self.kbins:
-            raise ValueError(f"Error in PowerSpectrumMultipolesCovariance.set_galaxy_pk_multipole: Power spectrum must have the same number of k-bins ({len(pk)}) as the covariance matrix ({self.kbins}).")
+        if len(pk) != self.k_binning.kbins:
+            raise ValueError(f"Error in PowerSpectrumMultipolesCovariance.set_galaxy_pk_multipole: Power spectrum must have the same number of k-bins ({len(pk)}) as the covariance matrix ({self.k_binning.kbins}).")
 
         if tracer1 >= self.num_tracers or tracer2 >= self.num_tracers:
             raise ValueError(f"Error in PowerSpectrumMultipolesCovariance.set_galaxy_pk_multipole: Requested tracer combo ({tracer1}, {tracer2}) must both be < total number of tracers ({self.num_tracers})")
