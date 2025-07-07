@@ -24,7 +24,7 @@ from pypower import CatalogMesh
 
 import functools
 
-from . import base, math
+from . import base, utils, math
 
 MASK_ELL_MAX = 12
 PK_ELL_MAX = 4
@@ -150,8 +150,9 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
 
     def __getstate__(self):
         state = self.__dict__.copy()
-        for key in ['logger', 'tqdm', '_randoms', '_mesh', '_resume_file']:
-            del state[key]
+        for key in ['logger', 'tqdm', 'mesh1',  'mesh2', '_resume_file']:
+            if hasattr(self, key):
+                del state[key]
         return state
     
     def __setstate__(self, state):
@@ -317,7 +318,6 @@ class BoxGeometry(base.BaseClass, base.LinearBinning):
 
 class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
-    # survey window needs randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, ellmax=4, **kwargs):
     def __init__(self,
                  randoms_a,      alpha_a,
                  randoms_b=None, alpha_b=None,
@@ -325,7 +325,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                  randoms_d=None, alpha_d=None,
                  nmesh=None, boxsize=None, boxpad=2.,
                  kmin=0, kmax=0.2, dk=None, mask_ellmax=12, pk_ellmax=4,
-                 sample_mode="lebedev", lebedev_degree=25, nthreads=None):
+                 sample_mode="lebedev", lebedev_degree=25, resume_file=None, nthreads=None):
 
         # set's k-binning
         super().__init__(kmin, kmax, dk)
@@ -341,9 +341,47 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         self.lebedev_degree = lebedev_degree
         self.nthreads = nthreads if nthreads is not None else int(os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
 
+        if resume_file is not None:
+            self.set_resume_file(resume_file)
+        else:
+            self._resume_file = None
+
         self._init_randoms(randoms_a, alpha_a, randoms_b, alpha_b, randoms_c, alpha_c, randoms_d, alpha_d)
         self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk)
     
+    def load_resume_file(self, filename):
+        '''Load the window kernels from a file.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the file to load the window kernels from.
+        '''
+        self.logger.info(f'Loading window kernels from {filename}.')
+        self.load(filename)
+        # Cartesian FFTs need to be loaded through the setter
+        # for key in self._W:
+        #     self.set_cartesian_fft(key, self._W[key])
+
+    def set_resume_file(self, filename):
+        '''Set the resume file for the window kernels.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the file to save the window kernels.
+        '''
+        self._resume_file = filename
+
+        if self._resume_file is not None:
+            try:
+                self.load_resume_file(self._resume_file)
+                self.logger.warning(f'Loaded resume file {self._resume_file}. This might override your settings. See debug messages for more details on the loaded attributes.')
+            except FileNotFoundError:
+                self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
+                utils.mkdir(os.path.dirname(self._resume_file))
+                self.save(self._resume_file)
+
     def _init_randoms(self, randoms_a, alpha_a,
                             randoms_b, alpha_b,
                             randoms_c, alpha_c,
@@ -546,7 +584,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                                      dk=self.dk,
                                                      boxsize=self.boxsize,
                                                      max_modes=kmodes_sampled,
-                                                     k_shell_approx=0.1,
+                                                     k_shell_approx=0.01,
                                                      sample_mode="monte-carlo")
 
         def init_worker(data_name, indices_name, indptr_name, init_params):

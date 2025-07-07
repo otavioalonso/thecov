@@ -137,6 +137,9 @@ def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05, 
 
     logger = logging.getLogger('SampleModes')
 
+    if k_shell_approx > kmax:
+        logger.warning(f"WARNING! k_shell_approx ({k_shell_approx}) is larger than kmax ({kmax})! This may result in an incorrect number of kmode bins")
+
     # Wavelength where spherical shell approximation kicks in
     k_shell = max((k_shell_approx - kmin)//dk * dk + kmin, kmin)
 
@@ -145,9 +148,11 @@ def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05, 
     # Uses full cube from k = 0 to k_shell
     cube_modes, cube_nmodes = sample_from_cube(kmin / kfun, k_shell / kfun, dk / kfun, max_modes=max_modes)
     cube_weights = np.ones(len(cube_modes)) / len(cube_modes)
-    
+
     # Uses spherical shell approximation from k = k_shell to kmax
     kedges_shell = np.arange(k_shell, kmax + dk/2, dk)
+    print(kmin, kfun, kmax, dk, k_shell)
+    print(kedges_shell)
     shell_nmodes = nmodes(boxsize**3, kedges_shell[:-1], kedges_shell[1:])
     
     if sample_mode == "monte-carlo":

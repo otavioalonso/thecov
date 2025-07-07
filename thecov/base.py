@@ -47,7 +47,7 @@ class BaseClass:
         """Save to ``filename``."""
         start = time.time()
         if not self.with_mpi or self.mpicomm.rank == 0:
-            self.log_info('Saving {}.'.format(filename))
+            
             utils.mkdir(os.path.dirname(filename))
             np.save(filename, self.__getstate__(), allow_pickle=True)
         # if self.with_mpi:
