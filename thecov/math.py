@@ -151,8 +151,6 @@ def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05, 
 
     # Uses spherical shell approximation from k = k_shell to kmax
     kedges_shell = np.arange(k_shell, kmax + dk/2, dk)
-    print(kmin, kfun, kmax, dk, k_shell)
-    print(kedges_shell)
     shell_nmodes = nmodes(boxsize**3, kedges_shell[:-1], kedges_shell[1:])
     
     if sample_mode == "monte-carlo":

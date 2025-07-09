@@ -59,22 +59,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         self.I_1 = self.I(randoms1, alpha1, 1, 2)
 
         if randoms2 is not None:
-
             assert alpha2 is not None, "If randoms2 is provided, alpha2 must also be provided."
-
-            self.mesh2 = self._parse_randoms(
-                randoms=randoms1.append(randoms2),
-                alpha=alpha2,
-                nmesh=nmesh,
-                cellsize=cellsize,
-                boxsize=boxsize,
-                boxpad=boxpad,
-                kmax=kmax
-            )
-
-            self.boxsize = self.mesh2.boxsize[0]
-            self.nmesh = self.mesh2.nmesh[0]
-            self.I_2 = self.I(randoms2, alpha2, 1, 2)
 
             self.mesh2 = self._parse_randoms(
                 randoms=randoms2,
@@ -85,6 +70,29 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
                 boxpad=boxpad,
                 kmax=kmax
             )
+            # self.mesh2 = self._parse_randoms(
+            #     randoms=randoms1.append(randoms2),
+            #     alpha=alpha2,
+            #     nmesh=nmesh,
+            #     cellsize=cellsize,
+            #     boxsize=boxsize,
+            #     boxpad=boxpad,
+            #     kmax=kmax
+            # )
+
+            self.boxsize = max(self.mesh1.boxsize[0], self.mesh2.boxsize[0])
+            self.nmesh = max(self.mesh1.nmesh[0], self.mesh2.nmesh[0])
+            self.I_2 = self.I(randoms2, alpha2, 1, 2)
+
+            # self.mesh2 = self._parse_randoms(
+            #     randoms=randoms2,
+            #     alpha=alpha2,
+            #     nmesh=nmesh,
+            #     cellsize=cellsize,
+            #     boxsize=boxsize,
+            #     boxpad=boxpad,
+            #     kmax=kmax
+            # )
             
             self.mesh1._set_box(nmesh=self.nmesh, boxsize=self.boxsize, wrap=False)
             self.mesh2._set_box(nmesh=self.nmesh, boxsize=self.boxsize, wrap=False)
@@ -111,7 +119,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         for name in ['WEIGHT', 'WEIGHT_FKP']:
             if name not in randoms:
                 self.logger.warning(f'{name} column not found in randoms. Setting it to 1.')
-                randoms[name] = np.ones(self.randoms.size, dtype='f8')
+                randoms[name] = np.ones(randoms.size, dtype='f8')
         
         randoms['WEIGHT'] *= alpha
         
@@ -344,7 +352,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         if resume_file is not None:
             self.set_resume_file(resume_file)
         else:
-            self._resume_file = None
+            self.set_resume_file(os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache/WinKernel.npy"))
 
         self._init_randoms(randoms_a, alpha_a, randoms_b, alpha_b, randoms_c, alpha_c, randoms_d, alpha_d)
         self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk)
@@ -387,8 +395,8 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                             randoms_c, alpha_c,
                             randoms_d, alpha_d):
         
-        self.randoms = {}
-        self.alphas = {}
+        self.randoms = {'A' : None, 'B' : None, 'C' : None, 'D': None}
+        self.alphas  = {'A' : None, 'B' : None, 'C' : None, 'D': None}
         
         self.randoms['A'] = randoms_a
         self.alphas['A'] = alpha_a
@@ -411,17 +419,40 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
     def _init_survey_windows(self, **kwargs):
         
-        if 'B' in self.randoms:
-            self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['B'], self.alphas['B'], **kwargs)
-        else:
-            self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], None, None, **kwargs)
-        if 'C' in self.randoms or 'D' in self.randoms:
-            if 'D' in self.randoms:
-                self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
-            else:
-                self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], None, None, **kwargs)
+        # 'A' will always have an associated random / alpha
+        self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['B'], self.alphas['B'], **kwargs)
+        self.window_AC = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['C'], self.alphas['C'], **kwargs)
+        self.window_AD = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['D'], self.alphas['D'], **kwargs)
+
+        if 'B' in self.randoms and 'C' in self.randoms:
+            self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
+            self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], **kwargs)
+            self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
+        elif 'B' in self.randoms and 'C' not in self.randoms:
+            self.window_CD = self.window_AB
+            self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], **kwargs)
+            self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
+        elif 'B' not in self.randoms and 'C' in self.randoms:
+            self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
+            self.window_BC = self.window_AB
+            self.window_BD = self.window_AB
         else:
             self.window_CD = self.window_AB
+            self.window_BC = self.window_AB
+            self.window_BD = self.window_AB
+
+        # old logic
+        # if 'B' in self.randoms:
+        #     self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['B'], self.alphas['B'], **kwargs)
+        # else:
+        #     self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], None, None, **kwargs)
+        # if 'C' in self.randoms or 'D' in self.randoms:
+        #     if 'D' in self.randoms:
+        #         self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
+        #     else:
+        #         self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], None, None, **kwargs)
+        # else:
+        #     self.window_CD = self.window_AB
     
     @property
     def delta_k_max(self):
@@ -447,6 +478,34 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
             window_ABCD.save(filename)
             return window_ABCD
+
+    @functools.cache
+    def get_survey_window(self, idx_1="A", idx_2="C", cache_dir=None):
+        if cache_dir is None:
+            cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
+        filename = os.path.join(cache_dir, "W_"+idx_1+idx_2+".npz")
+
+        if os.path.exists(filename):
+            return base.SparseNDArray.load(filename)
+        else:
+            window = base.SparseNDArray(shape_out=(MASK_ELL_MAX//2+1,2*MASK_ELL_MAX+1),
+                                        shape_in=(self.nmesh,self.nmesh,self.nmesh))
+
+            for l in range(0, self.mask_ellmax+1, 2):
+                for m in range(-l, l+1):
+                    if idx_1 == "A" and idx_2 == "C":
+                        window[l//2,m] = self.window_AC.mesh(l, m)
+                    elif idx_1 == "A" and idx_2 == "D":
+                        window[l//2,m] = self.window_AD.mesh(l, m)
+                    elif idx_1 == "B" and idx_2 == "C":
+                        window[l//2,m] = self.window_BC.mesh(l, m)
+                    elif idx_1 == "B" and idx_2 == "D":
+                        window[l//2,m] = self.window_BD.mesh(l, m)
+                    else:
+                        raise ValueError(f"ERROR! invalid values for A ({idx_1}) and B ({idx_2})")
+
+            window.save(filename)
+            return window
 
     @property
     def get_window_kernels(self):
@@ -536,6 +595,16 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         self._I = {}
 
     def compute_window_kernels(self):
+        """Wrapper function that sequentially runs all kernel computations.
+        Each term is calculated seperately in order to save memory"""
+        self.logger.info("Computing cosmic variance term kernels...")
+        self._compute_cosmic_variance_kernel()
+        self.logger.info("Computing mixed term kernels...")
+        self._compute_mixed_kernel()
+        self.logger.info("Computing shotnoise term kernels...")
+        self._compute_shotnoise_kernel()
+
+    def _compute_cosmic_variance_kernel(self):
 
         # points on the unit sphere with corresponding integration weights
         # x, y, z, w = math.get_lebedev_points(self.lebedev_degree)
@@ -588,7 +657,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                                      dk=self.dk,
                                                      boxsize=self.boxsize,
                                                      max_modes=kmodes_sampled,
-                                                     k_shell_approx=0.01,
+                                                     k_shell_approx=0.05,
                                                      sample_mode="monte-carlo")
 
         def init_worker(data_name, indices_name, indptr_name, init_params):
@@ -608,10 +677,10 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         #delta_k_max = 3
         delta_k_max = self.nmesh // 2 - 1
 
-        if not hasattr(self, 'WinKernel') or self.WinKernel is None:
+        if not hasattr(self, 'WinKernel_cosmic') or self.WinKernel_cosmic is None:
             # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
-            self.WinKernel = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
-            self.WinKernel.fill(np.nan)
+            self.WinKernel_cosmic = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
+            self.WinKernel_cosmic.fill(np.nan)
 
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
@@ -620,7 +689,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
             if hasattr(self, '_resume_file') and self._resume_file is not None:
                 # Skip rows that were already computed
-                if not np.isnan(self.WinKernel[i,0,0,0,0,0]):
+                if not np.isnan(self.WinKernel_cosmic[i,0,0,0,0,0]):
                     # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
                     continue
 
@@ -639,8 +708,8 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 
                 # July 3rd Debugging note: Fails here saying index 2 out of range
                 # perhaps there's some indexing / memory error with self.WinKernel?
-                results = pool.map(self._compute_window_kernel_row, chunks)
-                self.WinKernel[i] = np.sum(results, axis=0) * weights[i] / kmodes_sampled
+                results = pool.map(self._compute_cosmic_variance_kernel_row, chunks)
+                self.WinKernel_cosmic[i] = np.sum(results, axis=0) * weights[i] / kmodes_sampled
 
                 # std_results = np.std(results * weights, axis=0) / np.sqrt(len(results))
                 # avg_results = np.average(results, weights=weights, axis=0)
@@ -649,15 +718,15 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         
                 for k2_bin_index in range(0, 2*delta_k_max + 1):
                     if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
-                        self.WinKernel[i, k2_bin_index, :, :] = 0
+                        self.WinKernel_cosmic[i, k2_bin_index, :, :] = 0
                     else:
-                        self.WinKernel[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
+                        self.WinKernel_cosmic[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
 
             if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
                 self.save(self._resume_file)
                 last_save = time.time()
 
-        self.logger.info('Window kernels computed.')
+        self.logger.info('Cosmic variance window kernel computed.')
 
         shm_data.close()
         shm_data.unlink()
@@ -670,7 +739,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             self.save(self._resume_file)
 
     @staticmethod
-    def _compute_window_kernel_row(bin_kmodes):
+    def _compute_cosmic_variance_kernel_row(bin_kmodes):
         '''Computes a row of the window kernels. This function is called in parallel for each k1 bin.
         Gives window kernels for L=0,2,4 auto and cross covariance (instead of only L=0 above)
 
@@ -771,3 +840,51 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                     WinKernel[delta_k] = np.sum(result[modes], axis=0)
 
         return WinKernel
+    
+    def _compute_mixed_kernel(self):
+
+        self.logger.info("Retrieving survey windows W_AC, W_AD, W_BC, W_BD...")
+        W_AC = self.get_survey_window("A", "C")
+        W_AD = self.get_survey_window("A", "D")
+        W_BC = self.get_survey_window("B", "C")
+        W_BD = self.get_survey_window("B", "D")
+
+        delta_k_max = self.nmesh // 2 - 1
+
+        kmodes_sampled = 1000
+        kmodes, Nmodes, weights = math.sample_kmodes(kmin=self.kmin,
+                                                     kmax=self.kmax,
+                                                     dk=self.dk,
+                                                     boxsize=self.boxsize,
+                                                     max_modes=kmodes_sampled,
+                                                     k_shell_approx=0.05,
+                                                     sample_mode="monte-carlo")
+
+        if not hasattr(self, 'WinKernel_mixed') or self.WinKernel_mixed is None:
+            # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
+            self.WinKernel_mixed = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
+            self.WinKernel_mixed.fill(np.nan)
+
+        #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
+        last_save = time.time()
+        self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
+        for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
+
+            if hasattr(self, '_resume_file') and self._resume_file is not None:
+                # Skip rows that were already computed
+                if not np.isnan(self.WinKernel_mixed[i,0,0,0,0,0]):
+                    # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
+                    continue
+    
+
+                if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
+                    self.save(self._resume_file)
+                    last_save = time.time()
+
+            self.logger.info('Mixed term Window kernel computed.')
+
+            if self._resume_file is not None:
+                self.save(self._resume_file)
+
+    def _compute_shotnoise_kernel(self):
+        return 0

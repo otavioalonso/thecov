@@ -447,6 +447,35 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
                 self.logger.info(
                     f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
+    def load_npy_file(self, ps_file):
+        """Loads power spectra that are stored as npy files
+        NOTE: This is mainly for spherex use"""
+
+        self.logger.info(f"Loading power spectrum from {ps_file}")
+
+        if os.path.exists(ps_file):
+            pk_data = np.load(ps_file)
+        else:
+            raise IOError(f"Could not find power spectrum file at {ps_file}")
+        
+        num_ells = 3
+        pk_galaxy_raw = pk_data
+        # TODO: Come up with more robust way to do this
+        if pk_galaxy_raw.shape[1] == self.num_spectra:
+            pk_galaxy_raw = pk_galaxy_raw.transpose(1, 0, 2, 3)
+        if pk_galaxy_raw.shape[3] == num_ells:
+            pk_galaxy_raw = pk_galaxy_raw.transpose(0, 1, 3, 2)
+
+        self.logger.info(f"input power spectrum has shape {pk_galaxy_raw.shape}")
+
+        idx = 0
+        for (i, j) in itt.product(range(self.num_tracers), range(self.num_tracers)):
+            if i > j: continue
+            self.set_galaxy_pk_multipole(pk_galaxy_raw[0, idx, 0, :], 0, i, j, has_shotnoise=True)
+            self.set_galaxy_pk_multipole(pk_galaxy_raw[0, idx, 1, :], 2, i, j, has_shotnoise=True)
+            self.set_galaxy_pk_multipole(pk_galaxy_raw[0, idx, 2, :], 4, i, j, has_shotnoise=True)
+            idx += 1
+
     def _get_cosmic_variance_term(self, jk, ik, A, B, C, D):
         """Calculates elements of the cosmic variance term"""
         WinKernel = self.geometry.get_window_kernels()
