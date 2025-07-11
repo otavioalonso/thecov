@@ -424,15 +424,15 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         self.window_AC = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['C'], self.alphas['C'], **kwargs)
         self.window_AD = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['D'], self.alphas['D'], **kwargs)
 
-        if 'B' in self.randoms and 'C' in self.randoms:
+        if self.randoms['B'] != None and self.randoms['C'] != None:
             self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
             self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], **kwargs)
             self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
-        elif 'B' in self.randoms and 'C' not in self.randoms:
+        elif self.randoms['B'] != None and self.randoms['C'] == None:
             self.window_CD = self.window_AB
             self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], **kwargs)
             self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
-        elif 'B' not in self.randoms and 'C' in self.randoms:
+        elif self.randoms['B'] == None and self.randoms['C'] != None:
             self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
             self.window_BC = self.window_AB
             self.window_BD = self.window_AB
@@ -471,11 +471,18 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             window_ABCD = base.SparseNDArray(shape_out=(MASK_ELL_MAX//2+1,MASK_ELL_MAX//2+1,2*MASK_ELL_MAX+1,2*MASK_ELL_MAX+1),
                                             shape_in=(self.nmesh,self.nmesh,self.nmesh))
 
+            total_iterations = 0
+            for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
+                for ma in range(-la, la+1):
+                    for mb in range(-lb, lb+1):
+                        total_iterations+=1
+
+            pbar = self.tqdm(total=total_iterations)
             for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
                 for ma in range(-la, la+1):
                     for mb in range(-lb, lb+1):
                         window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.mesh(la, ma) * self.window_CD.mesh(lb, mb)
-
+                        pbar.update(1)
             window_ABCD.save(filename)
             return window_ABCD
 
@@ -524,8 +531,8 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         return self._num_tracers
 
     @staticmethod
-    def get_gaunt_coefficients(cache_dir=None, mask_ellmax=12, pk_ellmax=4):
-        """Calculates all relavent Gaunt coefficients, or loads them from file"""
+    def get_cosmic_variance_gaunt_coefficients(cache_dir=None, mask_ellmax=12, pk_ellmax=4):
+        """Calculates all relavent Gaunt coefficients for the cosmic variance term, or loads them from file"""
 
         # Load mask coupling Gaunt coefficients if cache exists, otherwise compute them
         if cache_dir is None:
@@ -559,11 +566,11 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                     # m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
                                     # ma, mb = np.abs(ma), np.abs(mb)
                                     gaunt_coefficients[l1//2,l2//2,
-                                                       l3//2,l4//2,
-                                                       m1+l1,m2+l2,
-                                                       m3+l3,m4+l4,
-                                                       la//2,lb//2,
-                                                       ma+la,mb+lb] += value
+                                                      l3//2,l4//2,
+                                                      m1+l1,m2+l2,
+                                                      m3+l3,m4+l4,
+                                                      la//2,lb//2,
+                                                      ma+la,mb+lb] += value
                                     
                     for lc in np.arange(np.abs(l1-l2), l1+l2+1, 2):
                         for la in np.arange(np.abs(lc-l4), lc+l4+1, 2):
@@ -583,8 +590,50 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                                        la//2,lb//2,
                                                        ma+la,mb+lb] += value
             gaunt_coefficients.save(filename)
+            return gaunt_coefficients
 
-        return gaunt_coefficients
+    @staticmethod
+    def get_mixed_gaunt_coefficients(cache_dir=None, mask_ellmax=12, pk_ellmax=4):
+        """Calculates all relavent Gaunt coefficients for the shotnoise term, or loads them from file"""
+        raise NotImplementedError
+
+    @staticmethod
+    def get_shotnoise_gaunt_coefficients(cache_dir=None, mask_ellmax=12, pk_ellmax=4):
+        """Calculates all relavent Gaunt coefficients for the shotnoise term, or loads them from file"""
+        if cache_dir is None:
+            cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
+        filename = os.path.join(cache_dir, f"shotnoise_coefficients_{pk_ellmax}_{mask_ellmax}.npz")
+
+        if os.path.exists(filename):
+            return base.SparseNDArray.load(filename)
+        else:
+            import sympy.physics.wigner
+
+            # shape_out = l1, l2, m1, m2
+            # shape_in =  la, ma
+            # Only including positive m values, as -m is equivalent to m
+            # when Ylm is real and m is even
+            shape_out = 2*[PK_ELL_MAX//2 + 1] + 2*[2*PK_ELL_MAX + 1]
+            shape_in = [MASK_ELL_MAX//2 + 1] + [2*MASK_ELL_MAX + 1]
+            gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
+
+            for l1, l2 in itt.product(np.arange(0, pk_ellmax + 1, 2), repeat=2):
+                for m1, m2 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2)]):
+                    # TODO: Verify this loop is correct
+                    for la in range(np.abs(l1-l2), l1+l2+1, 2):
+                        for ma in range(-la, la+1, 2):
+                            
+                            value = np.float64(sympy.physics.wigner.gaunt(l1,l2,la,m1,m2,ma))
+                            if value == 0:
+                                # Taking absolute values of all m as -m is equivalent to m
+                                # when Ylm is real and m is even
+                                # m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
+                                # ma, mb = np.abs(ma), np.abs(mb)
+                                gaunt_coefficients[l1//2,l2//2,
+                                                    m1+l1,m2+l2,
+                                                    la//2,ma+la] += value
+            gaunt_coefficients.save(filename)
+            return gaunt_coefficients
 
     def clean(self):
         '''Clean window kernels and power spectra.'''
@@ -599,10 +648,10 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         Each term is calculated seperately in order to save memory"""
         self.logger.info("Computing cosmic variance term kernels...")
         self._compute_cosmic_variance_kernel()
-        self.logger.info("Computing mixed term kernels...")
-        self._compute_mixed_kernel()
-        self.logger.info("Computing shotnoise term kernels...")
-        self._compute_shotnoise_kernel()
+        #self.logger.info("Computing mixed term kernels...")
+        #self._compute_mixed_kernel()
+        #self.logger.info("Computing shotnoise term kernels...")
+        #self._compute_shotnoise_kernel()
 
     def _compute_cosmic_variance_kernel(self):
 
@@ -610,10 +659,10 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         # x, y, z, w = math.get_lebedev_points(self.lebedev_degree)
 
         # Gaunt coefficients
-        # cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/")
-        # self.get_gaunt_coefficients(mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
+        #cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/")
+        # calculate Gaunt coefficients first to avoid race conditions
         self.logger.info("Calculating or loading Gaunt coefficients...")
-        self.get_gaunt_coefficients()
+        self.get_cosmic_variance_gaunt_coefficients(mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
 
         # W_AB * W_CD (outer product)
         self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
@@ -765,8 +814,8 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         pk_ellmax = shared_params['pk_ellmax']
         mask_ellmax = shared_params['mask_ellmax']
 
-        G = SurveyGeometry.get_gaunt_coefficients(mask_ellmax=mask_ellmax,
-                                                  pk_ellmax=pk_ellmax)
+        G = SurveyGeometry.get_cosmic_variance_gaunt_coefficients(mask_ellmax=mask_ellmax,
+                                                                  pk_ellmax=pk_ellmax)
 
         # The Gaussian covariance drops quickly away from diagonal.
         # Only delta_k_max points to each side of the diagonal are calculated.
@@ -887,4 +936,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 self.save(self._resume_file)
 
     def _compute_shotnoise_kernel(self):
+
+        # calculate Gaunt coefficients first to avoid race conditions
+        self.get_shotnoise_gaunt_coefficients(pk_ellmax=self.pk_ellmax, mask_ellmax=self.mask_ellmax)
         return 0
