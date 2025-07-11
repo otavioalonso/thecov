@@ -643,17 +643,18 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         self._W = {}
         self._I = {}
 
-    def compute_window_kernels(self):
+    def compute_window_kernels(self, cache_dir=None):
         """Wrapper function that sequentially runs all kernel computations.
         Each term is calculated seperately in order to save memory"""
+        mp.set_start_method('spawn', force=True)
         self.logger.info("Computing cosmic variance term kernels...")
-        self._compute_cosmic_variance_kernel()
+        self._compute_cosmic_variance_kernel(cache_dir)
         #self.logger.info("Computing mixed term kernels...")
         #self._compute_mixed_kernel()
         #self.logger.info("Computing shotnoise term kernels...")
         #self._compute_shotnoise_kernel()
 
-    def _compute_cosmic_variance_kernel(self):
+    def _compute_cosmic_variance_kernel(self, cache_dir):
 
         # points on the unit sphere with corresponding integration weights
         # x, y, z, w = math.get_lebedev_points(self.lebedev_degree)
@@ -662,11 +663,11 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         #cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/")
         # calculate Gaunt coefficients first to avoid race conditions
         self.logger.info("Calculating or loading Gaunt coefficients...")
-        self.get_cosmic_variance_gaunt_coefficients(mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
+        self.get_cosmic_variance_gaunt_coefficients(cache_dir=cache_dir, mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
 
         # W_AB * W_CD (outer product)
         self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
-        W_ABCD = self.get_combined_survey_window()
+        W_ABCD = self.get_combined_survey_window(cache_dir=cache_dir)
 
         # create shared memory objects
         shm_data = multiprocessing.shared_memory.SharedMemory(create=True, size=W_ABCD._matrix.data.nbytes*2)
@@ -806,7 +807,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         W_ABCD = base.SparseNDArray.from_arrays(data, indices, indptr,
                                                 shape_in=shared_params['sparse_shape'][3],
                                                 shape_out=shared_params['sparse_shape'][4])
-        
+        print("got W_ABCD")
         # k1_bin_index is a scalar
         k1_bin_index = shared_params['k1_bin_index']
         kfun = shared_params['kfun']
@@ -858,7 +859,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
             product = G @ W_ABCD
             result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
-
             # multiply by Ylms
             for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
                 l1_idx = int(l1 / 2)
