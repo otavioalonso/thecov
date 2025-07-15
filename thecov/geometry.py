@@ -441,6 +441,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             self.window_BC = self.window_AB
             self.window_BD = self.window_AB
 
+        del self.randoms
         # old logic
         # if 'B' in self.randoms:
         #     self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['B'], self.alphas['B'], **kwargs)
@@ -646,7 +647,12 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
     def compute_window_kernels(self, cache_dir=None):
         """Wrapper function that sequentially runs all kernel computations.
         Each term is calculated seperately in order to save memory"""
-        mp.set_start_method('spawn', force=True)
+
+        # NOTE: Using multiprocessing when MPI is enabled (like in Mockfactory) calls fork() after MPI_Init, which can lead to memory curroption / crashing.
+        # This can happen even if you only use one MPI rank on some HPC systems due to strong protections against calling fork().
+        # To avoid this issue, we set the start method to "spawn" (slightly slower than fork), and initialize a shared memory block
+        mp.set_start_method("spawn", force=True)
+
         self.logger.info("Computing cosmic variance term kernels...")
         self._compute_cosmic_variance_kernel(cache_dir)
         #self.logger.info("Computing mixed term kernels...")
@@ -654,8 +660,23 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         #self.logger.info("Computing shotnoise term kernels...")
         #self._compute_shotnoise_kernel()
 
-    def _compute_cosmic_variance_kernel(self, cache_dir):
+    def _init_shared_memory(self, data_name, indices_name, indptr_name, init_params):
+        """Initializes window meshes as shared memory blocks that multiprocessing processes can access"""
+        global shared_params
 
+        # buffers for W_ABCD
+        global shared_data
+        global shared_indices
+        global shared_indptr
+
+        shared_data = multiprocessing.shared_memory.SharedMemory(name=data_name)
+        shared_indices = multiprocessing.shared_memory.SharedMemory(name=indices_name)
+        shared_indptr = multiprocessing.shared_memory.SharedMemory(name=indptr_name)
+
+        shared_params = init_params
+
+    def _compute_cosmic_variance_kernel(self, cache_dir):
+        
         # points on the unit sphere with corresponding integration weights
         # x, y, z, w = math.get_lebedev_points(self.lebedev_degree)
 
@@ -684,7 +705,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         np.copyto(data_shared, W_ABCD._matrix.data)
         np.copyto(indices_shared, W_ABCD._matrix.indices)
         np.copyto(indptr_shared, W_ABCD._matrix.indptr)
-        # del W_ABCD # <- W_ABCD now lives in shared memory, so delete old one
 
         init_params = {
             'kfun':  2 * np.pi / self.boxsize,
@@ -699,6 +719,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                              W_ABCD.shape_in,
                              W_ABCD.shape_out],
         }
+        del W_ABCD # <- W_ABCD now lives in shared memory, so delete old one
 
         # HYBRID SAMPLING
         kmodes_sampled = 1000
@@ -710,19 +731,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                                      k_shell_approx=0.05,
                                                      sample_mode="monte-carlo")
 
-        def init_worker(data_name, indices_name, indptr_name, init_params):
-            global shared_params
-
-            # buffers for W_ABCD
-            global shared_data
-            global shared_indices
-            global shared_indptr
-
-            shared_data = multiprocessing.shared_memory.SharedMemory(name=data_name)
-            shared_indices = multiprocessing.shared_memory.SharedMemory(name=indices_name)
-            shared_indptr = multiprocessing.shared_memory.SharedMemory(name=indptr_name)
-
-            shared_params = init_params
 
         #delta_k_max = 3
         delta_k_max = self.nmesh // 2 - 1
@@ -750,14 +758,12 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             chunks = np.array_split(km, self.nthreads)
 
             with mp.Pool(processes=min(self.nthreads, len(chunks)),
-                         initializer=init_worker,
+                         initializer=self._init_shared_memory,
                          initargs=[shm_data.name,
                                    shm_indices.name,
                                    shm_indptr.name,
                                    init_params]) as pool:
                 
-                # July 3rd Debugging note: Fails here saying index 2 out of range
-                # perhaps there's some indexing / memory error with self.WinKernel?
                 results = pool.map(self._compute_cosmic_variance_kernel_row, chunks)
                 self.WinKernel_cosmic[i] = np.sum(results, axis=0) * weights[i] / kmodes_sampled
 
@@ -800,6 +806,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 The remaining dims correspond to specific ells
         '''
 
+        print("welcome to _compute_cosmic_variance_kernel_row!")
         data = np.ndarray(shared_params['sparse_shape'][0], dtype=np.complex128, buffer=shared_data.buf)
         indices = np.ndarray(shared_params['sparse_shape'][1], dtype=np.int32, buffer=shared_indices.buf)
         indptr = np.ndarray(shared_params['sparse_shape'][2], dtype=np.int32, buffer=shared_indptr.buf)
@@ -859,6 +866,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
             product = G @ W_ABCD
             result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
+            print("beginning Ylm loops")
             # multiply by Ylms
             for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
                 l1_idx = int(l1 / 2)
