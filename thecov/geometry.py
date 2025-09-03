@@ -814,7 +814,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         W_ABCD = base.SparseNDArray.from_arrays(data, indices, indptr,
                                                 shape_in=shared_params['sparse_shape'][3],
                                                 shape_out=shared_params['sparse_shape'][4])
-        print("got W_ABCD")
         # k1_bin_index is a scalar
         k1_bin_index = shared_params['k1_bin_index']
         kfun = shared_params['kfun']
@@ -835,6 +834,14 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         k2xh = np.zeros_like(iix)
         k2yh = np.zeros_like(iiy)
         k2zh = np.zeros_like(iiz)
+
+        # load in ylm callables
+        Ylm_table = []
+        for l in range(0, pk_ellmax+1, 2):
+            row = []
+            for m in range(-l, l+1, 2):
+                row.append(math.get_real_Ylm(l, m))
+            Ylm_table.append(row)
 
         for ik1x, ik1y, ik1z, ik1r in bin_kmodes:
 
@@ -862,11 +869,25 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             k2yh /= k2r
             k2zh /= k2r
             
+            # Evaluate ylm factors at the given k1 and k2 modes
+            print("beginning Ylm evaluations")
+            Ylm_k1 = []
+            Ylm_k2 = []
+            for l in range(0, pk_ellmax+1, 2):
+                row1, row2 = [], []
+                l_idx = int(l / 2)
+                for m in range(-l, l+1, 2):
+                    m_idx = int((m + l) / 2)
+                    row1.append(np.array(Ylm_table[l_idx][m_idx](k1xh, k1yh, k1zh)))
+                    row2.append(np.array(Ylm_table[l_idx][m_idx](k2xh, k2yh, k2zh)))
+                Ylm_k1.append(row1)
+                Ylm_k2.append(row2)
+
             # multiply by Gaunt factors
             # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
             product = G @ W_ABCD
             result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
-            print("beginning Ylm loops")
+            print("beginning multiplication loops")
             # multiply by Ylms
             for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
                 l1_idx = int(l1 / 2)
@@ -882,12 +903,13 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
                     W_times_G = product[l1_idx,l2_idx,l3_idx,l4_idx,m1_idx,m2_idx,m3_idx,m4_idx]
 
-                    Ylms = math.get_real_Ylm(l1, m1)(k1xh, k1yh, k1zh) * \
-                           math.get_real_Ylm(l2, m2)(k2xh, k2yh, k2zh) * \
-                           math.get_real_Ylm(l3, m3)(k1xh, k1yh, k1zh) * \
-                           math.get_real_Ylm(l4, m4)(k2xh, k2yh, k2zh)
-                    if not isinstance(Ylms, float):
-                        Ylms = np.array(Ylms)
+                    Ylms = Ylm_k1[l1_idx][l2_idx] * \
+                           Ylm_k2[l2_idx][m2_idx] * \
+                           Ylm_k1[l3_idx][m3_idx] * \
+                           Ylm_k2[l4_idx][m4_idx]
+                    
+                    # if not isinstance(Ylms, float):
+                    #     Ylms = np.array(Ylms)
                     
                     result[:,:,:,l1_idx,l2_idx,l3_idx,l4_idx] += Ylms * W_times_G.toarray().reshape(product.shape_in)
 
