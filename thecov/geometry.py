@@ -8,7 +8,7 @@ SurveyGeometry
 """
 
 import logging
-logging.basicConfig(level = logging.WARN)
+logging.basicConfig(level = logging.INFO)
 
 import numpy as np
 import os, time
@@ -18,9 +18,6 @@ from tqdm import tqdm as shell_tqdm
 import multiprocessing as mp
 import multiprocessing.shared_memory
 # from scipy.integrate import lebedev_rule
-
-import mockfactory
-from pypower import CatalogMesh
 
 import functools
 
@@ -111,6 +108,10 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
 
     def _parse_randoms(self, randoms, alpha, nmesh, cellsize, boxsize, boxpad, kmax):
         """Parse the randoms into a mesh, filling in missing information as needed."""
+        # mpi-based imports here to prevent multipcoressing issues
+        import mockfactory
+        from pypower import CatalogMesh
+
         start_time = time.time()
         if not isinstance(randoms, mockfactory.Catalog):
             randoms = mockfactory.Catalog(randoms)
@@ -660,7 +661,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         #self.logger.info("Computing shotnoise term kernels...")
         #self._compute_shotnoise_kernel()
 
-    def _init_shared_memory(self, data_name, indices_name, indptr_name, init_params):
+    def _init_shared_memory(self, data_name, indices_name, indptr_name, init_params, lock):
         """Initializes window meshes as shared memory blocks that multiprocessing processes can access"""
         global shared_params
 
@@ -668,12 +669,14 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         global shared_data
         global shared_indices
         global shared_indptr
+        global lock_flag
 
         shared_data = multiprocessing.shared_memory.SharedMemory(name=data_name)
         shared_indices = multiprocessing.shared_memory.SharedMemory(name=indices_name)
         shared_indptr = multiprocessing.shared_memory.SharedMemory(name=indptr_name)
 
         shared_params = init_params
+        lock_flag = lock
 
     def _compute_cosmic_variance_kernel(self, cache_dir):
         
@@ -742,6 +745,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
+        lock = mp.Lock()
         self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
         for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
 
@@ -762,7 +766,8 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                          initargs=[shm_data.name,
                                    shm_indices.name,
                                    shm_indptr.name,
-                                   init_params]) as pool:
+                                   init_params,
+                                   lock]) as pool:
                 
                 results = pool.map(self._compute_cosmic_variance_kernel_row, chunks)
                 self.WinKernel_cosmic[i] = np.sum(results, axis=0) * weights[i] / kmodes_sampled
@@ -805,12 +810,12 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 (only 3 bins on each side of diagonal are included by default as the Gaussian covariance drops quickly away from diagonal)
                 The remaining dims correspond to specific ells
         '''
+        logger = logging.getLogger('window_kernel_row')
+        logger.setLevel(logging.DEBUG)
 
-        print("welcome to _compute_cosmic_variance_kernel_row!")
         data = np.ndarray(shared_params['sparse_shape'][0], dtype=np.complex128, buffer=shared_data.buf)
         indices = np.ndarray(shared_params['sparse_shape'][1], dtype=np.int32, buffer=shared_indices.buf)
         indptr = np.ndarray(shared_params['sparse_shape'][2], dtype=np.int32, buffer=shared_indptr.buf)
-
         W_ABCD = base.SparseNDArray.from_arrays(data, indices, indptr,
                                                 shape_in=shared_params['sparse_shape'][3],
                                                 shape_out=shared_params['sparse_shape'][4])
@@ -843,8 +848,18 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 row.append(math.get_real_Ylm(l, m))
             Ylm_table.append(row)
 
-        for ik1x, ik1y, ik1z, ik1r in bin_kmodes:
 
+        # multiply by Gaunt factors
+        # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
+        # NOTE a mp lock is required to prevent race conditions with reading / writing shared memory
+        # TODO: This calculation could be moved to parent process if we want
+        with lock_flag:
+            product = G @ W_ABCD
+
+        mode_idx = 1
+        t_avg = 0
+        for ik1x, ik1y, ik1z, ik1r in bin_kmodes:
+            t_start = time.time()
             if ik1r <= 1e-10:
                 k1xh = 0
                 k1yh = 0
@@ -870,7 +885,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             k2zh /= k2r
             
             # Evaluate ylm factors at the given k1 and k2 modes
-            print("beginning Ylm evaluations")
             Ylm_k1 = []
             Ylm_k2 = []
             for l in range(0, pk_ellmax+1, 2):
@@ -883,11 +897,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 Ylm_k1.append(row1)
                 Ylm_k2.append(row2)
 
-            # multiply by Gaunt factors
-            # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
-            product = G @ W_ABCD
             result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
-            print("beginning multiplication loops")
             # multiply by Ylms
             for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
                 l1_idx = int(l1 / 2)
@@ -903,7 +913,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
                     W_times_G = product[l1_idx,l2_idx,l3_idx,l4_idx,m1_idx,m2_idx,m3_idx,m4_idx]
 
-                    Ylms = Ylm_k1[l1_idx][l2_idx] * \
+                    Ylms = Ylm_k1[l1_idx][m1_idx] * \
                            Ylm_k2[l2_idx][m2_idx] * \
                            Ylm_k1[l3_idx][m3_idx] * \
                            Ylm_k2[l4_idx][m4_idx]
@@ -917,6 +927,10 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 modes = (k2_bin_index - k1_bin_index == delta_k)
                 if np.any(modes == True):
                     WinKernel[delta_k] = np.sum(result[modes], axis=0)
+
+            t_avg += time.time() - t_start
+            logger.debug(f"process {os.getpid()}, mode {mode_idx} done. Avg time per iteration = {t_avg / mode_idx:.1f}s", flush=True)
+            mode_idx += 1
 
         return WinKernel
     
