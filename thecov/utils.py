@@ -75,3 +75,17 @@ def cache_method(func):
         return cache[key]
 
     return cached_func
+
+def get_tqdm():
+    """Get the tqdm module, compatible with Jupyter notebooks and terminals."""
+    try: 
+        if get_ipython().__class__.__name__ == 'ZMQInteractiveShell':
+            # Jupyter notebook or qtconsole
+            from tqdm.notebook import tqdm as tqdm
+        else:
+            # Terminal or other environment
+            from tqdm import tqdm as tqdm
+    except NameError:
+        # Not in a Jupyter environment
+        from tqdm import tqdm as tqdm
+    return tqdm
