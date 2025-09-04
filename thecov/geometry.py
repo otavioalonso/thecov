@@ -14,7 +14,6 @@ import numpy as np
 import os, time
 import itertools as itt
 
-from tqdm import tqdm as shell_tqdm
 import multiprocessing as mp
 import multiprocessing.shared_memory
 # from scipy.integrate import lebedev_rule
@@ -24,22 +23,21 @@ from pypower import CatalogMesh
 
 import functools
 
-from . import base, utils, math
+from . import base, math, utils
+
+tqdm = utils.get_tqdm()
 
 MASK_ELL_MAX = 12
 PK_ELL_MAX = 4
 
 __all__ = ['SurveyWindow', 'SurveyGeometry']
 
-class SurveyWindow(base.BaseClass, base.LinearBinning):
+class SurveyWindow(base.BaseClass):
 
-    def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmin=0.0, kmax=0.02, dk=None, shotnoise=False, **kwargs):
-
-        super().__init__(kmin, kmax, dk)
+    def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, dk=None, shotnoise=False, **kwargs):
 
         self.logger = logging.getLogger('SurveyWindow')
         self.logger.setLevel(logging.INFO)
-        self.tqdm = shell_tqdm
 
         self._is_shotnoise = shotnoise
         self.kmax = kmax
@@ -62,7 +60,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
             assert alpha2 is not None, "If randoms2 is provided, alpha2 must also be provided."
 
             self.mesh2 = self._parse_randoms(
-                randoms=randoms2,
+                randoms=randoms1.append(randoms2),
                 alpha=alpha2,
                 nmesh=nmesh,
                 cellsize=cellsize,
@@ -231,7 +229,6 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         self.kboxsize = trim_to_nmesh/self.nmesh * self.boxsize
         self.knmesh = trim_to_nmesh//rebin_factor
 
-        # NOTE: idk if this return is necesary
         return trim_to_nmesh, rebin_factor
 
     @functools.cache
@@ -340,7 +337,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
         self.logger = logging.getLogger('SurveyGeometry')
         self.logger.setLevel(logging.INFO)
-        self.tqdm = shell_tqdm
+        
                 
         #self.delta_k_max = 3
         self.mask_ellmax = mask_ellmax
@@ -476,14 +473,8 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
                 for ma in range(-la, la+1):
                     for mb in range(-lb, lb+1):
-                        total_iterations+=1
+                        window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.mesh(la, ma) * np.conj(self.window_CD.mesh(lb, mb))
 
-            pbar = self.tqdm(total=total_iterations)
-            for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
-                for ma in range(-la, la+1):
-                    for mb in range(-lb, lb+1):
-                        window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.mesh(la, ma) * self.window_CD.mesh(lb, mb)
-                        pbar.update(1)
             window_ABCD.save(filename)
             return window_ABCD
 
@@ -743,7 +734,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
         self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
-        for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
+        for i, km in tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
 
             if hasattr(self, '_resume_file') and self._resume_file is not None:
                 # Skip rows that were already computed
@@ -811,9 +802,12 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         indices = np.ndarray(shared_params['sparse_shape'][1], dtype=np.int32, buffer=shared_indices.buf)
         indptr = np.ndarray(shared_params['sparse_shape'][2], dtype=np.int32, buffer=shared_indptr.buf)
 
-        W_ABCD = base.SparseNDArray.from_arrays(data, indices, indptr,
-                                                shape_in=shared_params['sparse_shape'][3],
-                                                shape_out=shared_params['sparse_shape'][4])
+        # Window_ABCD with indices [la, lb, ma, mb, kx, ky, kz]
+        windows = base.SparseNDArray.from_arrays(data, indices, indptr,
+                                                 shape_in=shared_params['sparse_shape'][3],
+                                                 shape_out=shared_params['sparse_shape'][4])
+        
+>>>>>>> Stashed changes
         # k1_bin_index is a scalar
         k1_bin_index = shared_params['k1_bin_index']
         kfun = shared_params['kfun']
@@ -821,16 +815,15 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         pk_ellmax = shared_params['pk_ellmax']
         mask_ellmax = shared_params['mask_ellmax']
 
-        G = SurveyGeometry.get_cosmic_variance_gaunt_coefficients(mask_ellmax=mask_ellmax,
-                                                                  pk_ellmax=pk_ellmax)
+        coefficients = SurveyGeometry.get_gaunt_coefficients(mask_ellmax=mask_ellmax,
+                                                  pk_ellmax=pk_ellmax)
 
         # The Gaussian covariance drops quickly away from diagonal.
         # Only delta_k_max points to each side of the diagonal are calculated.
         delta_k_max = shared_params['delta_k_max']
 
-        WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1), dtype=np.complex128)
+        result = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1), dtype=np.complex128)
         iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
-
         k2xh = np.zeros_like(iix)
         k2yh = np.zeros_like(iiy)
         k2zh = np.zeros_like(iiz)
@@ -869,39 +862,40 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             k2yh /= k2r
             k2zh /= k2r
             
-            # Evaluate ylm factors at the given k1 and k2 modes
-            print("beginning Ylm evaluations")
-            Ylm_k1 = []
-            Ylm_k2 = []
-            for l in range(0, pk_ellmax+1, 2):
-                row1, row2 = [], []
-                l_idx = int(l / 2)
-                for m in range(-l, l+1, 2):
-                    m_idx = int((m + l) / 2)
-                    row1.append(np.array(Ylm_table[l_idx][m_idx](k1xh, k1yh, k1zh)))
-                    row2.append(np.array(Ylm_table[l_idx][m_idx](k2xh, k2yh, k2zh)))
-                Ylm_k1.append(row1)
-                Ylm_k2.append(row2)
+            # # Evaluate ylm factors at the given k1 and k2 modes
+            # print("beginning Ylm evaluations")
+            # Ylm_k1 = []
+            # Ylm_k2 = []
+            # for l in range(0, pk_ellmax+1, 2):
+            #     row1, row2 = [], []
+            #     l_idx = int(l / 2)
+            #     for m in range(-l, l+1, 2):
+            #         m_idx = int((m + l) / 2)
+            #         row1.append(np.array(Ylm_table[l_idx][m_idx](k1xh, k1yh, k1zh)))
+            #         row2.append(np.array(Ylm_table[l_idx][m_idx](k2xh, k2yh, k2zh)))
+            #     Ylm_k1.append(row1)
+            #     Ylm_k2.append(row2)
 
-            # multiply by Gaunt factors
-            # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
-            product = G @ W_ABCD
-            result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
-            print("beginning multiplication loops")
+            # # multiply by Gaunt factors
+            # # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
+            # product = G @ W_ABCD
+            # result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
+            # print("beginning multiplication loops")
+
+            # multiply by Gaunt coefficients
+            integrand = coefficients @ windows
+            # result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
+
             # multiply by Ylms
             for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
-                l1_idx = int(l1 / 2)
-                l2_idx = int(l2 / 2)
-                l3_idx = int(l3 / 2)
-                l4_idx = int(l4 / 2)
-                
                 for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
+
                     m1_idx = int((m1 + l1) / 2)
                     m2_idx = int((m2 + l2) / 2)
                     m3_idx = int((m3 + l3) / 2)
                     m4_idx = int((m4 + l4) / 2)
 
-                    W_times_G = product[l1_idx,l2_idx,l3_idx,l4_idx,m1_idx,m2_idx,m3_idx,m4_idx]
+                    print(integrand)
 
                     Ylms = Ylm_k1[l1_idx][l2_idx] * \
                            Ylm_k2[l2_idx][m2_idx] * \
@@ -910,13 +904,22 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                     
                     # if not isinstance(Ylms, float):
                     #     Ylms = np.array(Ylms)
+
+                    # print(integrand)
+
+                    # integrand[l1//2,l2//2,l3//2,l4//2,m1+l1,m2+l2,m3+l3,m4+l4] *= \
+                    #       math.get_real_Ylm(l1, m1)(k1xh, k1yh, k1zh) * \
+                    #       math.get_real_Ylm(l2, m2)(k2xh, k2yh, k2zh) * \
+                    #       math.get_real_Ylm(l3, m3)(k1xh, k1yh, k1zh) * \
+                    #       math.get_real_Ylm(l4, m4)(k2xh, k2yh, k2zh)
+
                     
-                    result[:,:,:,l1_idx,l2_idx,l3_idx,l4_idx] += Ylms * W_times_G.toarray().reshape(product.shape_in)
+                    # result[l1//2,l2//2,l3//2,l4//2] += Ylms * W_times_G.toarray().reshape(product.shape_in)
 
             for delta_k in range(-delta_k_max, delta_k_max + 1):
                 modes = (k2_bin_index - k1_bin_index == delta_k)
                 if np.any(modes == True):
-                    WinKernel[delta_k] = np.sum(result[modes], axis=0)
+                    result[delta_k+delta_k_max] += np.sum(integrand[modes], axis=0)
 
         return WinKernel
     
