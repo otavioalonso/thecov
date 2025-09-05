@@ -752,7 +752,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             if hasattr(self, '_resume_file') and self._resume_file is not None:
                 # Skip rows that were already computed
                 if not np.isnan(self.WinKernel_cosmic[i,0,0,0,0,0]):
-                    # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
+                    self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
                     continue
 
             init_params['k1_bin_index'] = i + self.kmin//self.dk
@@ -770,18 +770,19 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                                    lock]) as pool:
                 
                 results = pool.map(self._compute_cosmic_variance_kernel_row, chunks)
-                self.WinKernel_cosmic[i] = np.sum(results, axis=0) * weights[i] / kmodes_sampled
+            
+            self.WinKernel_cosmic[i] = np.sum(results, axis=0) * weights[i] / kmodes_sampled
 
-                # std_results = np.std(results * weights, axis=0) / np.sqrt(len(results))
-                # avg_results = np.average(results, weights=weights, axis=0)
-                # avg_results[std_results == 0] = 1
-                # self.WinKernel_error[i] =  std_results / avg_results
-        
-                for k2_bin_index in range(0, 2*delta_k_max + 1):
-                    if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
-                        self.WinKernel_cosmic[i, k2_bin_index, :, :] = 0
-                    else:
-                        self.WinKernel_cosmic[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
+            # std_results = np.std(results * weights, axis=0) / np.sqrt(len(results))
+            # avg_results = np.average(results, weights=weights, axis=0)
+            # avg_results[std_results == 0] = 1
+            # self.WinKernel_error[i] =  std_results / avg_results
+    
+            for k2_bin_index in range(0, 2*delta_k_max + 1):
+                if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
+                    self.WinKernel_cosmic[i, k2_bin_index, :, :] = 0
+                else:
+                    self.WinKernel_cosmic[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
 
             if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
                 self.save(self._resume_file)
@@ -825,29 +826,15 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         dk = shared_params['dk']
         pk_ellmax = shared_params['pk_ellmax']
         mask_ellmax = shared_params['mask_ellmax']
-
-        G = SurveyGeometry.get_cosmic_variance_gaunt_coefficients(mask_ellmax=mask_ellmax,
-                                                                  pk_ellmax=pk_ellmax)
-
         # The Gaussian covariance drops quickly away from diagonal.
         # Only delta_k_max points to each side of the diagonal are calculated.
         delta_k_max = shared_params['delta_k_max']
 
-        WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1), dtype=np.complex128)
-        iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
-
-        k2xh = np.zeros_like(iix)
-        k2yh = np.zeros_like(iiy)
-        k2zh = np.zeros_like(iiz)
+        G = SurveyGeometry.get_cosmic_variance_gaunt_coefficients(mask_ellmax=mask_ellmax,
+                                                                  pk_ellmax=pk_ellmax)
 
         # load in ylm callables
-        Ylm_table = []
-        for l in range(0, pk_ellmax+1, 2):
-            row = []
-            for m in range(-l, l+1, 2):
-                row.append(math.get_real_Ylm(l, m))
-            Ylm_table.append(row)
-
+        Ylm_table = math.build_Ylm_table(pk_ellmax)
 
         # multiply by Gaunt factors
         # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
@@ -855,6 +842,13 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         # TODO: This calculation could be moved to parent process if we want
         with lock_flag:
             product = G @ W_ABCD
+
+        WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1), dtype=np.complex128)
+        iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
+
+        k2xh = np.zeros_like(iix)
+        k2yh = np.zeros_like(iiy)
+        k2zh = np.zeros_like(iiz)
 
         mode_idx = 1
         t_avg = 0
@@ -885,17 +879,8 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             k2zh /= k2r
             
             # Evaluate ylm factors at the given k1 and k2 modes
-            Ylm_k1 = []
-            Ylm_k2 = []
-            for l in range(0, pk_ellmax+1, 2):
-                row1, row2 = [], []
-                l_idx = int(l / 2)
-                for m in range(-l, l+1, 2):
-                    m_idx = int((m + l) / 2)
-                    row1.append(np.array(Ylm_table[l_idx][m_idx](k1xh, k1yh, k1zh)))
-                    row2.append(np.array(Ylm_table[l_idx][m_idx](k2xh, k2yh, k2zh)))
-                Ylm_k1.append(row1)
-                Ylm_k2.append(row2)
+            Ylm_k1 = math.evaluate_Ylms(Ylm_table, pk_ellmax, k1xh, k1yh, k1zh)
+            Ylm_k2 = math.evaluate_Ylms(Ylm_table, pk_ellmax, k2xh, k2yh, k2zh)
 
             result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
             # multiply by Ylms
@@ -918,9 +903,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                            Ylm_k1[l3_idx][m3_idx] * \
                            Ylm_k2[l4_idx][m4_idx]
                     
-                    # if not isinstance(Ylms, float):
-                    #     Ylms = np.array(Ylms)
-                    
                     result[:,:,:,l1_idx,l2_idx,l3_idx,l4_idx] += Ylms * W_times_G.toarray().reshape(product.shape_in)
 
             for delta_k in range(-delta_k_max, delta_k_max + 1):
@@ -929,7 +911,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                     WinKernel[delta_k] = np.sum(result[modes], axis=0)
 
             t_avg += time.time() - t_start
-            logger.debug(f"process {os.getpid()}, mode {mode_idx} done. Avg time per iteration = {t_avg / mode_idx:.1f}s", flush=True)
+            logger.debug(f"process {os.getpid()}, mode {mode_idx} / {len(bin_kmodes)} done. Avg time per iteration = {t_avg / mode_idx:.1f}s", flush=True)
             mode_idx += 1
 
         return WinKernel

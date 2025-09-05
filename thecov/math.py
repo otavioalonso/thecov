@@ -358,8 +358,64 @@ def get_real_Ylm(ell, m, modules=None):
     Ylm.m = m
     return Ylm
 
-def get_lebedev_points(degree, r=1.):
 
+def build_Ylm_table(pk_ellmax:int):
+    """Builda a table of callable Ylm functions with all possible
+    iteratons of l, m
+
+    Args:
+        pk_ellmax (int): maximum ell. Should be even
+
+    Returns:
+        ylm_table (list): nested list with shape [num_ells, num_ems] of callable Ylm functions.
+    """
+
+    Ylm_table = []
+    for l in range(0, pk_ellmax+1, 2):
+        row = []
+        for m in range(-l, l+1, 2):
+            row.append(get_real_Ylm(l, m))
+        Ylm_table.append(row)
+    return Ylm_table
+
+def evaluate_Ylms(ylm_table:list, pk_ellmax:int, kxh, kyh, kzh):
+    """Evaluates ylm functions at the given k modes (seperated into x,y,z components)
+
+    Args:
+        ylm_table (list): nested list with shape [num_ells, num_ems] of callable Ylm functions.
+        pk_ellmax (int): maximum ell. Should be even
+        kxh (list): list of k-modes (x component) to evalutate the Ylms at
+        kyh (list): list of k-modes (y component) to evalutate the Ylms at
+        kzh (list): list of k-modes (z component) to evalutate the Ylms at
+
+    Returns:
+        np.array: Evaluated ylm factors as a numpy array.
+    """
+    Ylm_k = []
+    for l in range(0, pk_ellmax+1, 2):
+        row = []
+        l_idx = int(l / 2)
+        for m in range(-l, l+1, 2):
+            m_idx = int((m + l) / 2)
+            row.append(np.array(ylm_table[l_idx][m_idx](kxh, kyh, kzh)))
+        Ylm_k.append(row)
+
+    return Ylm_k
+
+def get_lebedev_points(degree:int, r=1.):
+    """Returns a list of points on a sphere with radius r corresponding to Lebedev quadrature integration
+
+    Args:
+        degree (int): degree to retreive lebedev points for.
+        r (float, optional): radius of the sphere the returned points should lie on. Defaults to 1..
+
+    Raises:
+        ValueError: if degree is not one of the pre-computed degrees.
+
+    Returns:
+        x, y, z, wrights (np.arrays): cartesian coordinates of lebedev points, with their corresponding weights
+    """
+    
     available_degrees = np.array([3, 5, 7, 9, 11, 13, 15, 17,
                                  19, 21, 23, 25, 27, 29, 31, 35,
                                  41, 47, 53, 59, 65, 71, 77, 83,
