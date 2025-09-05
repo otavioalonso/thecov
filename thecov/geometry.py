@@ -814,12 +814,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         logger = logging.getLogger('window_kernel_row')
         logger.setLevel(logging.DEBUG)
 
-        data = np.ndarray(shared_params['sparse_shape'][0], dtype=np.complex128, buffer=shared_data.buf)
-        indices = np.ndarray(shared_params['sparse_shape'][1], dtype=np.int32, buffer=shared_indices.buf)
-        indptr = np.ndarray(shared_params['sparse_shape'][2], dtype=np.int32, buffer=shared_indptr.buf)
-        W_ABCD = base.SparseNDArray.from_arrays(data, indices, indptr,
-                                                shape_in=shared_params['sparse_shape'][3],
-                                                shape_out=shared_params['sparse_shape'][4])
         # k1_bin_index is a scalar
         k1_bin_index = shared_params['k1_bin_index']
         kfun = shared_params['kfun']
@@ -840,8 +834,17 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
         # NOTE a mp lock is required to prevent race conditions with reading / writing shared memory
         # TODO: This calculation could be moved to parent process if we want
+        
+        data = np.ndarray(shared_params['sparse_shape'][0], dtype=np.complex128, buffer=shared_data.buf)
+        indices = np.ndarray(shared_params['sparse_shape'][1], dtype=np.int32, buffer=shared_indices.buf)
+        indptr = np.ndarray(shared_params['sparse_shape'][2], dtype=np.int32, buffer=shared_indptr.buf)
         with lock_flag:
+
+            W_ABCD = base.SparseNDArray.from_arrays(data, indices, indptr,
+                                                    shape_in=shared_params['sparse_shape'][3],
+                                                    shape_out=shared_params['sparse_shape'][4])
             product = G @ W_ABCD
+            del W_ABCD
 
         WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1), dtype=np.complex128)
         iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
@@ -911,7 +914,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                     WinKernel[delta_k] = np.sum(result[modes], axis=0)
 
             t_avg += time.time() - t_start
-            logger.debug(f"process {os.getpid()}, mode {mode_idx} / {len(bin_kmodes)} done. Avg time per iteration = {t_avg / mode_idx:.1f}s", flush=True)
+            logger.debug(f"process {os.getpid()}, mode {mode_idx} / {len(bin_kmodes)} done. Avg time per iteration = {t_avg / mode_idx:.1f}s")
             mode_idx += 1
 
         return WinKernel
