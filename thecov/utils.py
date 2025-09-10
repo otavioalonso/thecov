@@ -1,6 +1,7 @@
 """This module contains utility functions for thecov.
 """
 import os, functools
+from mpi4py import MPI
 
 def mkdir(dirname):
     """Try to create ``dirname`` and catch :class:`OSError`."""
@@ -75,6 +76,14 @@ def cache_method(func):
         return cache[key]
 
     return cached_func
+
+def get_single_comm(rank, comm):
+    if rank == 0:
+        color = 1
+    else:
+        color = MPI.UNDEFINED
+
+    return comm.Split(color=color, key=rank)
 
 def get_tqdm():
     """Get the tqdm module, compatible with Jupyter notebooks and terminals."""

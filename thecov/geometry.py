@@ -8,6 +8,7 @@ SurveyGeometry
 """
 
 import logging
+#logging.basicConfig(level = logging.INFO)
 logging.basicConfig(level = logging.INFO)
 
 import numpy as np
@@ -15,8 +16,10 @@ import os, time
 import itertools as itt
 
 from tqdm import tqdm as shell_tqdm
-import multiprocessing as mp
-import multiprocessing.shared_memory
+from mpi4py import MPI
+import mockfactory
+from pypower import CatalogMesh
+
 # from scipy.integrate import lebedev_rule
 
 import functools
@@ -30,9 +33,14 @@ __all__ = ['SurveyWindow', 'SurveyGeometry']
 
 class SurveyWindow(base.BaseClass, base.LinearBinning):
 
-    def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmin=0.0, kmax=0.02, dk=None, shotnoise=False, **kwargs):
+    def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, mpi_comm=MPI.COMM_WORLD,
+                 nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmin=0.0, kmax=0.02, 
+                 dk=None, shotnoise=False, **kwargs):
 
         super().__init__(kmin, kmax, dk)
+
+        self.comm = mpi_comm
+        self.rank = mpi_comm.Get_rank()
 
         self.logger = logging.getLogger('SurveyWindow')
         self.logger.setLevel(logging.INFO)
@@ -49,7 +57,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
             cellsize=cellsize,
             boxsize=boxsize,
             boxpad=boxpad,
-            kmax=kmax
+            kmax=kmax,
         )
         self.boxsize = self.mesh1.boxsize[0]
         self.nmesh = self.mesh1.nmesh[0]
@@ -65,7 +73,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
                 cellsize=cellsize,
                 boxsize=boxsize,
                 boxpad=boxpad,
-                kmax=kmax
+                kmax=kmax,
             )
             # self.mesh2 = self._parse_randoms(
             #     randoms=randoms1.append(randoms2),
@@ -94,23 +102,21 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
             self.mesh1._set_box(nmesh=self.nmesh, boxsize=self.boxsize, wrap=False)
             self.mesh2._set_box(nmesh=self.nmesh, boxsize=self.boxsize, wrap=False)
         
-        self.logger.info(f'Using box size {self.boxsize}, box center {self.mesh1.boxcenter} and nmesh {self.nmesh}.')
-        self.logger.info(f'Fundamental wavenumber of window meshes = {self.kfun}.')
-        self.logger.info(f'Nyquist wavenumber of window meshes = {self.knyquist}.')
+        if self.rank == 0:
+            self.logger.info(f'Using box size {self.boxsize}, box center {self.mesh1.boxcenter} and nmesh {self.nmesh}.')
+            self.logger.info(f'Fundamental wavenumber of window meshes = {self.kfun}.')
+            self.logger.info(f'Nyquist wavenumber of window meshes = {self.knyquist}.')
 
-        if kmax is not None and self.knyquist < kmax:
-            self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {kmax}.')
+            if kmax is not None and self.knyquist < kmax:
+                self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {kmax}.')
 
-        self.logger.info(f'Average of {self.mesh1.data_size / self.nmesh**3} objects per voxel.')
+            self.logger.info(f'Average of {self.mesh1.data_size / self.nmesh**3} objects per voxel.')
 
         # Initialize rebin parameters
         self._rebin_parameters(dk, kmax)
 
     def _parse_randoms(self, randoms, alpha, nmesh, cellsize, boxsize, boxpad, kmax):
-        """Parse the randoms into a mesh, filling in missing information as needed."""
-        # mpi-based imports here to prevent multipcoressing issues
-        import mockfactory
-        from pypower import CatalogMesh
+        """Parse the randoms into a mesh, filling in missing information as needed."""        
 
         start_time = time.time()
         if not isinstance(randoms, mockfactory.Catalog):
@@ -119,22 +125,25 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         # Check if the randoms have weights, otherwise set them to 1
         for name in ['WEIGHT', 'WEIGHT_FKP']:
             if name not in randoms:
-                self.logger.warning(f'{name} column not found in randoms. Setting it to 1.')
+                if self.rank == 0: self.logger.warning(f'{name} column not found in randoms. Setting it to 1.')
                 randoms[name] = np.ones(randoms.size, dtype='f8')
         
         randoms['WEIGHT'] *= alpha
         
         # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
         if 'NZ' not in randoms:
-            self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
+            if self.rank == 0: self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
             import healpy as hp
             nside = 512
             distance = np.sqrt(np.sum(randoms['POSITION']**2, axis=-1))
             xyz = randoms['POSITION'] / distance[:, None]
             hpixel = hp.vec2pix(nside, *xyz.T)
-            unique_hpixels = np.unique(hpixel)
-            fsky = len(unique_hpixels) / hp.nside2npix(nside)
-            self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
+            unique_hpixels_rank = np.unique(hpixel)
+            unique_hpixels_total = self.comm.allgather(unique_hpixels_rank)
+            unique_hpixels_total = np.unique(np.concatenate(unique_hpixels_total).ravel())
+
+            fsky = len(unique_hpixels_total) / hp.nside2npix(nside)
+            if self.rank == 0: self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
             nbar = mockfactory.RedshiftDensityInterpolator(z=distance, weights=randoms['WEIGHT'], fsky=fsky)
             randoms['NZ'] = nbar(distance)
 
@@ -143,7 +152,8 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
             # Pick value that will give at least k_mask = kmax_window in the FFTs
             self.cellsize = np.pi / kmax / (1. + 1e-9)
 
-        self.logger.info(f'Parsed randoms in {time.time() - start_time:.2f} seconds.')
+        self.comm.Barrier()
+        if self.rank == 0: self.logger.info(f'Parsed randoms in {time.time() - start_time:.2f} seconds.')
 
         return CatalogMesh(
                 data_positions=randoms['POSITION'],
@@ -334,10 +344,15 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                  randoms_d=None, alpha_d=None,
                  nmesh=None, boxsize=None, boxpad=2.,
                  kmin=0, kmax=0.2, dk=None, mask_ellmax=12, pk_ellmax=4,
-                 sample_mode="lebedev", lebedev_degree=25, resume_file=None, nthreads=None):
+                 sample_mode="lebedev", lebedev_degree=25, resume_file=None, comm=MPI.COMM_WORLD):
 
         # set's k-binning
         super().__init__(kmin, kmax, dk)
+
+        self.comm = comm
+        self.rank = comm.Get_rank()
+        self.size = comm.Get_size()
+        #self.single_comm = utils.get_single_comm(self.rank, self.comm)
 
         self.logger = logging.getLogger('SurveyGeometry')
         self.logger.setLevel(logging.INFO)
@@ -348,26 +363,33 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         self.pk_ellmax = pk_ellmax
         self.sample_mode = sample_mode
         self.lebedev_degree = lebedev_degree
-        self.nthreads = nthreads if nthreads is not None else int(os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
 
         if resume_file is not None:
             self.set_resume_file(resume_file)
         else:
             self.set_resume_file(os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache/WinKernel.npy"))
 
+        # if self.rank == 0:
         self._init_randoms(randoms_a, alpha_a, randoms_b, alpha_b, randoms_c, alpha_c, randoms_d, alpha_d)
         self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk)
-    
+
+
     def load_resume_file(self, filename):
-        '''Load the window kernels from a file.
+        '''Load the window kernels from a file on each rank (sequentually).
 
         Parameters
         ----------
         filename : str
             Name of the file to load the window kernels from.
         '''
-        self.logger.info(f'Loading window kernels from {filename}.')
-        self.load(filename)
+        for r in range(self.size):
+            if self.rank == 0 and self.rank == r:
+                self.logger.info(f'Loading window kernels from {filename}.')
+            if self.rank == r: 
+                self.logger.debug(f'rank {r} loading window kernels...')
+                self.load(filename)
+            self.comm.Barrier()
+
         # Cartesian FFTs need to be loaded through the setter
         # for key in self._W:
         #     self.set_cartesian_fft(key, self._W[key])
@@ -385,11 +407,14 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         if self._resume_file is not None:
             try:
                 self.load_resume_file(self._resume_file)
-                self.logger.warning(f'Loaded resume file {self._resume_file}. This might override your settings. See debug messages for more details on the loaded attributes.')
+                if self.rank == 0: self.logger.warning(f'Loaded resume file {self._resume_file}. This might override your settings. See debug messages for more details on the loaded attributes.')
             except FileNotFoundError:
-                self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
-                utils.mkdir(os.path.dirname(self._resume_file))
-                self.save(self._resume_file)
+                if self.rank == 0:
+                    self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
+                    utils.mkdir(os.path.dirname(self._resume_file))
+                    self.save(self._resume_file)
+
+        self.comm.Barrier()
 
     def _init_randoms(self, randoms_a, alpha_a,
                             randoms_b, alpha_b,
@@ -649,34 +674,35 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         """Wrapper function that sequentially runs all kernel computations.
         Each term is calculated seperately in order to save memory"""
 
-        # NOTE: Using multiprocessing when MPI is enabled (like in Mockfactory) calls fork() after MPI_Init, which can lead to memory curroption / crashing.
-        # This can happen even if you only use one MPI rank on some HPC systems due to strong protections against calling fork().
-        # To avoid this issue, we set the start method to "spawn" (slightly slower than fork), and initialize a shared memory block
-        mp.set_start_method("spawn", force=True)
-
-        self.logger.info("Computing cosmic variance term kernels...")
+        if self.rank == 0: self.logger.info("Computing cosmic variance term kernels...")
         self._compute_cosmic_variance_kernel(cache_dir)
         #self.logger.info("Computing mixed term kernels...")
         #self._compute_mixed_kernel()
         #self.logger.info("Computing shotnoise term kernels...")
         #self._compute_shotnoise_kernel()
 
-    def _init_shared_memory(self, data_name, indices_name, indptr_name, init_params, lock):
-        """Initializes window meshes as shared memory blocks that multiprocessing processes can access"""
-        global shared_params
+    # def _init_shared_memory(self, data_name, indices_name, indptr_name, init_params, lock):
+    #     """Initializes window meshes as shared memory blocks that multiprocessing processes can access"""
+    #     global shared_params
 
-        # buffers for W_ABCD
-        global shared_data
-        global shared_indices
-        global shared_indptr
-        global lock_flag
+        # # buffers for W_ABCD
+        # global shared_data
+        # global shared_indices
+        # global shared_indptr
+        # global lock_flag
 
-        shared_data = multiprocessing.shared_memory.SharedMemory(name=data_name)
-        shared_indices = multiprocessing.shared_memory.SharedMemory(name=indices_name)
-        shared_indptr = multiprocessing.shared_memory.SharedMemory(name=indptr_name)
+        # win = MPI.Win.Allocate_shared(n * itemsize, itemsize, comm=shm_comm)
+        # buf, itemsize = win.Shared_query(0)
 
-        shared_params = init_params
-        lock_flag = lock
+        # # Create numpy array pointing to shared memory
+        # W_ABCD = np.ndarray(buffer=buf, dtype=np.complex128, shape=(10**6,))``
+
+        # shared_data = multiprocessing.shared_memory.SharedMemory(name=data_name)
+        # shared_indices = multiprocessing.shared_memory.SharedMemory(name=indices_name)
+        # shared_indptr = multiprocessing.shared_memory.SharedMemory(name=indptr_name)
+
+        # shared_params = init_params
+        # lock_flag = lock
 
     def _compute_cosmic_variance_kernel(self, cache_dir):
         
@@ -685,123 +711,158 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
         # Gaunt coefficients
         #cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/")
-        # calculate Gaunt coefficients first to avoid race conditions
-        self.logger.info("Calculating or loading Gaunt coefficients...")
-        self.get_cosmic_variance_gaunt_coefficients(cache_dir=cache_dir, mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
+        if self.rank == 0:
+            # calculate Gaunt coefficients first to avoid race conditions
+            self.logger.info("Calculating or loading Gaunt coefficients...")
+            G = self.get_cosmic_variance_gaunt_coefficients(cache_dir=cache_dir, mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
 
-        # W_AB * W_CD (outer product)
-        self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
-        W_ABCD = self.get_combined_survey_window(cache_dir=cache_dir)
+            # W_AB * W_CD (outer product)
+            self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
+            W_ABCD_temp = self.get_combined_survey_window(cache_dir=cache_dir)
 
-        # create shared memory objects
-        shm_data = multiprocessing.shared_memory.SharedMemory(create=True, size=W_ABCD._matrix.data.nbytes*2)
-        shm_indices = multiprocessing.shared_memory.SharedMemory(create=True, size=W_ABCD._matrix.indices.nbytes)
-        shm_indptr = multiprocessing.shared_memory.SharedMemory(create=True, size=W_ABCD._matrix.indptr.nbytes)
+            data_size = int(W_ABCD_temp._matrix.data.nbytes*2)
+            data_shape = W_ABCD_temp._matrix.data.shape
+            indices_size = int(W_ABCD_temp._matrix.indices.nbytes)
+            indptr_size = int(W_ABCD_temp._matrix.indptr.nbytes)
+            indptr_shape = W_ABCD_temp._matrix.indptr.shape
+            shape_in = W_ABCD_temp.shape_in
+            shape_out = W_ABCD_temp.shape_out
 
-        # create views to shared memory
-        data_shared = np.ndarray(W_ABCD._matrix.data.shape, dtype=W_ABCD._matrix.data.dtype, buffer=shm_data.buf)
-        indices_shared = np.ndarray(W_ABCD._matrix.indices.shape, dtype=W_ABCD._matrix.indices.dtype, buffer=shm_indices.buf)
-        indptr_shared = np.ndarray(W_ABCD._matrix.indptr.shape, dtype=W_ABCD._matrix.indptr.dtype, buffer=shm_indptr.buf)
+        else:
+            G = None
+            data_size = None
+            indices_size = None
+            indptr_size = None
+            data_shape = None
+            indptr_shape = None
+            shape_in = None
+            shape_out = None
 
-        # copy data to shared memory objects
-        # NOTE: This operation duplicates W_ABCD temporarily, which might become a problem for large nmesh
-        np.copyto(data_shared, W_ABCD._matrix.data)
-        np.copyto(indices_shared, W_ABCD._matrix.indices)
-        np.copyto(indptr_shared, W_ABCD._matrix.indptr)
+        self.logger.info("Allocating shared memory...")
+        self.comm.Barrier()
+        G = self.comm.bcast(G, root=0)
+        data_size = self.comm.bcast(data_size, root=0)
+        data_shape = self.comm.bcast(data_shape, root=0)
+        indices_size = self.comm.bcast(indices_size, root=0)
+        indptr_size = self.comm.bcast(indptr_size, root=0)
+        indptr_shape = self.comm.bcast(indptr_shape, root=0)
+        shape_in = self.comm.bcast(shape_in, root=0)
+        shape_out = self.comm.bcast(shape_out, root=0)
 
-        init_params = {
-            'kfun':  2 * np.pi / self.boxsize,
-            'dk': self.dk,
-            'ikgrid': self.window_AB.ikgrid,
-            'delta_k_max': self.delta_k_max,
-            'mask_ellmax': self.mask_ellmax,
-            'pk_ellmax': self.pk_ellmax,
-            'sparse_shape': [W_ABCD._matrix.data.shape,
-                             W_ABCD._matrix.indices.shape,
-                             W_ABCD._matrix.indptr.shape,
-                             W_ABCD.shape_in,
-                             W_ABCD.shape_out],
-        }
-        del W_ABCD # <- W_ABCD now lives in shared memory, so delete old one
+        win_data = MPI.Win.Allocate_shared(data_size, np.dtype(np.complex128).itemsize, comm=self.comm)
+        buf, itemsize = win_data.Shared_query(0)
+        W_ABCD_data = np.ndarray(buffer=buf, dtype=np.complex128, shape=data_shape)
+
+        win_indices = MPI.Win.Allocate_shared(indices_size, np.dtype(np.int32).itemsize, comm=self.comm)
+        buf, itemsize = win_indices.Shared_query(0)
+        W_ABCD_indicies = np.ndarray(buffer=buf, dtype=np.int32, shape=data_shape)
+
+        win_indptr = MPI.Win.Allocate_shared(indptr_size, np.dtype(np.int32).itemsize, comm=self.comm)
+        buf, itemsize = win_indptr.Shared_query(0)
+        W_ABCD_indptr = np.ndarray(buffer=buf, dtype=np.int32, shape=indptr_shape)
+
+        # Initialize only on rank 0
+        if self.rank == 0:
+            W_ABCD_data = np.copy(W_ABCD_temp._matrix.data)
+            W_ABCD_indicies = np.copy(W_ABCD_temp._matrix.indices)
+            W_ABCD_indptr = np.copy(W_ABCD_temp._matrix.indptr)
+
+        self.comm.Barrier()
+        W_ABCD = base.SparseNDArray.from_arrays(W_ABCD_data, W_ABCD_indicies, W_ABCD_indptr,
+                                                shape_in=shape_in, shape_out=shape_out)
+
+        # multiply by Gaunt factors
+        # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
+        G_times_W = G @ W_ABCD
+        self.comm.Barrier()
+        del W_ABCD
+        if self.rank == 0: del W_ABCD_temp
 
         # HYBRID SAMPLING
-        kmodes_sampled = 1000
-        kmodes, Nmodes, weights = math.sample_kmodes(kmin=self.kmin,
-                                                     kmax=self.kmax,
-                                                     dk=self.dk,
-                                                     boxsize=self.boxsize,
-                                                     max_modes=kmodes_sampled,
-                                                     k_shell_approx=0.05,
-                                                     sample_mode="monte-carlo")
+        kmodes_sampled = 500
+        if self.rank == 0:
+            kmodes, Nmodes, weights = math.sample_kmodes(kmin=self.kmin,
+                                                        kmax=self.kmax,
+                                                        dk=self.dk,
+                                                        boxsize=self.boxsize,
+                                                        max_modes=kmodes_sampled,
+                                                        k_shell_approx=0.05,
+                                                        sample_mode="monte-carlo")
+        else:
+            kmodes = None
+            Nmodes = None
+            weights = None
+        
+        kmodes = self.comm.bcast(kmodes, root=0)
+        Nmodes = self.comm.bcast(Nmodes, root=0)
+        weights = self.comm.bcast(weights, root=0)
 
+        # load in ylm callables
+        Ylm_table = math.build_Ylm_table(self.pk_ellmax)
 
         #delta_k_max = 3
         delta_k_max = self.nmesh // 2 - 1
 
-        if not hasattr(self, 'WinKernel_cosmic') or self.WinKernel_cosmic is None:
+        if not hasattr(self, 'WinKernel_cosmic') or self.WinKernel_cosmic is None and self.rank == 0:
             # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
             self.WinKernel_cosmic = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
             self.WinKernel_cosmic.fill(np.nan)
 
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
-        lock = mp.Lock()
-        self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
-        for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
 
-            if hasattr(self, '_resume_file') and self._resume_file is not None:
+        if self.rank == 0:
+            self.logger.info(f"Beginning window kernel calculations on {self.size} ranks...")
+            pbar = self.tqdm(desc='Computing window kernels', total=math.num_sampled_modes(kmodes))
+        
+        # TODO: Now that we're using mpi4py, come up with a more efficient way to loop thru modes
+        for i, km in enumerate(kmodes):
+
+            self.comm.Barrier()
+            if hasattr(self, '_resume_file') and self._resume_file is not None and self.rank == 0:
                 # Skip rows that were already computed
                 if not np.isnan(self.WinKernel_cosmic[i,0,0,0,0,0]):
                     self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
                     continue
 
-            init_params['k1_bin_index'] = i + self.kmin//self.dk
             kmodes_sampled = len(km)
+            # Splitting kmodes in chunks to be sent to each rank
+            kmodes_per_rank = np.array_split(km, self.size)[self.rank]
 
-            # Splitting kmodes in chunks to be sent to each worker
-            chunks = np.array_split(km, self.nthreads)
+            results_per_rank = self._compute_cosmic_variance_kernel_row(i, kmodes_per_rank, G_times_W, Ylm_table)
+            self.comm.Barrier()
 
-            with mp.Pool(processes=min(self.nthreads, len(chunks)),
-                         initializer=self._init_shared_memory,
-                         initargs=[shm_data.name,
-                                   shm_indices.name,
-                                   shm_indptr.name,
-                                   init_params,
-                                   lock]) as pool:
-                
-                results = pool.map(self._compute_cosmic_variance_kernel_row, chunks)
-            
-            self.WinKernel_cosmic[i] = np.sum(results, axis=0) * weights[i] / kmodes_sampled
+            results_per_rank = np.sum(results_per_rank, axis=0)
+            if self.rank == 0:
+                results_combined = np.zeros_like(results_per_rank)
+            else:
+                results_combined = None # None on non-root processes
+            self.comm.Reduce(results_per_rank, results_combined, op=MPI.SUM, root=0)
 
             # std_results = np.std(results * weights, axis=0) / np.sqrt(len(results))
             # avg_results = np.average(results, weights=weights, axis=0)
             # avg_results[std_results == 0] = 1
             # self.WinKernel_error[i] =  std_results / avg_results
     
-            for k2_bin_index in range(0, 2*delta_k_max + 1):
-                if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
-                    self.WinKernel_cosmic[i, k2_bin_index, :, :] = 0
-                else:
-                    self.WinKernel_cosmic[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
+            if self.rank == 0:
+                self.WinKernel_cosmic[i] = results_combined * weights[i] / kmodes_sampled
+                for k2_bin_index in range(0, 2*delta_k_max + 1):
+                    if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
+                        self.WinKernel_cosmic[i, k2_bin_index, :, :] = 0
+                    else:
+                        self.WinKernel_cosmic[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
 
-            if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
-                self.save(self._resume_file)
-                last_save = time.time()
-
+                pbar.update(len(kmodes[i]))
+                if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
+                    self.logger.debug("Saving progress...")
+                    self.save(self._resume_file)
+                    last_save = time.time()
+            
         self.logger.info('Cosmic variance window kernel computed.')
-
-        shm_data.close()
-        shm_data.unlink()
-        shm_indices.close()
-        shm_indices.unlink()
-        shm_indptr.close()
-        shm_indptr.unlink()
-
-        if self._resume_file is not None:
+        if self._resume_file is not None and self.rank == 0:
             self.save(self._resume_file)
 
-    @staticmethod
-    def _compute_cosmic_variance_kernel_row(bin_kmodes):
+    def _compute_cosmic_variance_kernel_row(self, idx, bin_kmodes, product, Ylm_table):
         '''Computes a row of the window kernels. This function is called in parallel for each k1 bin.
         Gives window kernels for L=0,2,4 auto and cross covariance (instead of only L=0 above)
 
@@ -811,47 +872,17 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 (only 3 bins on each side of diagonal are included by default as the Gaussian covariance drops quickly away from diagonal)
                 The remaining dims correspond to specific ells
         '''
-        logger = logging.getLogger('window_kernel_row')
-        logger.setLevel(logging.DEBUG)
 
         # k1_bin_index is a scalar
-        k1_bin_index = shared_params['k1_bin_index']
-        kfun = shared_params['kfun']
-        dk = shared_params['dk']
-        pk_ellmax = shared_params['pk_ellmax']
-        mask_ellmax = shared_params['mask_ellmax']
-        # The Gaussian covariance drops quickly away from diagonal.
-        # Only delta_k_max points to each side of the diagonal are calculated.
-        delta_k_max = shared_params['delta_k_max']
+        k1_bin_index = idx + self.kmin//self.dk
 
-        G = SurveyGeometry.get_cosmic_variance_gaunt_coefficients(mask_ellmax=mask_ellmax,
-                                                                  pk_ellmax=pk_ellmax)
-
-        # load in ylm callables
-        Ylm_table = math.build_Ylm_table(pk_ellmax)
-
-        # multiply by Gaunt factors
-        # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
-        # NOTE a mp lock is required to prevent race conditions with reading / writing shared memory
-        # TODO: This calculation could be moved to parent process if we want
-        
-        data = np.ndarray(shared_params['sparse_shape'][0], dtype=np.complex128, buffer=shared_data.buf)
-        indices = np.ndarray(shared_params['sparse_shape'][1], dtype=np.int32, buffer=shared_indices.buf)
-        indptr = np.ndarray(shared_params['sparse_shape'][2], dtype=np.int32, buffer=shared_indptr.buf)
-        with lock_flag:
-
-            W_ABCD = base.SparseNDArray.from_arrays(data, indices, indptr,
-                                                    shape_in=shared_params['sparse_shape'][3],
-                                                    shape_out=shared_params['sparse_shape'][4])
-            product = G @ W_ABCD
-            del W_ABCD
-
-        WinKernel = np.zeros((2*delta_k_max+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1), dtype=np.complex128)
-        iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
+        WinKernel = np.zeros((2*self.delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1), dtype=np.complex128)
+        iix, iiy, iiz = np.meshgrid(*self.window_AB.ikgrid, indexing='ij')
 
         k2xh = np.zeros_like(iix)
         k2yh = np.zeros_like(iiy)
         k2zh = np.zeros_like(iiz)
+        kfun = 2 * np.pi / self.boxsize
 
         mode_idx = 1
         t_avg = 0
@@ -875,19 +906,19 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
             # to decide later which shell the k2 mode belongs to
             # k2_bin_index has shape (nmesh, nmesh, nmesh)
-            k2_bin_index = (k2r * kfun / dk).astype(int)
+            k2_bin_index = (k2r * kfun / self.dk).astype(int)
             k2r[k2r <= 1e-10] = np.inf
             k2xh /= k2r
             k2yh /= k2r
             k2zh /= k2r
             
             # Evaluate ylm factors at the given k1 and k2 modes
-            Ylm_k1 = math.evaluate_Ylms(Ylm_table, pk_ellmax, k1xh, k1yh, k1zh)
-            Ylm_k2 = math.evaluate_Ylms(Ylm_table, pk_ellmax, k2xh, k2yh, k2zh)
+            Ylm_k1 = math.evaluate_Ylms(Ylm_table, self.pk_ellmax, k1xh, k1yh, k1zh)
+            Ylm_k2 = math.evaluate_Ylms(Ylm_table, self.pk_ellmax, k2xh, k2yh, k2zh)
 
             result = np.zeros((list(product.shape_in) + [3,3,3,3]), dtype=np.complex128)
             # multiply by Ylms
-            for l1, l2, l3, l4 in itt.product(np.arange(0, pk_ellmax+1, 2), repeat=4):
+            for l1, l2, l3, l4 in itt.product(np.arange(0, self.pk_ellmax+1, 2), repeat=4):
                 l1_idx = int(l1 / 2)
                 l2_idx = int(l2 / 2)
                 l3_idx = int(l3 / 2)
@@ -908,13 +939,13 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                     
                     result[:,:,:,l1_idx,l2_idx,l3_idx,l4_idx] += Ylms * W_times_G.toarray().reshape(product.shape_in)
 
-            for delta_k in range(-delta_k_max, delta_k_max + 1):
+            for delta_k in range(-self.delta_k_max, self.delta_k_max + 1):
                 modes = (k2_bin_index - k1_bin_index == delta_k)
                 if np.any(modes == True):
                     WinKernel[delta_k] = np.sum(result[modes], axis=0)
 
             t_avg += time.time() - t_start
-            logger.debug(f"process {os.getpid()}, mode {mode_idx} / {len(bin_kmodes)} done. Avg time per iteration = {t_avg / mode_idx:.1f}s")
+            self.logger.debug(f"process {os.getpid()}, mode {mode_idx} / {len(bin_kmodes)} done. Avg time per iteration = {t_avg / mode_idx:.1f}s")
             mode_idx += 1
 
         return WinKernel

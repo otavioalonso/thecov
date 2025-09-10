@@ -172,6 +172,19 @@ def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05, 
         
         return cube_modes + list(shell_modes), np.array(cube_nmodes + list(shell_nmodes)), list(cube_weights) + list(shell_weights)
 
+def num_sampled_modes(kmodes:list):
+    """Returns the number of sampled k-modes in the given list of np arrays
+
+    Args:
+        kmodes (list): list of numpy arrays containing the sampled kmodes
+    Returns:
+        total_samples (int): number of kmodes sampled
+    """
+    total_samples = 0
+    for i in range(len(kmodes)):
+        total_samples += len(kmodes[i])
+    return int(total_samples)
+
 def nmodes(volume, kmin, kmax):
     '''Compute the number of modes in a given shell.
 
