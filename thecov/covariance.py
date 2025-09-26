@@ -64,7 +64,7 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
             The value of alpha.
         '''
         if self._alpha is None:
-            return self.geometry.alphas()
+            return self.geometry.alphas
         
         return self._alpha
     
@@ -147,8 +147,12 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
         float
             Shotnoise value.'''
         
+        shotnoise = []
         if isinstance(self.geometry, geometry.SurveyGeometry):
-            return self.pk_renorm * (1 + self.alpha) * self.geometry.I('12')/self.geometry.I('22')
+            alphas = np.array(list(self.alpha.values()))
+            for t in range(self.num_tracers):
+                shotnoise.append(self.pk_renorm * (1 + alphas[t]) * self.geometry.I_12[t]/self.geometry.I_22[t])
+            return np.array(shotnoise)
         elif isinstance(self.geometry, geometry.BoxGeometry):
             return self.pk_renorm * self.geometry.shotnoise
 
@@ -207,9 +211,9 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         if tracer1 >= self.num_tracers or tracer2 >= self.num_tracers:
             raise ValueError(f"Error in PowerSpectrumMultipolesCovariance.set_galaxy_pk_multipole: Requested tracer combo ({tracer1}, {tracer2}) must both be < total number of tracers ({self.num_tracers})")
 
-        if ell == 0 and has_shotnoise:
+        if ell == 0 and has_shotnoise and tracer1 == tracer2:
             self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
-            pk = pk - self.shotnoise
+            pk = pk - self.shotnoise[tracer1]
         
         self._pk[ell, tracer1, tracer2] = pk
         if tracer1 != tracer2: # <- assuming cross spectra are symmetric (P(t1, t2) = P(t2, t1))
