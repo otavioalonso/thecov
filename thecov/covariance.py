@@ -50,7 +50,7 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
         # TODO: Put these in their own getter methods?
         self.num_tracers = geometry.num_tracers
         # total number of auto + cross spectra
-        self.num_spectra = self.num_tracers * (self.num_tracers+1)/2
+        self.num_spectra = int(self.num_tracers * (self.num_tracers+1)/2)
         self.pk_renorm = 1
 
     @property
@@ -106,21 +106,37 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
         # If kbins are set for the covariance matrix but not for the geometry,
         # set them for the geometry as well
         if self.is_kbins_set and not self.geometry.is_kbins_set:
-            self.geometry.set_kbins(self.kmin, self.kmax, self.dk)
+            self.geometry.set_kbins(self.k_binning.kmin, self.k_binning.kmax, self.k_binning.dk)
 
-        cov = np.zeros((self.kbins, self.kbins, 6, self.num_spectra))
-        for ki in range(self.kbins):
+        # has shape [k, k, ell, tracer]
+        cov = np.zeros((self.k_binning.kbins, self.k_binning.kbins, len(self.ells[0])*len(self.ells[1]), self.num_spectra**2))
+        for ki in range(self.k_binning.kbins):
             # Iterate delta_k_max bins either side of the diagonal
-            for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max + 1, self.kbins)):
+            for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max + 1, self.k_binning.kbins)):
                 tracer_idx = 0
                 for A, B in itt.product(range(self.num_tracers), repeat=2):
                     if B < A: continue
                     for C, D in itt.product(range(self.num_tracers), repeat=2):
                         if D < C: continue
-                        cov[ki, kj, :, tracer_idx] = func(ki, kj, A, B, C, D)
+                        cov[ki, kj, :, tracer_idx] += func(ki, kj, A, B, C, D)
                         tracer_idx += 1
 
-        cov *= (self.pk_renorm / self.geometry.I_AB / self.geometry.I_CD)
+        # Somewhat complicated normalization
+        # TODO: Talk to Otavio on what specifically I_AB and I_CD represent
+        if self.num_tracers == 1:
+            I_AB = self.geometry.I22["A"]
+            I_CD = self.geometry.I22["A"]
+        elif self.num_tracers == 2:
+            I_AB = (self.geometry.I22["A"] + self.geometry.I22["B"]) / 2.
+            I_CD = self.geometry.I22["A"]
+        elif self.num_tracers == 3:
+            I_AB = (self.geometry.I22["A"] + self.geometry.I22["B"]) / 2.
+            I_CD = self.geometry.I22["C"]
+        else:
+            I_AB = (self.geometry.I22["A"] + self.geometry.I22["B"]) / 2.
+            I_CD = (self.geometry.I22["C"] + self.geometry.I22["D"]) / 2.
+            
+        cov *= (self.pk_renorm / (I_AB * I_CD))
         return cov
 
     @staticmethod
@@ -128,13 +144,11 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
         if covariance is None:
             covariance = base.MultipoleFourierCovariance()
 
-        for tracer_idx in range(cov_array.shape[2]):
-            covariance.set_ell_cov(0, 0, cov_array[:, :, 0])
-            covariance.set_ell_cov(2, 2, cov_array[:, :, 1])
-            covariance.set_ell_cov(4, 4, cov_array[:, :, 2])
-            covariance.set_ell_cov(0, 2, cov_array[:, :, 3])
-            covariance.set_ell_cov(0, 4, cov_array[:, :, 4])
-            covariance.set_ell_cov(2, 4, cov_array[:, :, 5])
+        ell1 = covariance.ells[0]
+        ell_idx = 0
+        for l1, l2 in itt.product(ell1, repeat=2):
+            covariance.set_ell_cov(l1, l2, cov_array[:, :, ell_idx])
+            ell_idx += 1
 
         return covariance
 
@@ -301,9 +315,9 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
 
         # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
         # TODO: Impliment mixed and shotnoise terms
-        def func(ik, jk, A, B, C, D): return self._get_cosmic_variance_term(ik, jk, A, B, C, D)# + \
+        def func(ik, jk, A, B, C, D): return (1 + self.alpha["A"]) * (1 + self.alpha["B"]) * self._get_shotnoise_term(ik, jk, A, B, C, D)
+                # self._get_cosmic_variance_term(ik, jk, A, B, C, D) + \
             #(1 + self.alpha) * self._get_mixed_term(ik, jk) + \
-            #(1 + self.alpha)**2 * self._get_shotnoise_term(ik, jk)
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
         eigvals = self.eigvals
@@ -475,14 +489,14 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         idx = 0
         for (i, j) in itt.product(range(self.num_tracers), range(self.num_tracers)):
             if i > j: continue
-            self.set_galaxy_pk_multipole(pk_galaxy_raw[0, idx, 0, :], 0, i, j, has_shotnoise=True)
-            self.set_galaxy_pk_multipole(pk_galaxy_raw[0, idx, 1, :], 2, i, j, has_shotnoise=True)
-            self.set_galaxy_pk_multipole(pk_galaxy_raw[0, idx, 2, :], 4, i, j, has_shotnoise=True)
+            self.set_galaxy_pk_multipole(pk_galaxy_raw[idx, 0, 0, :], 0, i, j, has_shotnoise=True)
+            self.set_galaxy_pk_multipole(pk_galaxy_raw[idx, 0, 1, :], 2, i, j, has_shotnoise=True)
+            self.set_galaxy_pk_multipole(pk_galaxy_raw[idx, 0, 2, :], 4, i, j, has_shotnoise=True)
             idx += 1
 
     def _get_cosmic_variance_term(self, jk, ik, A, B, C, D):
         """Calculates elements of the cosmic variance term"""
-        WinKernel = self.geometry.get_window_kernels()
+        WinKernel = self.geometry.cosmic_variance_kernel
 
         delta_k = jk - ik + self.geometry.delta_k_max
 
@@ -523,7 +537,15 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         raise NotImplementedError
 
     def _get_shotnoise_term(self, jk, ik, A, B, C, D):
-        raise NotImplementedError
+        
+        WinKernel = self.geometry.shotnoise_kernel
+        delta_k = jk - ik + self.geometry.delta_k_max
+
+        cov_ij = np.zeros((len(self.ells[0]), len(self.ells[1])))
+        for ell1, ell2, ell3, ell4 in itt.product(self.ells[0], repeat=4):
+            cov_ij[ell1, ell2] += WinKernel[ik, delta_k, ell1, ell2, ell3, ell4]
+
+        return cov_ij.flatten()
 
 
 class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):

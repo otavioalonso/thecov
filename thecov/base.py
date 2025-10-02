@@ -1,6 +1,8 @@
 '''Module containing basic classes to deal with covariance matrices.'''
 
 import os, time, copy
+from mpi4py import MPI
+import pickle
 
 import numpy as np
 import scipy
@@ -31,12 +33,30 @@ class BaseClass:
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+        if self.__dict__.get("comm") is None:
+            self.comm = MPI.COMM_WORLD
+            self.rank = self.comm.Get_rank()
+            self.size = self.comm.Get_size()
 
-    @classmethod
-    def from_state(cls, state):
-        new = cls.__new__(cls)
-        new.__setstate__(state)
-        return new
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        return state
+
+    def get_pickleable_state(self):
+        """Same as __getstate__, except only returns picklable variables"""
+        state = self.__dict__.copy()
+        # Drop MPI communicators or other non-pickleable attributes
+        for key, _ in state.items():
+            if "comm" in key or "rank" in key or "size" in key or "window_" in key:
+                state[key] = None
+
+        return state
+
+    # @classmethod
+    # def from_state(cls, state):
+    #     new = cls.__new__(cls)
+    #     new.__setstate__(state)
+    #     return new
 
     @property
     def with_mpi(self):
@@ -47,9 +67,10 @@ class BaseClass:
         """Save to ``filename``."""
         start = time.time()
         if not self.with_mpi or self.mpicomm.rank == 0:
-
+            
             utils.mkdir(os.path.dirname(filename))
-            np.save(filename, self.__getstate__(), allow_pickle=True)
+            with open(filename, "wb") as f:
+                pickle.dump(self.get_pickleable_state(), f, protocol=pickle.HIGHEST_PROTOCOL)
         # if self.with_mpi:
         #     self.mpicomm.Barrier()
 
@@ -58,9 +79,13 @@ class BaseClass:
 
     @classmethod
     def load(cls, filename):
-        state = np.load(filename, allow_pickle=True)[()]
-        new = cls.from_state(state)
-        return new
+        # state = np.load(filename, allow_pickle=True)[()]
+        # new = cls.from_state(state)
+        with open(filename, "rb") as f:
+            state = pickle.load(f)
+        return state
+        #     new = cls.from_state(state)
+        # return new
 
 class Covariance(BaseClass):
     '''A class that represents a covariance matrix.
@@ -773,6 +798,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         self._mshape = (size, size)
         self.foreach(lambda cov: cov.set_kbins(kmin, kmax, dk, nmodes))
 
+        self.is_kbins_set = True
         return self.k_binning.set_kbins(kmin, kmax, dk, nmodes)
 
 class SparseNDArray:

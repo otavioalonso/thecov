@@ -120,6 +120,7 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         randoms['WEIGHT'] *= alpha
         
         # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
+        # NOTE: Sometimes this if statement hangs for some reason...
         if 'NZ' not in randoms:
             if self.rank == 0: self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
             import healpy as hp
@@ -174,15 +175,15 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
 
         return mesh, shotnoise_mesh
 
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        for key in ['logger', 'tqdm', 'mesh1',  'mesh2', '_resume_file']:
-            if hasattr(self, key):
-                del state[key]
-        return state
+    # def __getstate__(self):
+    #     state = self.__dict__.copy()
+    #     for key in ['logger', 'tqdm', 'mesh1',  'mesh2', '_resume_file']:
+    #         if hasattr(self, key):
+    #             del state[key]
+    #     return state
     
-    def __setstate__(self, state):
-        self.__dict__.update(state)
+    # def __setstate__(self, state):
+    #     self.__dict__.update(state)
         
     @property
     def knyquist(self):
@@ -345,7 +346,6 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
 
                     self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result.shape[0]} with factor {rebin_factor}.")
 
-            print(result_combined.shape)
             # pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
             if fourier:
                 result_combined *= self.knmesh**3
@@ -387,7 +387,6 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         self.comm = comm
         self.rank = comm.Get_rank()
         self.size = comm.Get_size()
-        #self.single_comm = utils.get_single_comm(self.rank, self.comm)
 
         self.logger = logging.getLogger('SurveyGeometry')
         self.logger.setLevel(logging.INFO)
@@ -418,11 +417,10 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             Name of the file to load the window kernels from.
         '''
         for r in range(self.size):
-            if self.rank == 0 and self.rank == r:
-                self.logger.info(f'Loading window kernels from {filename}.')
             if self.rank == r: 
+                if self.rank == 0: self.logger.info(f'Loading window kernels from {filename}.')
                 self.logger.debug(f'rank {r} loading window kernels...')
-                self.load(filename)
+                self.__setstate__(self.load(filename))
             self.comm.Barrier()
 
         # Cartesian FFTs need to be loaded through the setter
@@ -487,11 +485,11 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
 
         if self.randoms['B'] != None and self.randoms['C'] != None:
             self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
-            self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], **kwargs)
+            self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], shotnoise=True, **kwargs)
             self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
         elif self.randoms['B'] != None and self.randoms['C'] == None:
             self.window_CD = self.window_AB
-            self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], **kwargs)
+            self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], shotnoise=True, **kwargs)
             self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
         elif self.randoms['B'] == None and self.randoms['C'] != None:
             self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
@@ -611,7 +609,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             for l in range(0, self.mask_ellmax+1, 2):
                 for m in range(-l, l+1):
                     if idx == "A":
-                        result = self.window_AC.mesh(l, m, shotnoise=True, combine_windows=False)
+                        result = self.window_AB.mesh(l, m, shotnoise=True, combine_windows=False)
                     elif idx == "B":
                         result = self.window_BC.mesh(l, m, shotnoise=True, combine_windows=False)
                     elif idx == "AB":
@@ -636,9 +634,17 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
         return np.array(list(self.I22.values()))
 
     @property
-    def get_window_kernels(self):
-        return self.WinKernel
+    def cosmic_variance_kernel(self):
+        return self.WinKernel_cosmic
     
+    @property
+    def mixed_kernel(self):
+        return self.WinKernel_mixed
+
+    @property
+    def shotnoise_kernel(self):
+        return self.WinKernel_shotnoise
+
     @property
     def nmesh(self):
         return self.window_AB.knmesh
@@ -1048,17 +1054,9 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             W_AD = self.get_survey_window("A", "D")
             W_BC = self.get_survey_window("B", "C")
             W_BD = self.get_survey_window("B", "D")
+            print(self.resume_file)
 
         delta_k_max = self.nmesh // 2 - 1
-
-        kmodes_sampled = 1000
-        kmodes, Nmodes, weights = math.sample_kmodes(kmin=self.kmin,
-                                                     kmax=self.kmax,
-                                                     dk=self.dk,
-                                                     boxsize=self.boxsize,
-                                                     max_modes=kmodes_sampled,
-                                                     k_shell_approx=0.05,
-                                                     sample_mode="monte-carlo")
 
         if not hasattr(self, 'WinKernel_mixed') or self.WinKernel_mixed is None:
             # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
@@ -1094,9 +1092,13 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             G = self.get_shotnoise_gaunt_coefficients(pk_ellmax=self.pk_ellmax, mask_ellmax=self.mask_ellmax)
         else:
             G = None
+        S_A_temp = self.get_shotnoise_window("A", cache_dir)
+        S_B_temp = self.get_shotnoise_window("B", cache_dir)
         S_AB_temp = self.get_shotnoise_window("AB", cache_dir)
 
         self.comm.Barrier()
+        S_A = self.move_to_shared_memory(S_A_temp)
+        S_B = self.move_to_shared_memory(S_B_temp)
         S_AB = self.move_to_shared_memory(S_AB_temp)
         G = self.comm.bcast(G, root=0)
 
@@ -1136,7 +1138,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             # Splitting kmodes in chunks to be sent to each rank
             kmodes_per_rank = np.array_split(km, self.size)[self.rank]
 
-            results_per_rank = self._compute_shotnoise_kernel_row(i, kmodes_per_rank, G_times_S, Ylm_table)
+            results_per_rank = self._compute_shotnoise_kernel_row(i, kmodes_per_rank, G_times_S, S_A, S_B, Ylm_table)
             self.comm.Barrier()
 
             results_per_rank = np.sum(results_per_rank, axis=0)
@@ -1147,7 +1149,7 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
             self.comm.Reduce(results_per_rank, results_combined, op=MPI.SUM, root=0)
     
             if self.rank == 0:
-                self.WinKernel_shotnoise[i] = results_combined * weights[i] / kmodes_sampled
+                self.WinKernel_shotnoise[i] = results_combined.real * weights[i] / kmodes_sampled
                 for k2_bin_index in range(0, 2*delta_k_max + 1):
                     if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
                         self.WinKernel_shotnoise[i, k2_bin_index, :, :] = 0
@@ -1157,15 +1159,17 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                 pbar.update(len(kmodes[i]))
                 if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
                     self.logger.debug("Saving progress...")
+
                     self.save(self._resume_file)
                     last_save = time.time()
             
-        self.logger.info('Shotnoise window kernel computed.')
+        if self.rank == 0: self.logger.info('Shotnoise window kernel computed.')
+
         if self._resume_file is not None and self.rank == 0:
             self.save(self._resume_file)
 
 
-    def _compute_shotnoise_kernel_row(self, idx, bin_kmodes, product, Ylm_table):
+    def _compute_shotnoise_kernel_row(self, idx, bin_kmodes, product, S_A, S_B, Ylm_table):
 
         k1_bin_index = idx + self.kmin//self.dk
 
@@ -1219,13 +1223,15 @@ class SurveyGeometry(base.BaseClass, base.LinearBinning):
                     m1_idx = int((m1 + l1) / 2)
                     m2_idx = int((m2 + l2) / 2)
 
-                    W_times_S = product[l1_idx,l2_idx,m1_idx,m2_idx]
+                    G_times_S = product[l1_idx,l2_idx,m1_idx,m2_idx]
+                    s_a = S_A[l1_idx,m1_idx].toarray().reshape([self.nmesh, self.nmesh, self.nmesh])
+                    s_b = S_B[l2_idx,m2_idx].toarray().reshape([self.nmesh, self.nmesh, self.nmesh])
 
                     Ylms = Ylm_k1[l1_idx][m1_idx] * \
                            Ylm_k2[l2_idx][m2_idx]
                     
-                    result[:,:,:,l1_idx,l2_idx] += Ylms * W_times_S.toarray().reshape(product.shape_in)
-
+                    result[:,:,:,l1_idx,l2_idx] += Ylms * (s_a @ s_b + (G_times_S).toarray().reshape(product.shape_in))
+            
             for delta_k in range(-self.delta_k_max, self.delta_k_max + 1):
                 modes = (k2_bin_index - k1_bin_index == delta_k)
                 if np.any(modes == True):
