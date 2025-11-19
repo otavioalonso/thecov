@@ -18,6 +18,8 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
       run: |
+        sudo apt-get update 
+        sudo apt-get install -y libopenmpi-dev openmpi-bin build-essential
         python -m pip install --upgrade pip
         pip install six==1.15.0 numpy==1.26 scipy Cython h5py mpi4py
         python -m pip install .
