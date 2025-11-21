@@ -24,14 +24,14 @@ from pypower import CatalogMesh
 
 import functools
 
-from . import base, utils, math
+from . import base, utils, math, binning
 
 MASK_ELL_MAX = 12
 PK_ELL_MAX = 4
 
 __all__ = ['SurveyWindow', 'SurveyGeometry']
 
-class SurveyWindow(base.BaseClass, base.LinearBinning):
+class SurveyWindow(base.BaseClass, binning.LinearBinning):
 
     def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, mpi_comm=MPI.COMM_WORLD,
                  nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmin=0.0, kmax=0.02, 
@@ -364,13 +364,13 @@ class SurveyWindow(base.BaseClass, base.LinearBinning):
         else:              return None
     
 # barebones class so covariance.py compiles without error for now
-class BoxGeometry(base.BaseClass, base.LinearBinning):
+class BoxGeometry(base.BaseClass, binning.LinearBinning):
 
     def __init__(self):
         pass
 
 
-class SurveyGeometry(base.BaseClass, base.LinearBinning):
+class SurveyGeometry(base.BaseClass, binning.LinearBinning):
 
     def __init__(self,
                  randoms_a,      alpha_a,

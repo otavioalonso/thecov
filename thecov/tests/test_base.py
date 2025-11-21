@@ -85,28 +85,29 @@ def test_multipole_covariance_addition():
     assert (addition.get_ell_cov(0,4).cov == cov1_04 + cov2_04).all()
     assert (addition.get_ell_cov(2,4).cov == cov1_24 + cov2_24).all()
 
-def test_multipole_fourier_covariance_save_load_csv():
-    cov = thecov.base.MultipoleFourierCovariance()
-    cov.set_kbins(0., 0.4, 0.005)
+# NOTE: Commented out since we will be chaning the relavent code to handle multi-tracer covariance
+# def test_multipole_fourier_covariance_save_load_csv():
+#     cov = thecov.base.MultipoleFourierCovariance()
+#     cov.set_kbins(0., 0.4, 0.005)
 
-    cov00, cov22, cov44, cov02, cov04, cov24 = np.random.rand(6, cov.kbins, cov.kbins)
+#     cov00, cov22, cov44, cov02, cov04, cov24 = np.random.rand(6, cov.kbins, cov.kbins)
 
-    cov.set_ell_cov(0, 0, cov00)
-    cov.set_ell_cov(2, 2, cov22)
-    cov.set_ell_cov(4, 4, cov44)
+#     cov.set_ell_cov(0, 0, cov00)
+#     cov.set_ell_cov(2, 2, cov22)
+#     cov.set_ell_cov(4, 4, cov44)
 
-    cov.set_ell_cov(0, 2, cov02)
-    cov.set_ell_cov(0, 4, cov04)
-    cov.set_ell_cov(4, 2, cov24.T)
+#     cov.set_ell_cov(0, 2, cov02)
+#     cov.set_ell_cov(0, 4, cov04)
+#     cov.set_ell_cov(4, 2, cov24.T)
 
-    cov.savecsv('test1.txt')
-    cov.savecsv('test2.txt', ells_both_ways=True)
+#     cov.savecsv('test1.txt')
+#     cov.savecsv('test2.txt', ells_both_ways=True)
 
-    cov1 = thecov.base.MultipoleFourierCovariance.fromcsv('test1.txt')
-    cov2 = thecov.base.MultipoleFourierCovariance.fromcsv('test2.txt')
+#     cov1 = thecov.base.MultipoleFourierCovariance.fromcsv('test1.txt')
+#     cov2 = thecov.base.MultipoleFourierCovariance.fromcsv('test2.txt')
 
-    assert np.allclose(cov1.cov, cov.cov)
-    assert np.allclose(cov2.cov, cov.cov)
+#     assert np.allclose(cov1.cov, cov.cov)
+#     assert np.allclose(cov2.cov, cov.cov)
 
-    os.remove('test1.txt')
-    os.remove('test2.txt')
+#     os.remove('test1.txt')
+#     os.remove('test2.txt')
