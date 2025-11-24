@@ -6,9 +6,41 @@ Under active development, testing and validation. Version 1.0 will be released w
 
 ## Installation
 
+### Autoomated (in developement)
+
+Download the repository, then run,
+
+```sh
+./install.sh < env_name=thecov >
+```
+
+which should create a new anaconda enviornment with `thecov` and all necesary dependencies installed.
+
+### Linux
+
+On Linux-based systems, symply run,
+
 ```sh
 pip install git+https://github.com/cosmodesi/thecov
 ```
+
+### MacOS
+
+PyClass will not compile as-is due to the default macos clang compiler not supporting openmp. There are several workarounds for this (see this [discussion](https://github.com/lesgourg/class_public/issues/405) for more details), one of which I will step through here:
+
+1. install libomp libraries (e.g. from homebrew): `brew install libomp`
+2. Paste the following enviornment varialbes into your `.zshrc` file:
+```sh
+export LIBOMP_PREFIX="$(brew --prefix libomp)"
+export CPPFLAGS="-I${LIBOMP_PREFIX}/include"
+export CFLAGS="-I${LIBOMP_PREFIX}/include -Xpreprocessor -fopenmp"
+export CXXFLAGS="-I${LIBOMP_PREFIX}/include -Xpreprocessor -fopenmp"
+export LDFLAGS="-L${LIBOMP_PREFIX}/lib -Wl,-rpath,${LIBOMP_PREFIX}/lib -lomp"
+# Optional at runtime if loader can't find libomp:
+export DYLD_LIBRARY_PATH="${LIBOMP_PREFIX}/lib:${DYLD_LIBRARY_PATH:-}"
+```
+3. Install via pip: `pip install git+https://github.com/cosmodesi/thecov`
+
 ## Usage
 
 ```python

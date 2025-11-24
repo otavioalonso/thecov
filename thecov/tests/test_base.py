@@ -1,5 +1,4 @@
 import numpy as np
-import thecov.base
 import thecov.base as base
 import os
 

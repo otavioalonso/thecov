@@ -42,9 +42,8 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
     def __init__(self, geometry=None):
         super().__init__()
         self.logger = logging.getLogger('PowerSpectrumCovariance')
-
         self.geometry = geometry
-
+        
         self._pk = {}
         self._alpha = None
         # TODO: Put these in their own getter methods?

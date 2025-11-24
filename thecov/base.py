@@ -679,6 +679,25 @@ class MultipoleFourierCovariance(MultipoleCovariance):
     def kbins(self):
         return self.k_binning.kbins
 
+# TODO: Option for multi-tracer covariance implementation
+# - Keep each tracer combo as a seperate instance of PowerSpectrumCovariance
+# - Add a helper class here with all the logic for dealing with multi-tracer indices
+# - Add some unit tests
+class MultiTracerCovariance():
+    """
+    Wrapper class that keeps track of multipole covariance objects 
+    for each tracer combination
+    """
+    def __init__(self, num_tracers=1):
+        self.num_tracers = num_tracers
+
+    def set_tracer_cov(self, tracer1, tracer2, cov, cls=MultipoleFourierCovariance):
+        pass
+
+    def get_tracer_cov(self, tracer1, tracer2):
+        pass
+
+
 class SparseNDArray:
     """
     A class to represent a sparse ND array using scipy.sparse.csr_matrix.
