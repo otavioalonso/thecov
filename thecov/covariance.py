@@ -397,6 +397,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             Whether to rescale shotnoise matching the value in the power spectrum file.
         '''
 
+        # TODO for Otavio: Upgrade to multi-tracer support
         kmin_file, kmax_file = pypower.kedges[[0, -1]]
         dk_file = np.diff(pypower.kedges).mean()
 
@@ -475,6 +476,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         else:
             raise IOError(f"Could not find power spectrum file at {ps_file}")
         
+        #[nz, nt, nk, nl]
         num_ells = 3
         pk_galaxy_raw = pk_data
         # TODO: Come up with more robust way to do this

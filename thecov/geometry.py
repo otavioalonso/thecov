@@ -3,7 +3,6 @@
 Classes
 -------
 SurveyWindow
-    Class re
 SurveyGeometry
 """
 
@@ -31,17 +30,24 @@ PK_ELL_MAX = 4
 
 __all__ = ['SurveyWindow', 'SurveyGeometry']
 
-class SurveyWindow(base.BaseClass, binning.LinearBinning):
+class SurveyWindow(base.BaseClass):
 
     def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, mpi_comm=MPI.COMM_WORLD,
                  nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmin=0.0, kmax=0.02, 
-                 dk=None, shotnoise=False, **kwargs):
+                 dk=None, binning_type="linear", shotnoise=False, **kwargs):
 
-        super().__init__(kmin, kmax, dk)
+        super().__init__()
 
         self.comm = mpi_comm
         self.rank = mpi_comm.Get_rank()
         self.size = mpi_comm.Get_size()
+
+        if binning_type == "linear":
+            self.k_binning = binning.LinearBinning(kmin, kmax, dk)
+        elif binning_type == "log":
+            self.k_binning = binning.LogBinning(kmin, kmax, dk)
+        else:
+            raise ValueError("binning_type must be either 'linear' or 'log'")
 
         self.logger = logging.getLogger('SurveyWindow')
         self.logger.setLevel(logging.INFO)
@@ -50,8 +56,9 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
         self._is_shotnoise = shotnoise
         self.kmax = kmax
         self.dk = dk
+        self.alpha1, self.alpha2 = alpha1, alpha2
 
-        self.mesh1, self.shotnoise_mesh1 = self._parse_randoms(
+        self.mesh1, self.shotnoise_mesh1 = self._create_mesh(
             randoms=randoms1,
             alpha=alpha1,
             nmesh=nmesh,
@@ -63,13 +70,11 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
         )
         self.boxsize = self.mesh1.boxsize[0]
         self.nmesh = self.mesh1.nmesh[0]
-        self.I_1_12 = self.I(randoms1, alpha1, 0, 2)
-        self.I_1_22 = self.I(randoms1, alpha1, 1, 2)
 
         if randoms2 is not None:
             assert alpha2 is not None, "If randoms2 is provided, alpha2 must also be provided."
 
-            self.mesh2, self.shotnoise_mesh2 = self._parse_randoms(
+            self.mesh2, self.shotnoise_mesh2 = self._create_mesh(
                 randoms=randoms2,
                 alpha=alpha2,
                 nmesh=nmesh,
@@ -82,8 +87,6 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
 
             self.boxsize = max(self.mesh1.boxsize[0], self.mesh2.boxsize[0])
             self.nmesh = max(self.mesh1.nmesh[0], self.mesh2.nmesh[0])
-            self.I_2_12 = self.I(randoms2, alpha2, 1, 2)
-            self.I_2_22 = self.I(randoms2, alpha2, 2, 2)
             
             self.mesh1._set_box(nmesh=self.nmesh, boxsize=self.boxsize, wrap=False)
             self.mesh2._set_box(nmesh=self.nmesh, boxsize=self.boxsize, wrap=False)
@@ -104,39 +107,10 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
         # Initialize rebin parameters
         self._rebin_parameters(dk, kmax)
 
-    def _parse_randoms(self, randoms, alpha, nmesh, cellsize, boxsize, boxpad, kmax, shotnoise):
+    def _create_mesh(self, randoms, alpha, nmesh, cellsize, boxsize, boxpad, kmax, shotnoise):
         """Parse the randoms into a mesh, filling in missing information as needed."""        
 
         start_time = time.time()
-        if not isinstance(randoms, mockfactory.Catalog):
-            randoms = mockfactory.Catalog(randoms)
-
-        # Check if the randoms have weights, otherwise set them to 1
-        for name in ['WEIGHT', 'WEIGHT_FKP']:
-            if name not in randoms:
-                if self.rank == 0: self.logger.warning(f'{name} column not found in randoms. Setting it to 1.')
-                randoms[name] = np.ones(randoms.size, dtype='f8')
-        
-        randoms['WEIGHT'] *= alpha
-        
-        # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
-        # NOTE: Sometimes this if statement hangs for some reason...
-        if 'NZ' not in randoms:
-            if self.rank == 0: self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
-            import healpy as hp
-            nside = 512
-            distance = np.sqrt(np.sum(randoms['POSITION']**2, axis=-1))
-            xyz = randoms['POSITION'] / distance[:, None]
-            hpixel = hp.vec2pix(nside, *xyz.T)
-            unique_hpixels_rank = np.unique(hpixel)
-            unique_hpixels_total = self.comm.allgather(unique_hpixels_rank)
-            unique_hpixels_total = np.unique(np.concatenate(unique_hpixels_total).ravel())
-
-            fsky = len(unique_hpixels_total) / hp.nside2npix(nside)
-            if self.rank == 0: self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
-            nbar = mockfactory.RedshiftDensityInterpolator(z=distance, weights=randoms['WEIGHT'], fsky=fsky)
-            randoms['NZ'] = nbar(distance)
-
         # Check if the randoms have nmesh and cellsize, otherwise set them using the kmax parameter
         if nmesh is None and cellsize is None:
             # Pick value that will give at least k_mask = kmax_window in the FFTs
@@ -171,8 +145,7 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
             shotnoise_mesh = None
 
         self.comm.Barrier()
-        if self.rank == 0: self.logger.info(f'Parsed randoms in {time.time() - start_time:.2f} seconds.')
-
+        if self.rank == 0: self.logger.info(f'Created meshes in {time.time() - start_time:.2f} seconds.')
         return mesh, shotnoise_mesh
 
     # def __getstate__(self):
@@ -197,18 +170,6 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
         if hasattr(self, 'knmesh'):
             return 2 * np.pi / self.kboxsize
         return 2 * np.pi / self.boxsize
-    
-    @property
-    def alpha1(self):
-        return self._alpha1
-    
-    @property
-    def alpha2(self):
-        return self._alpha2
-    
-    @property
-    def alpha(self):
-        return self.alpha1
 
     @property
     def ikgrid(self):
@@ -220,12 +181,6 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
             iik[iik >= nmesh // 2] -= nmesh
             ikgrid.append(iik)
         return ikgrid
-
-    def I(self, randoms, alpha, nbar_power, fkp_power):
-        return (randoms['NZ']**(nbar_power-1) * \
-                randoms['WEIGHT_FKP']**fkp_power * \
-                randoms['WEIGHT'] * \
-                alpha).sum().tolist()
     
     def _rebin_parameters(self, dk, kmax):
 
@@ -245,12 +200,11 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
 
         # Ensure that trim_to_nmesh is a multiple of rebin_factor
         if (trim_to_nmesh % rebin_factor) != 0:
-            trim_to_nmesh +=  rebin_factor - (trim_to_nmesh % rebin_factor)
+            trim_to_nmesh += rebin_factor - (trim_to_nmesh % rebin_factor)
 
         self.kboxsize = trim_to_nmesh/self.nmesh * self.boxsize
         self.knmesh = trim_to_nmesh//rebin_factor
 
-        # NOTE: idk if this return is necesary
         return trim_to_nmesh, rebin_factor
 
     # @staticmethod
@@ -278,8 +232,8 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
         shotnoise : bool, optional
             If True, the shotnoise mesh is used instead of the original mesh. Default is False.
 
-        combine_windows : bpp;, optional
-            Determines whether or not to multiply mesh1 by mesh2. Defualt True
+        combine_windows : bool, optional
+            Determines whether or not to multiply mesh1 by mesh2. Default True
             
         fourier : bool, optional
             If True, the Fourier transform of the mesh is returned. Default is True.
@@ -287,7 +241,7 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
         Returns
         -------
         mesh
-            Resulting mesh (numpy array)after computation with size [nmesh, nmesh, nmesh] on rank 0
+            Resulting mesh (numpy array) after computation with size [nmesh, nmesh, nmesh] on rank 0
         """
 
         assert ell >= 0, "ell must be non-negative"
@@ -364,13 +318,14 @@ class SurveyWindow(base.BaseClass, binning.LinearBinning):
         else:              return None
     
 # barebones class so covariance.py compiles without error for now
-class BoxGeometry(base.BaseClass, binning.LinearBinning):
+# TODO for Otavio: restore this class?
+class BoxGeometry(base.BaseClass):
 
     def __init__(self):
         pass
 
 
-class SurveyGeometry(base.BaseClass, binning.LinearBinning):
+class SurveyGeometry(base.BaseClass):
 
     def __init__(self,
                  randoms_a,      alpha_a,
@@ -378,11 +333,11 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
                  randoms_c=None, alpha_c=None,
                  randoms_d=None, alpha_d=None,
                  nmesh=None, boxsize=None, boxpad=2.,
-                 kmin=0, kmax=0.2, dk=None, mask_ellmax=12, pk_ellmax=4,
+                 kmin=0, kmax=0.2, dk=None, binning_type="linear", mask_ellmax=12, pk_ellmax=4,
                  sample_mode="lebedev", lebedev_degree=25, resume_file=None, comm=MPI.COMM_WORLD):
 
         # set's k-binning
-        super().__init__(kmin, kmax, dk)
+        super().__init__()
 
         self.comm = comm
         self.rank = comm.Get_rank()
@@ -403,10 +358,10 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
         else:
             self.set_resume_file(os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache/WinKernel.npy"))
 
-        # if self.rank == 0:
         self._init_randoms(randoms_a, alpha_a, randoms_b, alpha_b, randoms_c, alpha_c, randoms_d, alpha_d)
+        self._init_I_factors()
         self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk)
-
+        del self.randoms
 
     def load_resume_file(self, filename):
         '''Load the window kernels from a file on each rank (sequentually).
@@ -423,9 +378,6 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
                 self.__setstate__(self.load(filename))
             self.comm.Barrier()
 
-        # Cartesian FFTs need to be loaded through the setter
-        # for key in self._W:
-        #     self.set_cartesian_fft(key, self._W[key])
 
     def set_resume_file(self, filename):
         '''Set the resume file for the window kernels.
@@ -449,6 +401,23 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
 
         self.comm.Barrier()
 
+
+    def set_kbins(self, kmin, kmax, dk):
+        '''Set the k-bins for the window kernels.
+
+        Parameters
+        ----------
+        kmin : float
+            Minimum k value.
+
+        kmax : float
+            Maximum k value.
+
+        dk : float
+            Width of the k-bins.
+        '''
+        raise NotImplementedError("set_kbins is not implemented yet.")
+
     def _init_randoms(self, randoms_a, alpha_a,
                             randoms_b, alpha_b,
                             randoms_c, alpha_c,
@@ -457,24 +426,58 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
         self.randoms = {'A' : None, 'B' : None, 'C' : None, 'D': None}
         self.alphas  = {'A' : None, 'B' : None, 'C' : None, 'D': None}
 
-        self.randoms['A'] = randoms_a
+        self.randoms['A'] = self._parse_randoms(randoms_a, alpha_a)
         self.alphas['A'] = alpha_a
         self._num_tracers = 1
 
         if randoms_b is not None and alpha_b is not None:
-            self.randoms['B'] = randoms_b
+            self.randoms['B'] = self._parse_randoms(randoms_b, alpha_b)
             self.alphas['B'] = alpha_b
             self._num_tracers+=1
         
         if randoms_c is not None and alpha_c is not None:
-            self.randoms['C'] = randoms_c
+            self.randoms['C'] = self._parse_randoms(randoms_c, alpha_c)
             self.alphas['C'] = alpha_c
             self._num_tracers+=1
 
         if randoms_d is not None and alpha_d is not None:
-            self.randoms['D'] = randoms_d
+            self.randoms['D'] = self._parse_randoms(randoms_d, alpha_d)
             self.alphas['D'] = alpha_d
             self._num_tracers+=1
+
+    def _parse_randoms(self, randoms, alpha):
+        """Parse the randoms into a catalog, filling in missing information as needed."""
+        
+        if not isinstance(randoms, mockfactory.Catalog):
+            randoms = mockfactory.Catalog(randoms)
+
+        # Check if the randoms have weights, otherwise set them to 1
+        for name in ['WEIGHT', 'WEIGHT_FKP']:
+            if name not in randoms:
+                if self.rank == 0: self.logger.warning(f'{name} column not found in randoms. Setting it to 1.')
+                randoms[name] = np.ones(randoms.size, dtype='f8')
+        
+        randoms['WEIGHT'] *= alpha
+        
+        # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
+        # NOTE: Sometimes this if statement hangs for some reason...
+        if 'NZ' not in randoms:
+            if self.rank == 0: self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
+            import healpy as hp
+            nside = 512
+            distance = np.sqrt(np.sum(randoms['POSITION']**2, axis=-1))
+            xyz = randoms['POSITION'] / distance[:, None]
+            hpixel = hp.vec2pix(nside, *xyz.T)
+            unique_hpixels_rank = np.unique(hpixel)
+            unique_hpixels_total = self.comm.allgather(unique_hpixels_rank)
+            unique_hpixels_total = np.unique(np.concatenate(unique_hpixels_total).ravel())
+
+            fsky = len(unique_hpixels_total) / hp.nside2npix(nside)
+            if self.rank == 0: self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
+            nbar = mockfactory.RedshiftDensityInterpolator(z=distance, weights=randoms['WEIGHT'], fsky=fsky)
+            randoms['NZ'] = nbar(distance)
+
+        return randoms
 
     def _init_survey_windows(self, **kwargs):
         
@@ -500,40 +503,51 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
             self.window_BC = self.window_AB
             self.window_BD = self.window_AB
 
-        # old logic
-        # if 'B' in self.randoms:
-        #     self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['B'], self.alphas['B'], **kwargs)
-        # else:
-        #     self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], None, None, **kwargs)
-        # if 'C' in self.randoms or 'D' in self.randoms:
-        #     if 'D' in self.randoms:
-        #         self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
-        #     else:
-        #         self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], None, None, **kwargs)
-        # else:
-        #     self.window_CD = self.window_AB
+    def _init_I_factors(self):
+        """initializes all relavent I factors from the input randoms"""
 
-        # retrieve I factors
-        self._set_I_factors()
+        self.I_LABELS = ['12', '22', '10', '24', '14', '34', '44', '32']
+        self.TRACER_LABELS = ['A', 'B', 'C', 'D']
+        self._I = np.full((len(self.I_LABELS), len(self.TRACER_LABELS)), np.nan)
+        for tracer in self.TRACER_LABELS:
+            if self.randoms[tracer] is not None:
+                if self.rank == 0: self.logger.info(f"Initializing I factors from random {tracer}...")
+                for i, label in self.tqdm(enumerate(self.I_LABELS)):
+                    nbar_power = int(label[0])
+                    fkp_power = int(label[1])
+                    I = (self.randoms2['NZ']**(nbar_power-1) * \
+                        self.randoms2['WEIGHT_FKP']**fkp_power * \
+                        self.randoms2['WEIGHT'] * \
+                        self.alpha[tracer]).sum().item()
+                    self._I[i, self.TRACER_LABELS.index(tracer)] = I
 
-        del self.randoms
 
-    def _set_I_factors(self):
+    def I(self, tracer="A", nbar_power=1, fkp_power=1):
+        """Retrieve the I normalization factor for the given tracer.
 
-        self.I12 = {'A' : None, 'B' : None, 'C' : None, 'D': None}
-        self.I22 = {'A' : None, 'B' : None, 'C' : None, 'D': None}
+        Parameters
+        ----------
+        tracer : str, optional
+            Tracer label. Must be one of 'A', 'B', 'C', 'D'. Default is 'A'.
 
-        self.I12['A'] = self.window_AB.I_1_12
-        self.I22['A'] = self.window_AB.I_1_22
-        if self.randoms['B'] != None:
-            self.I12['B'] = self.window_AB.I_2_12
-            self.I22['B'] = self.window_AB.I_2_22
-        if self.randoms['C'] != None:
-            self.I12['C'] = self.window_CD.I_1_12
-            self.I22['C'] = self.window_CD.I_1_22
-        if self.randoms['D'] != None:
-            self.I12['D'] = self.window_CD.I_2_12
-            self.I22['D'] = self.window_CD.I_2_22
+        nbar_power : int, optional
+            Power of nbar in the I factor. Default is 1.
+
+        fkp_power : int, optional
+            Power of FKP weight in the I factor. Default is 1.
+
+        Returns
+        -------
+        I factor
+        """
+
+        if tracer not in ['A', 'B', 'C', 'D']:
+            raise ValueError("tracer must be one of 'A', 'B', 'C', 'D'")
+
+        label_idx = self.I_LABELS.index(f"{nbar_power}{fkp_power}")
+        tracer_idx = self.TRACER_LABELS.index(tracer)
+        return self._I[label_idx, tracer_idx]
+
 
     @functools.cache
     def get_combined_survey_window(self, cache_dir=None):
@@ -767,15 +781,21 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
         self.WinKernel = None
         self.WinKernel_error = None
         self._window_power = None
-        self._W = {}
         self._I = {}
 
-    def compute_window_kernels(self, cache_dir=None):
+    def compute_window_kernels(self, cache_dir:str=None, kmodes_sampled:int=250):
         """Wrapper function that sequentially runs all kernel computations.
-        Each term is calculated seperately in order to save memory"""
+        Each term is calculated seperately in order to save memory
+        
+        Args
+            cache_dir (str): Directory to save/load window kernels. If None, uses default cache directory. Default None
+            kmodes_sampled (int): Number of k-modes to randomly sample from each k1 bin. Default 250
+        """
+
+        if cache_dir is None:
+            cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
 
         # HYBRID SAMPLING
-        kmodes_sampled = 250
         if self.rank == 0:
             kmodes, Nmodes, weights = math.sample_kmodes(kmin=self.kmin,
                                                         kmax=self.kmax,
@@ -793,14 +813,14 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
         Nmodes = self.comm.bcast(Nmodes, root=0)
         weights = self.comm.bcast(weights, root=0)
 
-        #if self.rank == 0: self.logger.info("Computing cosmic variance term kernels...")
-        #self._compute_cosmic_variance_kernel(cache_dir, kmodes, nmodes, weights)
+        if self.rank == 0: self.logger.info("Computing cosmic variance term kernels...")
+        self._compute_cosmic_variance_kernel(cache_dir, kmodes, Nmodes, weights)
         #self.logger.info("Computing mixed term kernels...")
         #self._compute_mixed_kernel()
         if self.rank == 0: self.logger.info("Computing shotnoise term kernels...")
         self._compute_shotnoise_kernel(cache_dir, kmodes, Nmodes, weights)
 
-    def move_to_shared_memory(self, window_not_shared):
+    def move_to_shared_memory(self, window_not_shared:base.SparseNDArray):
         """Moves the given window into mpi4py shared memory, then deletes the old object
 
         Args:
@@ -862,13 +882,14 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
         if self.rank == 0: del window_not_shared
         return window_shared
 
-    def _compute_cosmic_variance_kernel(self, cache_dir, kmodes, nmodes, weights):
+    def _compute_cosmic_variance_kernel(self, cache_dir:str, kmodes:np.ndarray, nmodes:np.ndarray, weights:np.ndarray):
         
         # points on the unit sphere with corresponding integration weights
         # x, y, z, w = math.get_lebedev_points(self.lebedev_degree)
 
+        # TODO: make check for enough memory available
+        
         # Gaunt coefficients
-        #cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/")
         if self.rank == 0:
             # calculate Gaunt coefficients first to avoid race conditions
             self.logger.info("Calculating or loading Gaunt coefficients...")
@@ -904,14 +925,13 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
             self.WinKernel_cosmic = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
             self.WinKernel_cosmic.fill(np.nan)
 
-        #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
-
         if self.rank == 0:
             self.logger.info(f"Beginning window kernel calculations on {self.size} ranks...")
             pbar = self.tqdm(desc='Computing window kernels', total=math.num_sampled_modes(kmodes))
         
-        # TODO: Now that we're using mpi4py, come up with a more efficient way to loop thru modes
+        # NOTE: We're still parallelizing each k1 bin as before, but this could
+        # be changed now that we're using mpi4py if we wanted
         for i, km in enumerate(kmodes):
 
             self.comm.Barrier()
@@ -946,7 +966,7 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
                     if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
                         self.WinKernel_cosmic[i, k2_bin_index, :, :] = 0
                     else:
-                        self.WinKernel_cosmic[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
+                        self.WinKernel_cosmic[i, k2_bin_index, :, :] /= nmodes[i + k2_bin_index - self.delta_k_max]
 
                 pbar.update(len(kmodes[i]))
                 if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
@@ -958,12 +978,17 @@ class SurveyGeometry(base.BaseClass, binning.LinearBinning):
         if self._resume_file is not None and self.rank == 0:
             self.save(self._resume_file)
 
-    def _compute_cosmic_variance_kernel_row(self, idx, bin_kmodes, product, Ylm_table):
+    def _compute_cosmic_variance_kernel_row(self, idx:int, bin_kmodes:np.ndarray, product:base.SparseNDArray, Ylm_table:np.ndarray):
         '''Computes a row of the window kernels. This function is called in parallel for each k1 bin.
-        Gives window kernels for L=0,2,4 auto and cross covariance (instead of only L=0 above)
+        Gives window kernels for L=0,2,4 auto and cross covariance
 
+        Args:
+            idx (int):, the index of the current k1 bin
+            bin_kmodes (np.ndarray): 4D array of x, y, z, and r coordinates of sampled modes in the current k1 bin
+            product (SparseNDArray): Precomputed product of the Gaunt coefficients and the survey window
+            Ylm_table (np.ndarray): Precomputed Ylm callables for each ell
         Returns:
-            WinKernel: an array with [2*delta_k_max+1,num_ell,num_ell,num_ell,num_ell] dimensions.
+            WinKernel (np.ndarray): an array with [2*delta_k_max+1,num_ell,num_ell,num_ell,num_ell] dimensions.
                 The first dim corresponds to the k-bin of k2
                 (only 3 bins on each side of diagonal are included by default as the Gaussian covariance drops quickly away from diagonal)
                 The remaining dims correspond to specific ells
