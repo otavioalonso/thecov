@@ -402,21 +402,17 @@ class SurveyGeometry(base.BaseClass):
         self.comm.Barrier()
 
 
-    def set_kbins(self, kmin, kmax, dk):
+    def set_kbins(self, binning_obj:binning.FourierBinning):
         '''Set the k-bins for the window kernels.
 
-        Parameters
-        ----------
-        kmin : float
-            Minimum k value.
-
-        kmax : float
-            Maximum k value.
-
-        dk : float
-            Width of the k-bins.
+        Args:
+            binning_obj: binning.FourierBinning
+                Either a linear or log binning object.
         '''
-        raise NotImplementedError("set_kbins is not implemented yet.")
+        if not isinstance(binning_obj, binning.LinearBinning) and not isinstance(binning_obj, binning.LogBinning):
+            raise ValueError("binning must be either a linear or log binning object")
+        
+        self.k_binning = binning_obj
 
     def _init_randoms(self, randoms_a, alpha_a,
                             randoms_b, alpha_b,
@@ -640,14 +636,6 @@ class SurveyGeometry(base.BaseClass):
         return self.nmesh // 2 - 1
 
     @property
-    def I_12(self):
-        return np.array(list(self.I12.values()))
-
-    @property
-    def I_22(self):
-        return np.array(list(self.I22.values()))
-
-    @property
     def cosmic_variance_kernel(self):
         return self.WinKernel_cosmic
     
@@ -783,11 +771,21 @@ class SurveyGeometry(base.BaseClass):
         self._window_power = None
         self._I = {}
 
+    def get_window_kernels(self):
+        '''Returns the window kernels to be used in the calculation of the covariance.
+
+        Returns:
+            WinKernel (SparseNDArray): Window kernels to be used in the calculation of the covariance.
+        '''
+        if self.WinKernel is None or np.isnan(self.WinKernel).any():
+            self.compute_window_kernels(cache_dir=None, kmodes_sampled=250)
+        return self.WinKernel
+
     def compute_window_kernels(self, cache_dir:str=None, kmodes_sampled:int=250):
         """Wrapper function that sequentially runs all kernel computations.
         Each term is calculated seperately in order to save memory
         
-        Args
+        Args:
             cache_dir (str): Directory to save/load window kernels. If None, uses default cache directory. Default None
             kmodes_sampled (int): Number of k-modes to randomly sample from each k1 bin. Default 250
         """
@@ -795,11 +793,11 @@ class SurveyGeometry(base.BaseClass):
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
 
-        # HYBRID SAMPLING
+        # Sample k1 modes
         if self.rank == 0:
             kmodes, Nmodes, weights = math.sample_kmodes(kmin=self.kmin,
-                                                        kmax=self.kmax,
-                                                        dk=self.dk,
+                                                        kmax=self.k_binningkmax,
+                                                        dk=self.k_binning.dk,
                                                         boxsize=self.boxsize,
                                                         max_modes=kmodes_sampled,
                                                         k_shell_approx=0.05,

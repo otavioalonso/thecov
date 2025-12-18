@@ -3,6 +3,7 @@
 import numpy as np
 import scipy
 import os
+from . import binning
 
 def r2c_to_c2c_3d(fourier):
     """Completes a 3D Fourier array generated using PFFT's r2c method with the elements
@@ -99,7 +100,7 @@ def lebedev_sampling(rmin, rmax, lebedev_degree=25, discrete=True):
 
     return x,y,z,r,w
 
-def sample_from_cube(rmin, rmax, dr, max_modes=np.inf):
+def sample_from_cube(rmin:float, rmax:float, dr:float, max_modes=np.inf):
 
     iL = int(np.ceil(rmax))
 
@@ -131,47 +132,100 @@ def sample_from_cube(rmin, rmax, dr, max_modes=np.inf):
         Nmodes.append(N)
     return modes, Nmodes
 
+# TODO: Might want to split into smaller functions for better readability
+def sample_kmodes(k_binning:binning.FourierBinning, boxsize:float, max_modes=1000, k_shell_approx=0.05, sample_mode="monte-carlo"):
+    """Samples kmodes for use in calculating survey window function using either monte-carlo or lebedev sampling
 
-def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05, sample_mode="lebedev"):
+    Args:
+        k_binning (binning.FourierBinning): Either a LinearBinning or LogBinning object
+        boxsize (float): box size in units of Mpc/h. Used to calculate kfun
+        max_modes (int, optional): maximum number of modes to sample in each bin. Defaults to 1000.
+        k_shell_approx (float, optional): Threshld between spherical shell and discrete cubic sampling. Defaults to 0.05.
+        sample_mode (str, optional): what mode to use for sampling. Currently only "monte-carlo" is implemented. Defaults to "monte-carlo".
+
+    Raises:
+        NotImplementedError: If sample_mode is not "monte-carlo"
+
+    Returns:
+        modes, n_modes, weights: _description_
+    """
     import logging
-
     logger = logging.getLogger('SampleModes')
 
-    if k_shell_approx > kmax:
-        logger.warning(f"WARNING! k_shell_approx ({k_shell_approx}) is larger than kmax ({kmax})! This may result in an incorrect number of kmode bins")
-
-    # Wavelength where spherical shell approximation kicks in
-    k_shell = max((k_shell_approx - kmin)//dk * dk + kmin, kmin)
+    if k_shell_approx > k_binning.kmax:
+        logger.warning(f"WARNING! k_shell_approx ({k_shell_approx}) is larger than kmax ({k_binning.kmax})! This may result in an incorrect number of kmode bins")
 
     kfun = 2 * np.pi / boxsize
-
-    # Uses full cube from k = 0 to k_shell
-    cube_modes, cube_nmodes = sample_from_cube(kmin / kfun, k_shell / kfun, dk / kfun, max_modes=max_modes)
-    cube_weights = np.ones(len(cube_modes)) / len(cube_modes)
-
-    # Uses spherical shell approximation from k = k_shell to kmax
-    kedges_shell = np.arange(k_shell, kmax + dk/2, dk)
-    shell_nmodes = nmodes(boxsize**3, kedges_shell[:-1], kedges_shell[1:])
-    
     if sample_mode == "monte-carlo":
-        shell_modes = [np.array([sample_from_shell(kmin / kfun, kmax / kfun) for _ in range(
-                        max_modes)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
-        shell_weights = np.ones(len(shell_modes)) / len(shell_modes)
+        if isinstance(k_binning, binning.LinearBinning):
+            # Wavelength where spherical shell approximation kicks in
 
-        logger.info(f'Sampled {len(cube_modes)} bins from cube and {len(shell_modes)} bins from shell approximation.')
+            # Uses full cube from k = 0 to k_shell
+            k_shell = max((k_shell_approx - k_binning.kmin)//k_binning.dk * k_binning.dk + k_binning.kmin, k_binning.kmin)
+            cube_modes, cube_nmodes = sample_from_cube(k_binning.kmin / kfun, k_shell / kfun, k_binning.dk / kfun, max_modes=max_modes)
+            cube_weights = np.ones(len(cube_modes)) / len(cube_modes)
+
+            # Uses spherical shell approximation from k = k_shell to kmax
+            kedges_shell = np.arange(k_shell, k_binning.kmax + k_binning.dk/2, k_binning.dk)
+            shell_nmodes = nmodes(boxsize**3, kedges_shell[:-1], kedges_shell[1:])
+
+            shell_modes = [np.array([sample_from_shell(kmin / kfun, kmax / kfun) for _ in range(
+                            max_modes)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
+            shell_weights = np.ones(len(shell_modes)) / len(shell_modes)
+
+            logger.info(f'Sampled {len(cube_modes)} bins from cube and {len(shell_modes)} bins from shell approximation.')
+            return cube_modes + shell_modes, np.array(cube_nmodes + list(shell_nmodes)), np.concatenate((cube_weights, shell_weights))
         
-        return cube_modes + shell_modes, np.array(cube_nmodes + list(shell_nmodes)), np.concatenate((cube_weights, shell_weights))
-        
+        # TODO: simplify
+        elif isinstance(k_binning, binning.LogBinning):
+            # Prepare integer grid once up to required radius (in units of r = k/kfun)
+
+            k_shell = max(k_binning.kmin, k_shell_approx)
+            cube_bin_indices = np.where(k_binning.kmid < k_shell)[0]
+            shell_bin_indices = np.where(k_binning.kmid >= k_shell)
+            modes = []
+            Nmodes = []
+            # Loop over all bins; discrete selection for cube bins, stochastic for shell bins
+            for i, (kmin, kmax) in enumerate(zip(k_binning.kedges[:-1], k_binning.kedges[1:])):
+                rmin = kmin / kfun
+                rmax = kmax / kfun
+                if i in cube_bin_indices:
+
+                    iL = int(np.ceil(rmax))
+                    ix, iy, iz = np.mgrid[-iL:iL+1, -iL:iL+1, -iL:iL+1]
+                    ir = np.sqrt(ix**2 + iy**2 + iz**2)
+                    mask = (ir >= rmin) & (ir < rmax)
+                    coords = np.vstack((ix[mask], iy[mask], iz[mask], ir[mask])).T
+                    N = int(coords.shape[0])
+                    if N == 0:
+                        modes.append(np.empty((0, 4)))
+                    else:
+                        if N > max_modes:
+                            # sample without replacement
+                            idx = np.random.choice(N, size=max_modes, replace=False)
+                            coords = coords[idx]
+                        modes.append(coords)
+                    Nmodes.append(N)
+                else:
+                    # spherical-shell approximation sampling
+                    # make samples in r-units (r = k/kfun) and round to integers inside sample_from_shell
+                    modes.append(np.array([sample_from_shell(rmin, rmax) for _ in range(max_modes)]))
+                    Nmodes.append(nmodes(boxsize**3, kmin, kmax))
+
+            logger.info(f'Sampled {len(cube_bin_indices)} bins from cube and {len(shell_bin_indices)} bins from shell approximation.')
+            return modes, np.array(Nmodes), np.ones(len(modes)) / len(modes)
+
     elif sample_mode == "lebedev":
-        output = [np.array([lebedev_sampling(kmin / kfun, kmax / kfun, discrete=False) for _ in range(
-                        max_modes)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
-        output = np.transpose(output, (0, 1, 3, 2))
-        output = output.reshape(-1, output.shape[1]*output.shape[2], output.shape[3])
-        shell_weights = shell_modes[:,:,-1]
-        shell_modes = shell_modes[:,:,:-1]
+        raise NotImplementedError
+        # output = [np.array([lebedev_sampling(kmin / kfun, kmax / kfun, discrete=False) for _ in range(
+        #                 max_modes)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
+        # output = np.transpose(output, (0, 1, 3, 2))
+        # output = output.reshape(-1, output.shape[1]*output.shape[2], output.shape[3])
+        # shell_weights = shell_modes[:,:,-1]
+        # shell_modes = shell_modes[:,:,:-1]
         
-        return cube_modes + list(shell_modes), np.array(cube_nmodes + list(shell_nmodes)), list(cube_weights) + list(shell_weights)
-
+        # return cube_modes + list(shell_modes), np.array(cube_nmodes + list(shell_nmodes)), list(cube_weights) + list(shell_weights)
+        
 def num_sampled_modes(kmodes:list):
     """Returns the number of sampled k-modes in the given list of np arrays
 
@@ -185,6 +239,7 @@ def num_sampled_modes(kmodes:list):
         total_samples += len(kmodes[i])
     return int(total_samples)
 
+# TODO: This function is duplicated in binning.py. What to do?
 def nmodes(volume, kmin, kmax):
     '''Compute the number of modes in a given shell.
 

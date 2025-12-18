@@ -1,5 +1,4 @@
 import numpy as np
-from thecov import math
 
 class FourierBinning:
     """A parent class to represent an observable binned in wavenumber k."""
@@ -112,8 +111,10 @@ class LinearBinning(FourierBinning):
         The spacing between k-bins.
     '''
 
-    def __init__(self, kmin:float=None, kmax:float=None, dk:float=None) -> None:
+    def __init__(self, kmin:float=None, kmax:float=None, dk:float=None, num_kbins:int=None) -> None:
         super().__init__()
+        if dk == None and num_kbins is not None:
+            dk = (kmax - kmin) / num_kbins
         self.set_kbins(kmin, kmax, dk)
 
     @property
@@ -155,7 +156,7 @@ class LinearBinning(FourierBinning):
         if hasattr(self, '_nmodes'):
             return self._nmodes
 
-        return math.nmodes(self.volume, self.kedges[:-1], self.kedges[1:])
+        return self.volume / 3. / (2*np.pi**2) * (self.kedges[:-1]**3 - self.kedges[1:]**3)
 
 
 class LogBinning(FourierBinning):
@@ -171,8 +172,10 @@ class LogBinning(FourierBinning):
         The logarithmic spacing between k-bins.
     '''
 
-    def __init__(self, kmin:float=None, kmax:float=None, dk:float=None) -> None:
+    def __init__(self, kmin:float=None, kmax:float=None, dk:float=None, num_kbins:int=None) -> None:
         super().__init__()
+        if dk == None and num_kbins is not None:
+            dk = (np.log(kmax) - np.log(kmin)) / num_kbins
         self.set_kbins(kmin, kmax, dk)
 
     @property
@@ -197,7 +200,7 @@ class LogBinning(FourierBinning):
         numpy.ndarray
             The edges of the k-bins.
         '''
-        nbins = int(np.floor(np.log(self.kmax/self.kmin)/self.dlogk))
+        nbins = int(np.floor(np.log(self.kmax/self.kmin)/self.dk))
         return np.geomspace(self.kmin, self.kmax, nbins + 1)
 
     @property
@@ -214,4 +217,4 @@ class LogBinning(FourierBinning):
         if hasattr(self, '_nmodes'):
             return self._nmodes
 
-        return math.nmodes(self.volume, self.kedges[:-1], self.kedges[1:])
+        return self.volume / 3. / (2*np.pi**2) * (self.kedges[:-1]**3 - self.kedges[1:]**3)
