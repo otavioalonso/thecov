@@ -1,6 +1,6 @@
 """This module contains utility functions for thecov.
 """
-import os, functools
+import os, functools, psutil, sys
 
 def mkdir(dirname):
     """Try to create ``dirname`` and catch :class:`OSError`."""
@@ -89,3 +89,7 @@ def get_tqdm():
         # Not in a Jupyter environment
         from tqdm import tqdm as tqdm
     return tqdm
+
+def get_available_memory():
+    """Get the available system memory in Gigabytes."""
+    return psutil.virtual_memory().available / (1024 ** 3)

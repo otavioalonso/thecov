@@ -23,7 +23,8 @@ jobs:
         python -m pip install --upgrade pip
         pip install six==1.15.0 numpy==1.26 scipy Cython h5py mpi4py
         python -m pip install .
-        python -m pip install pytest
+        python -m pip install pytest pytest-mpi
     - name: Run tests
       run: |
         python -m pytest thecov/tests
+        mpirun -n 2 python -m pytest --with-mpi -m mpi thecov/tests

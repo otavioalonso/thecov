@@ -706,10 +706,35 @@ class SparseNDArray:
     the @ operator and requires the shapes to be compatible, i.e., shape_in
     of the leftmost array must match shape_out of the rightmost array.
     """
-    def __init__(self, shape_out, shape_in):
+    def __init__(self, shape_out, shape_in, comm=MPI.COMM_WORLD, root=0):
+        """
+        MPI-aware constructor for SparseNDArray.
+
+        By default the full data is created/stored only on `root` (rank 0).
+        Other ranks will have an empty CSR matrix with the correct shape to
+        preserve API compatibility while avoiding unnecessary memory usage.
+
+        Parameters
+        ----------
+        shape_out, shape_in : sequence of int
+            Outer and inner shapes that define the ND array layout.
+        comm : mpi4py.MPI.Comm, optional
+            MPI communicator to use. Defaults to MPI.COMM_WORLD.
+        root : int, optional
+            Rank which should hold the real data. Default is 0.
+        """
         self.shape_in = np.asarray(shape_in).astype(int)
         self.shape_out = np.asarray(shape_out).astype(int)
-        self._matrix = scipy.sparse.csr_matrix((np.prod(shape_out), np.prod(shape_in)))
+        self._matrix = scipy.sparse.csr_matrix((np.prod(self.shape_out), np.prod(self.shape_in)))
+        self.comm = comm
+        self.root = root
+        try:
+            self.rank = comm.Get_rank()
+        except Exception:
+            self.rank = 0
+
+        self.in_shared_memory = False
+
 
     def _nd_to_2d_indices(self, *indices):
         indices = np.asarray(indices).astype(int)
@@ -725,22 +750,24 @@ class SparseNDArray:
     
     def __setitem__(self, indices, value):
         indices = np.asarray(indices).astype(int)
-        if len(indices) == len(self.shape_out) + len(self.shape_in):
-            try:
-                self._matrix[self._nd_to_2d_indices(*indices)] = value
-            except IndexError:
-                raise IndexError(f"Indices {indices} are out of bounds for array with shape shape_out={self.shape_out}, shape_in={self.shape_in}.")
-        elif len(indices) == len(self.shape_out):
-            if isinstance(value, SparseNDArray):
-                self._matrix[self._nd_to_2d_indices(*indices)] = value._matrix
-            elif isinstance(value, scipy.sparse.csr_matrix):
-                self._matrix[self._nd_to_2d_indices(*indices)] = value
-            elif isinstance(value, scipy.sparse.csc_matrix):
-                self._matrix[self._nd_to_2d_indices(*indices)] = value.T
+        if self.in_shared_memory or self.rank == self.root:
+            if len(indices) == len(self.shape_out) + len(self.shape_in):
+                try:
+                    self._matrix[self._nd_to_2d_indices(*indices)] = value
+                except IndexError:
+                    raise IndexError(f"Indices {indices} are out of bounds for array with shape shape_out={self.shape_out}, shape_in={self.shape_in}.")
+                
+            elif len(indices) == len(self.shape_out):
+                if isinstance(value, SparseNDArray):
+                    self._matrix[self._nd_to_2d_indices(*indices)] = value._matrix
+                elif isinstance(value, scipy.sparse.csr_matrix):
+                    self._matrix[self._nd_to_2d_indices(*indices)] = value
+                elif isinstance(value, scipy.sparse.csc_matrix):
+                    self._matrix[self._nd_to_2d_indices(*indices)] = value.T
+                else:
+                    self._matrix[self._nd_to_2d_indices(*indices)] = value.flatten()
             else:
-                self._matrix[self._nd_to_2d_indices(*indices)] = value.flatten()
-        else:
-            raise ValueError(f"Invalid number of indices: {len(indices)}. Expected {len(self.shape_out) + len(self.shape_in)} or {len(self.shape_out)}.")
+                raise ValueError(f"Invalid number of indices: {len(indices)}. Expected {len(self.shape_out) + len(self.shape_in)} or {len(self.shape_out)}.")
 
     def __getitem__(self, indices):
         indices = np.asarray(indices).astype(int)
@@ -756,7 +783,7 @@ class SparseNDArray:
         return self._matrix.toarray().reshape(self.shape_out.tolist() + self.shape_in.tolist())
 
     @staticmethod
-    def from_dense(dense_array, shape_out=None, shape_in=None):
+    def from_dense(dense_array, shape_out=None, shape_in=None, comm=MPI.COMM_WORLD, root=0):
         """
         Create a SparseNDArray from a dense array.
         """
@@ -764,8 +791,11 @@ class SparseNDArray:
             shape_out = dense_array.shape[:-len(dense_array.shape)//2]
         if shape_in is None:
             shape_in = dense_array.shape[len(dense_array.shape)//2:]
-        sparse_array = SparseNDArray(shape_in, shape_out)
-        sparse_array._matrix = scipy.sparse.csr_matrix(dense_array.reshape(np.prod(shape_out), np.prod(shape_in)))
+
+        # create object (data stored only on root)
+        sparse_array = SparseNDArray(shape_out, shape_in, comm=comm, root=root)
+        if getattr(sparse_array, 'rank', 0) == sparse_array.root:
+            sparse_array._matrix = scipy.sparse.csr_matrix(dense_array.reshape(np.prod(shape_out), np.prod(shape_in)))
         return sparse_array
     
     def __add__(self, other):
@@ -826,13 +856,14 @@ class SparseNDArray:
         """
         Save the sparse matrix to a file.
         """
-        np.savez(filename,
-                 data=self._matrix.data,
-                 indices=self._matrix.indices,
-                 indptr=self._matrix.indptr,
-                 shape=self._matrix.shape,
-                 shape_out=self.shape_out,
-                 shape_in=self.shape_in)
+        if getattr(self, 'rank', 0) == self.root:
+            np.savez(filename,
+                    data=self._matrix.data,
+                    indices=self._matrix.indices,
+                    indptr=self._matrix.indptr,
+                    shape=self._matrix.shape,
+                    shape_out=self.shape_out,
+                    shape_in=self.shape_in)
 
     @classmethod
     def load(cls, filename):
@@ -841,10 +872,11 @@ class SparseNDArray:
         """
         loader = np.load(filename)
         obj = cls(loader['shape_out'], loader['shape_in'])
-        obj._matrix = scipy.sparse.csr_matrix((loader['data'],
-                                               loader['indices'],
-                                               loader['indptr']),
-                                               shape=loader['shape'])
+        if getattr(obj, 'rank', 0) == obj.root:
+            obj._matrix = scipy.sparse.csr_matrix((loader['data'],
+                                                loader['indices'],
+                                                loader['indptr']),
+                                                shape=loader['shape'])
         return obj
 
     def reshape(self, shape_out=None, shape_in=None):
@@ -875,6 +907,90 @@ class SparseNDArray:
         """
         return self.transpose()
     
+    
+    def to_shared_memory(self):
+        """Moves the given object into mpi4py shared memory
+        
+        This function temprarilly makes a copy of the given object on rank 0, which may cause
+        the program to crash if there is not enough available memory to do so.
+
+        Args:
+            comm (MPI.Comm): MPI communicator to use for shared memory allocation. Defaults to MPI.COMM_WORLD.
+        
+        Returns:
+            window_shared (SparseNDArray): Window object in shared memory, accesible by all ranks
+        """
+        logger = logging.getLogger('SparseNDArray')
+        rank = self.comm.Get_rank()
+
+        if rank == 0:
+            available_memory = utils.get_available_memory()
+            required_memory = (self._matrix.data.nbytes*2 +
+                               self._matrix.indices.nbytes +
+                               self._matrix.indptr.nbytes) / (1024**3)  # in GB
+            if required_memory > available_memory:
+                logger.warning(f"Not enough available memory to move window to shared memory. Required: {required_memory:.2f} GB, Available: {available_memory:.2f} GB. Program may crash.")
+            
+            logger.info("Allocating shared memory...")
+            data_size = int(self._matrix.data.nbytes*2)
+            data_shape = self._matrix.data.shape
+            indices_size = int(self._matrix.indices.nbytes)
+            indptr_size = int(self._matrix.indptr.nbytes)
+            indptr_shape = self._matrix.indptr.shape
+            shape_in = self.shape_in
+            shape_out = self.shape_out
+        else:
+            data_size = None
+            indices_size = None
+            indptr_size = None
+            data_shape = None
+            indptr_shape = None
+            shape_in = None
+            shape_out = None
+
+        self.comm.Barrier()
+
+        data_size = self.comm.bcast(data_size, root=0)
+        data_shape = self.comm.bcast(data_shape, root=0)
+        indices_size = self.comm.bcast(indices_size, root=0)
+        indptr_size = self.comm.bcast(indptr_size, root=0)
+        indptr_shape = self.comm.bcast(indptr_shape, root=0)
+        shape_in = self.comm.bcast(shape_in, root=0)
+        shape_out = self.comm.bcast(shape_out, root=0)
+
+        # Use native dtypes for the arrays
+        data_dtype = self._matrix.data.dtype
+        indices_dtype = self._matrix.indices.dtype
+        indptr_dtype = self._matrix.indptr.dtype
+
+        win_data = MPI.Win.Allocate_shared(data_size, np.dtype(data_dtype).itemsize, comm=self.comm)
+        buf, _ = win_data.Shared_query(0)
+        window_data = np.ndarray(buffer=buf, dtype=data_dtype, shape=data_shape)
+
+        # indices is a 1D array; compute length from bytes
+        indices_len = indices_size // np.dtype(indices_dtype).itemsize
+        win_indices = MPI.Win.Allocate_shared(indices_size, np.dtype(indices_dtype).itemsize, comm=self.comm)
+        buf, _ = win_indices.Shared_query(0)
+        window_indicies = np.ndarray(buffer=buf, dtype=indices_dtype, shape=(indices_len,))
+
+        win_indptr = MPI.Win.Allocate_shared(indptr_size, np.dtype(indptr_dtype).itemsize, comm=self.comm)
+        buf, _ = win_indptr.Shared_query(0)
+        window_indptr = np.ndarray(buffer=buf, dtype=indptr_dtype, shape=indptr_shape)
+
+        # Initialize only on rank 0
+        if rank == 0:
+            window_data[...] = self._matrix.data
+            window_indicies[...] = self._matrix.indices
+            window_indptr[...] = self._matrix.indptr
+
+        self.comm.Barrier()
+        # Build CSR on all ranks from the shared-memory buffers
+        window_shared = self.from_arrays(window_data, window_indicies, window_indptr,
+                                         shape_out=shape_out, shape_in=shape_in, 
+                                         comm=self.comm, root=0, shared_memory=True)
+        
+        return window_shared
+
     # def outer(self, other):
     #     """
     #     Compute the outer product of two SparseNDArrays. 
@@ -900,12 +1016,18 @@ class SparseNDArray:
     #         raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
 
     @classmethod
-    def from_arrays(cls, data, indices, indptr, shape_out, shape_in):
+    def from_arrays(cls, data, indices, indptr, shape_out, shape_in, comm=MPI.COMM_WORLD, root=0, shared_memory=False):
         """
-        Create a SparseNDArray from arrays of data, indices, and indptr, shape_out, and shape_in.
+        Create a SparseNDArray from arrays of data, indices, and indptr.
+
+        By default this will populate the matrix only on `root` to avoid
+        replicating large arrays across ranks.
         """
-        result = cls(shape_out, shape_in)
-        result._matrix = scipy.sparse.csr_matrix((data, indices, indptr), shape=(np.prod(shape_out), np.prod(shape_in)))
-        result.shape_out = shape_out
-        result.shape_in = shape_in
+        result = cls(shape_out, shape_in, comm=comm, root=root)
+        if shared_memory: #<- runs on all ranks
+            result._matrix = scipy.sparse.csr_matrix((data, indices, indptr), shape=(np.prod(shape_out), np.prod(shape_in)))
+            result.in_shared_memory = True
+        elif getattr(result, 'rank', 0) == result.root: # <- runs only on root
+            result._matrix = scipy.sparse.csr_matrix((data, indices, indptr), shape=(np.prod(shape_out), np.prod(shape_in)))
+        
         return result

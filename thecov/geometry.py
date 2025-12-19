@@ -818,90 +818,26 @@ class SurveyGeometry(base.BaseClass):
         if self.rank == 0: self.logger.info("Computing shotnoise term kernels...")
         self._compute_shotnoise_kernel(cache_dir, kmodes, Nmodes, weights)
 
-    def move_to_shared_memory(self, window_not_shared:base.SparseNDArray):
-        """Moves the given window into mpi4py shared memory, then deletes the old object
-
-        Args:
-            window_not_shared (SparseNDArray): Window object (on rank 0), and None on all other ranks
-        
-        Returns:
-            window_shared (SparseNDArray): Window object in shared memory, accesible by all ranks
-        """
-        if self.rank == 0:
-            self.logger.info("Allocating shared memory...")
-            data_size = int(window_not_shared._matrix.data.nbytes*2)
-            data_shape = window_not_shared._matrix.data.shape
-            indices_size = int(window_not_shared._matrix.indices.nbytes)
-            indptr_size = int(window_not_shared._matrix.indptr.nbytes)
-            indptr_shape = window_not_shared._matrix.indptr.shape
-            shape_in = window_not_shared.shape_in
-            shape_out = window_not_shared.shape_out
-        else:
-            data_size = None
-            indices_size = None
-            indptr_size = None
-            data_shape = None
-            indptr_shape = None
-            shape_in = None
-            shape_out = None
-
-        self.comm.Barrier()
-
-        data_size = self.comm.bcast(data_size, root=0)
-        data_shape = self.comm.bcast(data_shape, root=0)
-        indices_size = self.comm.bcast(indices_size, root=0)
-        indptr_size = self.comm.bcast(indptr_size, root=0)
-        indptr_shape = self.comm.bcast(indptr_shape, root=0)
-        shape_in = self.comm.bcast(shape_in, root=0)
-        shape_out = self.comm.bcast(shape_out, root=0)
-
-        win_data = MPI.Win.Allocate_shared(data_size, np.dtype(np.complex128).itemsize, comm=self.comm)
-        buf, itemsize = win_data.Shared_query(0)
-        window_data = np.ndarray(buffer=buf, dtype=np.complex128, shape=data_shape)
-
-        win_indices = MPI.Win.Allocate_shared(indices_size, np.dtype(np.int32).itemsize, comm=self.comm)
-        buf, itemsize = win_indices.Shared_query(0)
-        window_indicies = np.ndarray(buffer=buf, dtype=np.int32, shape=data_shape)
-
-        win_indptr = MPI.Win.Allocate_shared(indptr_size, np.dtype(np.int32).itemsize, comm=self.comm)
-        buf, itemsize = win_indptr.Shared_query(0)
-        window_indptr = np.ndarray(buffer=buf, dtype=np.int32, shape=indptr_shape)
-
-        # Initialize only on rank 0
-        if self.rank == 0:
-            window_data = np.copy(window_not_shared._matrix.data)
-            window_indicies = np.copy(window_not_shared._matrix.indices)
-            window_indptr = np.copy(window_not_shared._matrix.indptr)
-
-        self.comm.Barrier()
-        window_shared = base.SparseNDArray.from_arrays(window_data, window_indicies, window_indptr,
-                                                shape_in=shape_in, shape_out=shape_out)
-        
-        if self.rank == 0: del window_not_shared
-        return window_shared
-
     def _compute_cosmic_variance_kernel(self, cache_dir:str, kmodes:np.ndarray, nmodes:np.ndarray, weights:np.ndarray):
         
         # points on the unit sphere with corresponding integration weights
         # x, y, z, w = math.get_lebedev_points(self.lebedev_degree)
-
-        # TODO: make check for enough memory available
         
         # Gaunt coefficients
         if self.rank == 0:
             # calculate Gaunt coefficients first to avoid race conditions
             self.logger.info("Calculating or loading Gaunt coefficients...")
             G = self.get_cosmic_variance_gaunt_coefficients(cache_dir=cache_dir, mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
-
-            # W_AB * W_CD (outer product)
-            self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
-            W_ABCD_not_shared = self.get_combined_survey_window(cache_dir=cache_dir)
         else:
             G = None
-            W_ABCD_not_shared = None
+
+        # W_AB * W_CD (outer product)
+        self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
+        W_ABCD_not_shared = self.get_combined_survey_window(cache_dir=cache_dir)
 
         self.comm.Barrier()
-        W_ABCD = self.move_to_shared_memory(W_ABCD_not_shared)
+        W_ABCD = W_ABCD_not_shared.to_shared_memory()
+        del W_ABCD_not_shared
         
         self.comm.Barrier()
         G = self.comm.bcast(G, root=0)
@@ -1120,9 +1056,11 @@ class SurveyGeometry(base.BaseClass):
         S_AB_temp = self.get_shotnoise_window("AB", cache_dir)
 
         self.comm.Barrier()
-        S_A = self.move_to_shared_memory(S_A_temp)
-        S_B = self.move_to_shared_memory(S_B_temp)
-        S_AB = self.move_to_shared_memory(S_AB_temp)
+        
+        S_A = S_A_temp.to_shared_memory(self.comm)
+        S_B = S_B_temp.to_shared_memory(self.comm)
+        S_AB = S_AB_temp.to_shared_memory(self.comm)
+        del S_A_temp, S_B_temp, S_AB_temp
         G = self.comm.bcast(G, root=0)
 
         G_times_S = G @ S_AB
