@@ -27,4 +27,4 @@ jobs:
     - name: Run tests
       run: |
         python -m pytest thecov/tests
-        mpirun -n 2 python -m pytest --with-mpi -m mpi thecov/tests
+        mpirun -n 2 python -m pytest -v --capture=tee-sys --tb=short --with-mpi thecov/tests -m mpi 

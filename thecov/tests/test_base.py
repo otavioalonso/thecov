@@ -1,6 +1,8 @@
 import numpy as np
 import thecov.base as base
 import os
+import pytest
+from mpi4py import MPI
 
 def test_base_covariance_operations():
     rng = np.random.default_rng(1)
@@ -172,7 +174,7 @@ def test_multipole_covariance_addition():
     assert (addition.get_ell_cov(2,4).cov == cov1_24 + cov2_24).all()
 
 
-# NOTE: Commented out since we will be chaning the relavent code to handle multi-tracer covariance
+# NOTE: Commented out since we will be changing the relavent code to handle multi-tracer covariance
 # def test_multipole_fourier_covariance_save_load_csv():
 #     cov = thecov.base.MultipoleFourierCovariance()
 #     cov.set_kbins(0., 0.4, 0.005)
@@ -208,3 +210,35 @@ def test_sparse_ndarray_basic():
     dense = s.to_dense()
     assert dense.shape == (2, 3)
     assert dense[0, 1] == 5.0
+
+@pytest.mark.mpi(min_size=2)
+def test_sparse_ndarray_to_shared_memory():
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    # shape_out: (4, ), shape_in: (4, ) => dense shape (4,4)
+    s = base.SparseNDArray((4,), (4,))
+    s[1, 2] = 3.0
+    s[3, 0] = 7.0
+
+    # test that only rank 0 has the correct dense representation before to_shared_memory
+    comm.Barrier()
+    if rank != 0:
+        dense = s.to_dense()
+        assert dense.shape == (4, 4)
+        assert dense[1, 2] == 0.0
+        assert dense[3, 0] == 0.0
+
+    comm.Barrier()
+    s_shared = s.to_shared_memory()
+
+    dense_shared = s_shared.to_dense()
+    assert dense_shared.shape == (4, 4)
+    assert dense_shared[1, 2] == 3.0
+    assert dense_shared[3, 0] == 7.0
+
+    # test that even after deleting the old s, we can still access the shared memory version
+    del s
+    dense_shared = s_shared.to_dense()
+    assert dense_shared[1, 2] == 3.0
+    assert dense_shared[3, 0] == 7.0
