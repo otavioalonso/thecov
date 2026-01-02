@@ -672,30 +672,23 @@ class MultipoleFourierCovariance(MultipoleCovariance):
 
         return self
     
-    def set_kbins(self, kmin, kmax, dk, nmodes=None):
-        return self.k_binning.set_kbins(kmin, kmax, dk, nmodes)
+    def set_kbins(self, kmin:float, kmax:float, dk:float, nmodes=None):
+        """Set's the covariance matrix k-bins, which are evenly spaced in either
+        linear or logarithmic space depending on the binning_type specified at
+        initialization.
+
+        Args:
+            kmin (float): minimum k-mode (the edge of the first bin) in h/Mpc
+            kmax (float): maximum k-mode (the edge of the last bin) in h/Mpc
+            dk (float): width of each k-bin. In linear binning this is the absolute width,
+                        while in logarithmic binning this is dlogk = log10(kmax/kmin)/nbins
+            nmodes (int, optional): number of modes per bin. Defaults to None.
+        """
+        self.k_binning.set_kbins(kmin, kmax, dk, nmodes)
 
     @property
     def kbins(self):
         return self.k_binning.kbins
-
-# TODO: Option for multi-tracer covariance implementation
-# - Keep each tracer combo as a seperate instance of PowerSpectrumCovariance
-# - Add a helper class here with all the logic for dealing with multi-tracer indices
-# - Add some unit tests
-class MultiTracerCovariance():
-    """
-    Wrapper class that keeps track of multipole covariance objects 
-    for each tracer combination
-    """
-    def __init__(self, num_tracers=1):
-        self.num_tracers = num_tracers
-
-    def set_tracer_cov(self, tracer1, tracer2, cov, cls=MultipoleFourierCovariance):
-        pass
-
-    def get_tracer_cov(self, tracer1, tracer2):
-        pass
 
 
 class SparseNDArray:
@@ -710,18 +703,15 @@ class SparseNDArray:
         """
         MPI-aware constructor for SparseNDArray.
 
-        By default the full data is created/stored only on `root` (rank 0).
+        By default the full data is created/stored only on the root rank (0).
         Other ranks will have an empty CSR matrix with the correct shape to
         preserve API compatibility while avoiding unnecessary memory usage.
 
-        Parameters
-        ----------
-        shape_out, shape_in : sequence of int
-            Outer and inner shapes that define the ND array layout.
-        comm : mpi4py.MPI.Comm, optional
-            MPI communicator to use. Defaults to MPI.COMM_WORLD.
-        root : int, optional
-            Rank which should hold the real data. Default is 0.
+        Args:
+            shape_out (list): Outer shape that defines the ND array layout.
+            shape_in (list): Inner shape that defines the ND array layout.
+            comm (mpi4py.MPI.Comm, optional): MPI communicator to use. Defaults to MPI.COMM_WORLD.
+            root (int, optional): Rank which should hold the data. Default is 0.
         """
         self.shape_in = np.asarray(shape_in).astype(int)
         self.shape_out = np.asarray(shape_out).astype(int)
@@ -732,7 +722,6 @@ class SparseNDArray:
             self.rank = comm.Get_rank()
         except Exception:
             self.rank = 0
-
         self.in_shared_memory = False
 
 
@@ -852,7 +841,7 @@ class SparseNDArray:
     def __sizeof__(self):
         return self._matrix.data.nbytes + self._matrix.indptr.nbytes + self._matrix.indices.nbytes
     
-    def save(self, filename):
+    def save(self, filename:str):
         """
         Save the sparse matrix to a file.
         """
@@ -866,7 +855,7 @@ class SparseNDArray:
                     shape_in=self.shape_in)
 
     @classmethod
-    def load(cls, filename):
+    def load(cls, filename:str):
         """
         Load the sparse matrix from a file.
         """
@@ -913,9 +902,6 @@ class SparseNDArray:
         
         This function temprarilly makes a copy of the given object on rank 0, which may cause
         the program to crash if there is not enough available memory to do so.
-
-        Args:
-            comm (MPI.Comm): MPI communicator to use for shared memory allocation. Defaults to MPI.COMM_WORLD.
         
         Returns:
             window_shared (SparseNDArray): Window object in shared memory, accesible by all ranks

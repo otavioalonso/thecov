@@ -401,6 +401,9 @@ class SurveyGeometry(base.BaseClass):
 
         self.comm.Barrier()
 
+    @property
+    def is_kbins_set(self):
+        return getattr(self, 'k_binning.is_kbins_set', False)
 
     def set_kbins(self, binning_obj:binning.FourierBinning):
         '''Set the k-bins for the window kernels.
@@ -504,7 +507,7 @@ class SurveyGeometry(base.BaseClass):
 
         self.I_LABELS = ['12', '22', '10', '24', '14', '34', '44', '32']
         self.TRACER_LABELS = ['A', 'B', 'C', 'D']
-        self._I = np.full((len(self.I_LABELS), len(self.TRACER_LABELS)), np.nan)
+        self._I = np.full((len(self.I_LABELS), len(self.TRACER_LABELS)), 1.0)
         for tracer in self.TRACER_LABELS:
             if self.randoms[tracer] is not None:
                 if self.rank == 0: self.logger.info(f"Initializing I factors from random {tracer}...")
@@ -517,20 +520,13 @@ class SurveyGeometry(base.BaseClass):
                         self.alpha[tracer]).sum().item()
                     self._I[i, self.TRACER_LABELS.index(tracer)] = I
 
-
-    def I(self, tracer="A", nbar_power=1, fkp_power=1):
+    def I(self, tracer:str, nbar_power:int, fkp_power:int):
         """Retrieve the I normalization factor for the given tracer.
 
-        Parameters
-        ----------
-        tracer : str, optional
-            Tracer label. Must be one of 'A', 'B', 'C', 'D'. Default is 'A'.
-
-        nbar_power : int, optional
-            Power of nbar in the I factor. Default is 1.
-
-        fkp_power : int, optional
-            Power of FKP weight in the I factor. Default is 1.
+        Args:
+        tracer (str, optional): Tracer label. Must be one of 'A', 'B', 'C', 'D'.
+        nbar_power (int, optional): Power of nbar in the I factor.
+        fkp_power (int, optional): Power of FKP weight in the I factor.
 
         Returns
         -------
@@ -539,6 +535,8 @@ class SurveyGeometry(base.BaseClass):
 
         if tracer not in ['A', 'B', 'C', 'D']:
             raise ValueError("tracer must be one of 'A', 'B', 'C', 'D'")
+        if f"{nbar_power}{fkp_power}" not in self.I_LABELS:
+            raise ValueError(f"Invalid combination of nbar_power ({nbar_power}) and fkp_power ({fkp_power}). Must be one of {self.I_LABELS}")
 
         label_idx = self.I_LABELS.index(f"{nbar_power}{fkp_power}")
         tracer_idx = self.TRACER_LABELS.index(tracer)

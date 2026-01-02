@@ -1,9 +1,5 @@
 """Module for computing the covariance matrix of power spectrum multipoles.
 
-This module currently contains only the GaussianCovariance class, which is used
-to compute the Gaussian covariance matrix of power spectrum multipoles in a
-given geometry.
-
 Example
 -------
 >>> from thecov import SurveyGeometry, GaussianCovariance
@@ -18,7 +14,6 @@ Example
 
 import logging, os
 import itertools as itt
-
 import numpy as np
 
 from . import base, geometry, math
@@ -27,10 +22,11 @@ __all__ = ['GaussianCovariance',
            'TrispectrumCovariance',
            'SuperSampleCovariance']
 
+TRACER_LABELS = ['A', 'B', 'C', 'D']
 
 cache_dir = os.path.join(os.path.dirname(__file__), "cache")
 os.makedirs(cache_dir, exist_ok=True)
-class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
+class PowerSpectrumMultiTracerCovariance(base.MultipoleFourierCovariance):
     '''Parent Covariance matrix of power spectrum multipoles class in a given geometry.
 
     Attributes
@@ -39,17 +35,15 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
         Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
     '''
 
-    def __init__(self, geometry=None):
+    def __init__(self, geometry:geometry.SurveyGeometry=None):
         super().__init__()
         self.logger = logging.getLogger('PowerSpectrumCovariance')
         self.geometry = geometry
         
         self._pk = {}
-        self._alpha = None
-        # TODO: Put these in their own getter methods?
         self.num_tracers = geometry.num_tracers
-        # total number of auto + cross spectra
         self.num_spectra = int(self.num_tracers * (self.num_tracers+1)/2)
+
         self.pk_renorm = 1
 
     @property
@@ -62,10 +56,10 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
         float
             The value of alpha.
         '''
-        if self._alpha is None:
+        if not hasattr(self, '_alpha'):
             return self.geometry.alphas
-        
-        return self._alpha
+        else:
+            return self._alpha
     
     @alpha.setter
     def alpha(self, alpha):
@@ -78,6 +72,46 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
             The value of alpha.
         '''
         self._alpha = alpha
+
+    @property
+    def cov(self):
+        if self.num_tracers == 1:
+            return super().cov
+        else:
+            full_cov = np.zeros((self.num_tracers * len(self.ells) * self.k_binning.kbins,
+                                 self.num_tracers * len(self.ells) * self.k_binning.kbins))
+            block_size = len(self.ells) * self.k_binning.kbins
+
+            for (tracer1, tracer2) in itt.product(range(self.num_tracers), repeat=2):
+                if tracer1 <= tracer2:
+                    block_cov = self.get_tracer_cov(TRACER_LABELS[tracer1], TRACER_LABELS[tracer2])
+                else:
+                    block_cov = self.get_tracer_cov(TRACER_LABELS[tracer2], TRACER_LABELS[tracer1]).T
+                full_cov[tracer1*block_size:(tracer1+1)*block_size,
+                         tracer2*block_size:(tracer2+1)*block_size] = block_cov
+                
+            return full_cov
+
+    def get_tracer_cov(self, tracer1:str, tracer2:str):
+        """Retrieves the sub-covariance matrix for the given tracer combination.
+
+        Args:
+            tracer1 (str): first tracer index. Must be one of ["A", "B", "C", "D"].
+            tracer2 (str): second tracer index. Must be one of ["A", "B", "C", "D"].
+
+        Raises:
+            ValueError: If tracer1 or tracer2 are not valid given the number of tracers.
+
+        Returns:
+            np.ndarray: Sub-covariance matrix for the given tracer combination.
+        """
+        if tracer1 not in TRACER_LABELS[:self.num_tracers] or tracer2 not in TRACER_LABELS[:self.num_tracers]:
+            raise ValueError(f"Error in PowerSpectrumMultiTracerCovariance.get_tracer_cov: tracer1 and tracer2 must be one of {TRACER_LABELS[:self.num_tracers]}.")
+
+        block_size = len(self.ells[0]) * self.k_binning.kbins
+        idx1 = TRACER_LABELS.index(tracer1) * block_size
+        idx2 = TRACER_LABELS.index(tracer2) * block_size
+        return self._cov[idx1: idx1 + block_size, idx2: idx2 + block_size]
 
     def compute_covariance(self):
         '''Compute the covariance matrix for the given geometry and power spectra.
@@ -104,38 +138,24 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
 
         # If kbins are set for the covariance matrix but not for the geometry,
         # set them for the geometry as well
-        if self.is_kbins_set and not self.geometry.is_kbins_set:
+        if self.k_binning.is_kbins_set and not self.geometry.is_kbins_set:
             self.geometry.set_kbins(self.k_binning.kmin, self.k_binning.kmax, self.k_binning.dk)
 
         # has shape [k, k, ell, tracer]
-        cov = np.zeros((self.k_binning.kbins, self.k_binning.kbins, len(self.ells[0])*len(self.ells[1]), self.num_spectra**2))
+        cov = np.zeros((self.num_spectra, self.k_binning.kbins, self.k_binning.kbins, len(self.ells[0])*len(self.ells[1])))
+        
         for ki in range(self.k_binning.kbins):
             # Iterate delta_k_max bins either side of the diagonal
             for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max + 1, self.k_binning.kbins)):
                 tracer_idx = 0
-                for A, B in itt.product(range(self.num_tracers), repeat=2):
-                    if B < A: continue
-                    for C, D in itt.product(range(self.num_tracers), repeat=2):
-                        if D < C: continue
-                        cov[ki, kj, :, tracer_idx] += func(ki, kj, A, B, C, D)
+                for idx_A, idx_B in itt.product(range(self.num_tracers), repeat=2):
+                    if idx_B < idx_A: continue
+                    for idx_C, idx_D in itt.product(range(self.num_tracers), repeat=2):
+                        if idx_D < idx_C: continue
+                        cov[tracer_idx, ki, kj, :] += func(ki, kj, idx_A, idx_B, idx_C, idx_D)
                         tracer_idx += 1
 
-        # Somewhat complicated normalization
-        # TODO: Talk to Otavio on what specifically I_AB and I_CD represent
-        if self.num_tracers == 1:
-            I_AB = self.geometry.I22["A"]
-            I_CD = self.geometry.I22["A"]
-        elif self.num_tracers == 2:
-            I_AB = (self.geometry.I22["A"] + self.geometry.I22["B"]) / 2.
-            I_CD = self.geometry.I22["A"]
-        elif self.num_tracers == 3:
-            I_AB = (self.geometry.I22["A"] + self.geometry.I22["B"]) / 2.
-            I_CD = self.geometry.I22["C"]
-        else:
-            I_AB = (self.geometry.I22["A"] + self.geometry.I22["B"]) / 2.
-            I_CD = (self.geometry.I22["C"] + self.geometry.I22["D"]) / 2.
-            
-        cov *= (self.pk_renorm / (I_AB * I_CD))
+        cov *= (self.pk_renorm)
         return cov
 
     @staticmethod
@@ -184,8 +204,9 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
 
         self.pk_renorm *= shotnoise / self.shotnoise
         self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')
+    
 
-class GaussianCovariance(PowerSpectrumMultipolesCovariance):
+class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -314,9 +335,13 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
 
         # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
         # TODO: Impliment mixed and shotnoise terms
-        def func(ik, jk, A, B, C, D): return (1 + self.alpha["A"]) * (1 + self.alpha["B"]) * self._get_shotnoise_term(ik, jk, A, B, C, D)
-                # self._get_cosmic_variance_term(ik, jk, A, B, C, D) + \
-            #(1 + self.alpha) * self._get_mixed_term(ik, jk) + \
+        def func(ik, jk, A, B, C, D): 
+            I_AB = self.geometry.I(TRACER_LABELS[A], 2, 2) * self.geometry.I(TRACER_LABELS[B], 2, 2)
+            I_CD = self.geometry.I(TRACER_LABELS[C], 2, 2) * self.geometry.I(TRACER_LABELS[D], 2, 2)
+            return (1 / (I_AB * I_CD)) * \
+            (self._get_cosmic_variance_term(ik, jk, A, B, C, D) + \
+            (1 + self.alpha) * self._get_mixed_term(ik, jk, A, B, C, D) + \
+            (1 + self.alpha["A"]) * (1 + self.alpha["B"]) * self._get_shotnoise_term(ik, jk, A, B, C, D))
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
         eigvals = self.eigvals
@@ -353,6 +378,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         if not np.allclose(self.cov, self.cov.T):
             self.logger.warning('Covariance matrix is not symmetric.')
 
+    # TODO for Otavio: Upgrade to multi-tracer support
     def load_pypower_file(self, filename, **kwargs):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
@@ -377,6 +403,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         pypower = PowerSpectrumMultipoles.load(filename)
         return self.load_pypower(pypower, **kwargs)
 
+    # TODO for Otavio: Upgrade to multi-tracer support
     def load_pypower(self, pypower, tracer1=0, tracer2=0, remove_shotnoise=None, set_shotnoise=False, naverage=1):
         '''Load power spectrum from pypower object and set it to be used for the covariance calculation.
 
@@ -397,7 +424,6 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             Whether to rescale shotnoise matching the value in the power spectrum file.
         '''
 
-        # TODO for Otavio: Upgrade to multi-tracer support
         kmin_file, kmax_file = pypower.kedges[[0, -1]]
         dk_file = np.diff(pypower.kedges).mean()
 
@@ -466,8 +492,13 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
                     f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
     def load_npy_file(self, ps_file):
-        """Loads power spectra that are stored as npy files
-        NOTE: This is mainly for spherex use"""
+        """Loads power spectra that are stored as npy files, which is mainly for spherex use
+        
+        Args:
+            ps_file (str): Path to the npy file containing the power spectra
+        Raises:
+            IOError: If the file does not exist
+        """
 
         self.logger.info(f"Loading power spectrum from {ps_file}")
 
@@ -477,12 +508,12 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             raise IOError(f"Could not find power spectrum file at {ps_file}")
         
         #[nz, nt, nk, nl]
-        num_ells = 3
         pk_galaxy_raw = pk_data
-        # TODO: Come up with more robust way to do this
+        if pk_galaxy_raw.ndim != 4:
+            raise ValueError(f"Error in load_npy_file: input power spectrum must have 4 dimensions, found {pk_galaxy_raw.ndim} instead.")
         if pk_galaxy_raw.shape[1] == self.num_spectra:
             pk_galaxy_raw = pk_galaxy_raw.transpose(1, 0, 2, 3)
-        if pk_galaxy_raw.shape[3] == num_ells:
+        if pk_galaxy_raw.shape[2] == self.k_binning.kbins:
             pk_galaxy_raw = pk_galaxy_raw.transpose(0, 1, 3, 2)
 
         self.logger.info(f"input power spectrum has shape {pk_galaxy_raw.shape}")
@@ -517,7 +548,8 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         return cov.flatten()
 
     def _get_mixed_term(self, jk, ik, A, B, C, D):
-
+        
+        return 0
         delta_k = jk - ik + self.geometry.delta_k_max
 
         P_AC = np.array([self.get_pk(0, A, C, force_return=True, remove_shotnoise=True),
@@ -535,7 +567,6 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         P_BD = np.array([self.get_pk(0, B, D, force_return=True, remove_shotnoise=True),
                          self.get_pk(2, B, D, force_return=True),
                          self.get_pk(4, B, D, force_return=True)])
-        raise NotImplementedError
 
     def _get_shotnoise_term(self, jk, ik, A, B, C, D):
         
@@ -549,7 +580,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         return cov_ij.flatten()
 
 
-class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):
+class RegularTrispectrumCovariance(PowerSpectrumMultiTracerCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -739,7 +770,7 @@ class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):
         return self
 
 
-class SuperSampleCovariance(PowerSpectrumMultipolesCovariance):
+class SuperSampleCovariance(PowerSpectrumMultiTracerCovariance):
     '''Regular super sample covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
