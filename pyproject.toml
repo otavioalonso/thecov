@@ -20,6 +20,7 @@ dependencies = ['numpy<2.0',
                 'fitsio',
                 'healpy',
                 'psutil', #<- TODO: check if we really need this
+                'pmesh',
                 # We need a specific version of pfft-python (see https://github.com/MP-Gadget/pmesh/issues/53)
                 'pfft-python==0.1.24',
                 'pypower@git+https://github.com/cosmodesi/pypower',
@@ -29,7 +30,7 @@ dependencies = ['numpy<2.0',
 ]
 
 [tool.setuptools.packages.find]
-where = ["thecov"]
+where = ["."]
 
 [project.urls]
 Homepage = "https://github.com/cosmodesi/thecov"

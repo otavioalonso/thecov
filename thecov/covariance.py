@@ -220,23 +220,20 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
 
         self.logger = logging.getLogger('GaussianCovariance')
 
-    def set_galaxy_pk_multipole(self, pk, ell, tracer1=0, tracer2=0, has_shotnoise=False):
+    def set_galaxy_pk_multipole(self, pk:np.ndarray, ell:int, tracer1:int=0, tracer2:int=0, has_shotnoise:bool=False):
         '''Set the input power spectrum to be used for the covariance calculation.
 
-        Parameters
-        ----------
-        pk : array_like
-            Power spectrum.
-        ell : int
-            Multipole of the power spectrum.
-        tracer1 : int
-            Index of the first tracer the power spectrum corresponds to
+        Args:
+            pk (np.ndarray): Power spectrum input as a 1D numpy array.
+        ell (int): Multipole of the power spectrum.
+        tracer1 (int): Index of the first tracer the power spectrum corresponds to
             If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-        tracer2 : int
-            Index of the second tracer the power spectrum corresponds to. 
+        tracer2 (int): Index of the second tracer the power spectrum corresponds to. 
             If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-        has_shotnoise : bool, optional
-            Whether the power spectrum has shotnoise included or not.
+        has_shotnoise (bool, optional): Whether the power spectrum has shotnoise included or not.
+        
+        Raises:
+            ValueError: If the length of the power spectrum does not match the number of k-bins., or if the tracer indices are invalid.
         '''
 
         if len(pk) != self.k_binning.kbins:
@@ -256,24 +253,15 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
     def get_pk(self, ell, tracer1=0, tracer2=0, force_return=False, remove_shotnoise=True, renorm=True):
         '''Get the input power spectrum to be used for the covariance calculation.
 
-        Parameters
-        ----------
-        ell : int
-            Multipole of the power spectrum.
-
-        tracer1 : int
-            Index of the first tracer the power spectrum corresponds to
-            If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-
-        tracer2 : int
-            Index of the second tracer the power spectrum corresponds to. 
-            If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-
-        force_return : bool, float, optional
-            If the power spectrum for the given ell is not set, return a zero array if True or the specified value if a float.
-
-        remove_shotnoise : bool, optional
-            Whether to remove the shotnoise from the power spectrum monopole.
+        Args:
+            ell (int): Multipole of the power spectrum to retrieve.
+            tracer1 (int): Index of the first tracer the power spectrum corresponds to
+                If equal to tracer2, then p(k) is an auto-spectrum. If different, then p(k) is a cross-spectrum
+            tracer2 (int): Index of the second tracer the power spectrum corresponds to. 
+                If equal to tracer1, then p(k) is an auto-spectrum. If different, then p(k) is a cross-spectrum
+            force_return (bool, float, optional): If the power spectrum for the given ell is not set, return a zero array if True or the specified value if a float.
+            remove_shotnoise (bool, optional): Whether to remove the shotnoise from the power spectrum monopole. Default True.
+            renorm (bool, optional): Whether to renormalize the power spectrum by pk_renorm. Default True.
         '''
 
         pk_renorm = self.pk_renorm if renorm else 1.0
@@ -293,10 +281,8 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
     def _compute_covariance_box(self):
         '''Compute the covariance matrix for a box geometry.
 
-        Returns
-        -------
-        self : GaussianCovariance
-            Covariance matrix.
+        Returns:
+            self : GaussianCovariance Covariance matrix object.
         '''
 
         # If the power spectrum for a given ell is not set, use a zero array instead
@@ -328,9 +314,7 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
         '''Compute the covariance matrix for a survey geometry.
 
         Returns
-        -------
-        self : GaussianCovariance
-            Covariance matrix.
+            self : GaussianCovariance Covariance matrix object.
         '''
 
         # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
@@ -340,7 +324,7 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
             I_CD = self.geometry.I(TRACER_LABELS[C], 2, 2) * self.geometry.I(TRACER_LABELS[D], 2, 2)
             return (1 / (I_AB * I_CD)) * \
             (self._get_cosmic_variance_term(ik, jk, A, B, C, D) + \
-            (1 + self.alpha) * self._get_mixed_term(ik, jk, A, B, C, D) + \
+             self._get_mixed_term(ik, jk, A, B, C, D) + \
             (1 + self.alpha["A"]) * (1 + self.alpha["B"]) * self._get_shotnoise_term(ik, jk, A, B, C, D))
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
@@ -382,21 +366,15 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
     def load_pypower_file(self, filename, **kwargs):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
-        Parameters
-        ----------
-        filename : str
-            Name of the pypower file containing the power spectrum.
-        tracer1 : int
-            Index of the first tracer the pypower file corresponds to
-            If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-        tracer2 : int
-            Index of the second tracer the pypower file corresponds to. 
-            If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-        remove_shotnoise : bool, optional
-            Whether pypower should be used to remove the shotnoise from the power spectrum monopole.
-            If None, will be determined based on the geometry used.
-        set_shotnoise : bool, optional
-            Whether to rescale shotnoise matching the value in the power spectrum file.
+        Args:
+            filename (str): Name of the pypower file containing the power spectrum.
+            tracer1 (int): Index of the first tracer the pypower file corresponds to.
+                If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+            tracer2 (int): .Index of the second tracer the pypower file corresponds to. 
+                If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+            remove_shotnoise (bool, optional): Whether pypower should be used to remove the shotnoise from the power spectrum monopole.
+                If None, will be determined based on the geometry used.
+            set_shotnoise (bool, optional): Whether to rescale shotnoise matching the value in the power spectrum file.
         '''
         from pypower import PowerSpectrumMultipoles
         self.logger.info(f'Loading power spectrum from {filename}.')
@@ -407,21 +385,15 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
     def load_pypower(self, pypower, tracer1=0, tracer2=0, remove_shotnoise=None, set_shotnoise=False, naverage=1):
         '''Load power spectrum from pypower object and set it to be used for the covariance calculation.
 
-        Parameters
-        ----------
-        pypower : PowerSpectrumMultipoles
-            pypower object containing the power spectrum.
-        tracer1 : int
-            Index of the first tracer the pypower file corresponds to
-            If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-        tracer2 : int
-            Index of the second tracer the pypower file corresponds to. 
-            If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-        remove_shotnoise : bool, optional
-            Whether pypower should be used to remove the shotnoise from the power spectrum monopole.
-            If None, will be determined based on the geometry used.
-        set_shotnoise : bool, optional
-            Whether to rescale shotnoise matching the value in the power spectrum file.
+        Args:
+            filename (str): Name of the pypower file containing the power spectrum.
+            tracer1 (int): Index of the first tracer the pypower file corresponds to.
+                If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+            tracer2 (int): .Index of the second tracer the pypower file corresponds to. 
+                If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+            remove_shotnoise (bool, optional): Whether pypower should be used to remove the shotnoise from the power spectrum monopole.
+                If None, will be determined based on the geometry used.
+            set_shotnoise (bool, optional): Whether to rescale shotnoise matching the value in the power spectrum file.
         '''
 
         kmin_file, kmax_file = pypower.kedges[[0, -1]]
@@ -526,8 +498,19 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
             self.set_galaxy_pk_multipole(pk_galaxy_raw[idx, 0, 2, :], 4, i, j, has_shotnoise=True)
             idx += 1
 
-    def _get_cosmic_variance_term(self, jk, ik, A, B, C, D):
-        """Calculates elements of the cosmic variance term"""
+    def _get_cosmic_variance_term(self, jk:int, ik:int, A:int, B:int, C:int, D:int):
+        """Calculates elements of the cosmic variance Gaussian term
+        
+        Args:
+            jk (int): Index of the j-th k-bin
+            ik (int): Index of the i-th k-bin
+            A (int): First tracer index
+            B (int): Second tracer index
+            C (int): Third tracer index
+            D (int): Fourth tracer index
+        Returns:
+            np.ndarray: Flattened covariance matrix elements for the cosmic variance term.
+        """
         WinKernel = self.geometry.cosmic_variance_kernel
 
         delta_k = jk - ik + self.geometry.delta_k_max
@@ -540,16 +523,27 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
                          self.get_pk(2, C, D, force_return=True),
                          self.get_pk(4, C, D, force_return=True)])
 
-        cov = np.zeros(3, 3)
-        for ell1, ell2, ell3, ell4 in itt.product((0,1,2), repeat=4):
+        cov = np.zeros((len(self.ells[0]), len(self.ells[0])))
+        for ell1, ell2, ell3, ell4 in itt.product(self.ells[0], repeat=4):
             cov[ell1, ell2] += WinKernel[ik, delta_k, ell1, ell2, ell3, ell4] * \
-                                         P_AB[ik, ell3] * P_CD[jk, ell4]
+                                         P_AB[ell3, ik] * P_CD[ell4, jk]
 
         return cov.flatten()
 
-    def _get_mixed_term(self, jk, ik, A, B, C, D):
-        
-        return 0
+    def _get_mixed_term(self, jk:int, ik:int, A:int, B:int, C:int, D:int):
+        """Calculates elements of the mixed Gaussian term
+
+        Args:
+            jk (int): Index of the j-th k-bin
+            ik (int): Index of the i-th k-bin
+            A (int): First tracer index
+            B (int): Second tracer index
+            C (int): Third tracer index
+            D (int): Fourth tracer index
+
+        Returns:
+            np.ndarray: Flattened covariance matrix elements for the mixed term.
+        """
         delta_k = jk - ik + self.geometry.delta_k_max
 
         P_AC = np.array([self.get_pk(0, A, C, force_return=True, remove_shotnoise=True),
@@ -567,9 +561,34 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
         P_BD = np.array([self.get_pk(0, B, D, force_return=True, remove_shotnoise=True),
                          self.get_pk(2, B, D, force_return=True),
                          self.get_pk(4, B, D, force_return=True)])
-
-    def _get_shotnoise_term(self, jk, ik, A, B, C, D):
         
+        cov = np.zeros((len(self.ells[0]), len(self.ells[0])))
+        for ell1, ell2, ell3 in itt.product(self.ells[0], repeat=3):
+            if A == D:
+                cov[ell1, ell2] += (1 + self.alpha["A"]) * P_BC[ell3, jk] * self.geometry.WinKernel_mixed[ik, 0, delta_k, ell1, ell2, ell3]
+            if B == C:
+                cov[ell1, ell2] += (1 + self.alpha["B"]) * P_AD[ell3, jk] * self.geometry.WinKernel_mixed[ik, 1, delta_k, ell1, ell2, ell3]
+            if A == C:
+                cov[ell1, ell2] += (1 + self.alpha["A"]) * P_BD[ell3, jk] * self.geometry.WinKernel_mixed[ik, 2, delta_k, ell1, ell2, ell3]
+            if B == D:
+                cov[ell1, ell2] += (1 + self.alpha["B"]) * P_AC[ell3, jk] * self.geometry.WinKernel_mixed[ik, 3, delta_k, ell1, ell2, ell3]
+
+        return cov.flatten()
+
+    def _get_shotnoise_term(self, jk:int, ik:int, A:int, B:int, C:int, D:int):
+        """Calculates elements of the shotnoise Gaussian term
+
+        Args:
+            jk (int): Index of the j-th k-bin
+            ik (int): Index of the i-th k-bin
+            A (int): First tracer index
+            B (int): Second tracer index
+            C (int): Third tracer index
+            D (int): Fourth tracer index
+
+        Returns:
+            np.ndarray: Flattened covariance matrix elements for the shotnoise term.
+        """
         WinKernel = self.geometry.shotnoise_kernel
         delta_k = jk - ik + self.geometry.delta_k_max
 
@@ -579,20 +598,17 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
 
         return cov_ij.flatten()
 
-
+# TODO: Update this to multi-tracer
 class RegularTrispectrumCovariance(PowerSpectrumMultiTracerCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
 
-    Attributes
-    ----------
-    geometry : geometry.Geometry
-        Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
+    Args:
+        geometry (geometry.Geometry): Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
     '''
 
     def __init__(self, geometry=None):
 
-        base.PowerSpectrumMultipolesCovariance.__init__(
-            self, geometry=geometry)
+        super().__init__(self, geometry=geometry)
         self.logger = logging.getLogger('RegularTrispectrumCovariance')
 
         from powercovfft import PowerSpecCovFFT

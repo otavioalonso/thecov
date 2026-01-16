@@ -509,16 +509,20 @@ class SurveyGeometry(base.BaseClass):
         self.TRACER_LABELS = ['A', 'B', 'C', 'D']
         self._I = np.full((len(self.I_LABELS), len(self.TRACER_LABELS)), 1.0)
         for tracer in self.TRACER_LABELS:
+
             if self.randoms[tracer] is not None:
                 if self.rank == 0: self.logger.info(f"Initializing I factors from random {tracer}...")
-                for i, label in self.tqdm(enumerate(self.I_LABELS)):
+                pbar = self.tqdm(total=len(self.I_LABELS), desc=f"I factors for tracer {tracer}")
+                for i, label in enumerate(self.I_LABELS):
                     nbar_power = int(label[0])
                     fkp_power = int(label[1])
-                    I = (self.randoms2['NZ']**(nbar_power-1) * \
-                        self.randoms2['WEIGHT_FKP']**fkp_power * \
-                        self.randoms2['WEIGHT'] * \
-                        self.alpha[tracer]).sum().item()
+                    I = (self.randoms[tracer]['NZ']**(nbar_power-1) * \
+                        self.randoms[tracer]['WEIGHT_FKP']**fkp_power * \
+                        self.randoms[tracer]['WEIGHT'] * \
+                        self.alphas[tracer]).sum().item()
                     self._I[i, self.TRACER_LABELS.index(tracer)] = I
+                    pbar.update(1)
+                pbar.close()
 
     def I(self, tracer:str, nbar_power:int, fkp_power:int):
         """Retrieve the I normalization factor for the given tracer.
@@ -572,8 +576,22 @@ class SurveyGeometry(base.BaseClass):
             return window_ABCD
 
     @functools.cache
-    def get_survey_window(self, idx_1="A", idx_2="C", cache_dir=None):
+    def get_survey_window(self, idx_1="A", idx_2="C", cache_dir:str=None):
+        """Retrieves the survey window for the given tracer indices as a base.SparseNDArray object.
 
+        This function should be called by all ranks. The resulting survey window is only stored on rank 0.
+
+        Args:
+            idx_1 (str, optional): First tracer index. Defaults to "A".
+            idx_2 (str, optional): Second tracer index. Defaults to "C".
+            cache_dir (str, optional): Directory to cache the survey window. Defaults to None.
+
+        Raises:
+            ValueError: If idx_1 or idx_2 are invalid.
+
+        Returns:
+            base.SparseNDArray: Survey window for the given tracer indices.
+        """
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
         filename = os.path.join(cache_dir, "W_"+idx_1+idx_2+".npz")
@@ -584,28 +602,40 @@ class SurveyGeometry(base.BaseClass):
             window = base.SparseNDArray(shape_out=(MASK_ELL_MAX//2+1,2*MASK_ELL_MAX+1),
                                         shape_in=(self.nmesh,self.nmesh,self.nmesh))
 
-            for l in range(0, self.mask_ellmax+1, 2):
-                for m in range(-l, l+1):
-                    if idx_1 == "A" and idx_2 == "C":
-                        window[l//2,m] = self.window_AC.mesh(l, m)
-                    elif idx_1 == "A" and idx_2 == "D":
-                        window[l//2,m] = self.window_AD.mesh(l, m)
-                    elif idx_1 == "B" and idx_2 == "C":
-                        window[l//2,m] = self.window_BC.mesh(l, m)
-                    elif idx_1 == "B" and idx_2 == "D":
-                        window[l//2,m] = self.window_BD.mesh(l, m)
-                    else:
-                        raise ValueError(f"ERROR! invalid values for A ({idx_1}) and B ({idx_2})")
+            if self.rank == 0:
+                for l in range(0, self.mask_ellmax+1, 2):
+                    for m in range(-l, l+1):
+                        if idx_1 == "A" and idx_2 == "C":
+                            window[l//2,m] = self.window_AC.mesh(l, m)
+                        elif idx_1 == "A" and idx_2 == "D":
+                            window[l//2,m] = self.window_AD.mesh(l, m)
+                        elif idx_1 == "B" and idx_2 == "C":
+                            window[l//2,m] = self.window_BC.mesh(l, m)
+                        elif idx_1 == "B" and idx_2 == "D":
+                            window[l//2,m] = self.window_BD.mesh(l, m)
+                        else:
+                            raise ValueError(f"ERROR! invalid values for A ({idx_1}) and B ({idx_2})")
 
             window.save(filename)
             return window
 
-    def get_shotnoise_window(self, idx="AB", cache_dir=None):
-        
+    def get_shotnoise_window(self, idx="A", cache_dir:str=None):
+        """Retrieves the shotnoise window for the given tracer indices as a base.SparseNDArray object.
+
+        This function should be called by all ranks. The resulting shotnoise window is only stored on rank 0.
+
+        Args:
+            idx (str, optional): Tracer index. Must be one of ["A", "B", "AB"], Defaults to "A".
+            cache_dir (str, optional): Directory to cache the survey window. Defaults to None.
+
+        Raises:
+            ValueError: If idx is invalid.
+        Returns:
+            base.SparseNDArray: Survey window for the given tracer indices.
+        """
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
         filename = os.path.join(cache_dir, "S_"+idx+".npz")
-
         if os.path.exists(filename):
             return base.SparseNDArray.load(filename)
         else:
@@ -722,8 +752,36 @@ class SurveyGeometry(base.BaseClass):
     @staticmethod
     def get_mixed_gaunt_coefficients(cache_dir=None, mask_ellmax=12, pk_ellmax=4):
         """Calculates all relavent Gaunt coefficients for the shotnoise term, or loads them from file"""
-        raise NotImplementedError
+        if cache_dir is None:
+            cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
+        filename = os.path.join(cache_dir, f"mixed_coefficients_{pk_ellmax}_{mask_ellmax}.npz")
+        if os.path.exists(filename):
+            return base.SparseNDArray.load(filename)
+        else:
+            import sympy.physics.wigner
 
+            # shape_out = l1, l2, l3, m1, m2, l3
+            # shape_in =  la, ma
+            # Only including positive m values, as -m is equivalent to m
+            # when Ylm is real and m is even
+            shape_out = 3*[PK_ELL_MAX//2 + 1] + 3*[2*PK_ELL_MAX + 1]
+            shape_in = [MASK_ELL_MAX//2 + 1] + [2*MASK_ELL_MAX + 1]
+            gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
+
+            for l1, l2, l3 in itt.product(np.arange(0, pk_ellmax + 1, 2), repeat=3):
+                for m1, m2, m3 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3)]):
+                    for la in range(np.abs(l1-l2), l1+l2+1, 2):
+                        for ma in range(-la, la+1, 2):
+
+                            # NOTE: We only have to compute one of the Gaunt coefficient objects here, as
+                            # TODO for Otavio: How do we calculate this one? Eq 23 in the overleaf
+                            value = 0
+                            if value != 0: 
+                                gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, ma+la] += value
+
+            gaunt_coefficients.save(filename)
+            return gaunt_coefficients
+        
     @staticmethod
     def get_shotnoise_gaunt_coefficients(cache_dir=None, mask_ellmax=12, pk_ellmax=4):
         """Calculates all relavent Gaunt coefficients for the shotnoise term, or loads them from file"""
@@ -754,11 +812,9 @@ class SurveyGeometry(base.BaseClass):
                             if value == 0:
                                 # Taking absolute values of all m as -m is equivalent to m
                                 # when Ylm is real and m is even
-                                # m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
+                                # m1, m2 = np.abs(m1), np.abs(m2)
                                 # ma, mb = np.abs(ma), np.abs(mb)
-                                gaunt_coefficients[l1//2,l2//2,
-                                                    m1+l1,m2+l2,
-                                                    la//2,ma+la] += value
+                                gaunt_coefficients[l1//2, l2//2, m1+l1, m2+l2, la//2, ma+la] += value
             gaunt_coefficients.save(filename)
             return gaunt_coefficients
 
@@ -811,8 +867,8 @@ class SurveyGeometry(base.BaseClass):
 
         if self.rank == 0: self.logger.info("Computing cosmic variance term kernels...")
         self._compute_cosmic_variance_kernel(cache_dir, kmodes, Nmodes, weights)
-        #self.logger.info("Computing mixed term kernels...")
-        #self._compute_mixed_kernel()
+        self.logger.info("Computing mixed term kernels...")
+        self._compute_mixed_kernel(cache_dir, kmodes, Nmodes, weights)
         if self.rank == 0: self.logger.info("Computing shotnoise term kernels...")
         self._compute_shotnoise_kernel(cache_dir, kmodes, Nmodes, weights)
 
@@ -1003,44 +1059,198 @@ class SurveyGeometry(base.BaseClass):
 
         return WinKernel
     
-    def _compute_mixed_kernel(self, kmodes, Nmodes, weights):
+    def _compute_mixed_kernel(self, cache_dir:str, kmodes, Nmodes, weights):
 
         if self.rank == 0:
-            self.logger.info("Retrieving survey windows W_AC, W_AD, W_BC, W_BD...")
-            W_AC = self.get_survey_window("A", "C")
-            W_AD = self.get_survey_window("A", "D")
-            W_BC = self.get_survey_window("B", "C")
-            W_BD = self.get_survey_window("B", "D")
-            print(self.resume_file)
+            self.logger.info("Retrieving survey and shotnoise windows...")
+            G_shot = self.get_shotnoise_gaunt_coefficients(pk_ellmax=self.pk_ellmax, mask_ellmax=self.mask_ellmax)
+            G_mixed = self.get_mixed_gaunt_coefficients(pk_ellmax=self.pk_ellmax, mask_ellmax=self.mask_ellmax)
+        else:
+            G_shot, G_mixed = None, None
+        G_shot = self.comm.bcast(G_shot, root=0)
+        G_mixed = self.comm.bcast(G_mixed, root=0)
+        self.comm.Barrier()
 
+        SA_times_WBC = self.get_shotnoise_window("A", cache_dir) * self.get_survey_window("B", "C", cache_dir)
+        WAD_times_SA = self.get_survey_window("A", "D", cache_dir) * self.get_shotnoise_window("B", cache_dir)
+        SA_times_WBD = self.get_shotnoise_window("A", cache_dir) * self.get_survey_window("B", "D", cache_dir)
+        WAC_times_SA = self.get_survey_window("A", "C", cache_dir) * self.get_shotnoise_window("B", cache_dir)
+        self.comm.Barrier()
+        
+        SA_times_WBC = SA_times_WBC.to_shared_memory(self.comm)
+        WAD_times_SA = WAD_times_SA.to_shared_memory(self.comm)
+        SA_times_WBD = SA_times_WBD.to_shared_memory(self.comm)
+        WAC_times_SA = WAC_times_SA.to_shared_memory(self.comm)
+
+        G_times_SA_times_WBC = G_shot @ SA_times_WBC
+        G_times_WAD_times_SB = G_shot @ WAD_times_SA
+        G_times_SA_times_WBD = G_shot @ SA_times_WBD
+        G_times_WAC_times_SB = G_mixed @ WAC_times_SA
+        self.comm.Barrier()
+        del SA_times_WBC, WAD_times_SA, SA_times_WBD, WAC_times_SA
+
+         # load in ylm callables
+        Ylm_table = math.build_Ylm_table(self.pk_ellmax)
         delta_k_max = self.nmesh // 2 - 1
 
         if not hasattr(self, 'WinKernel_mixed') or self.WinKernel_mixed is None:
-            # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
-            self.WinKernel_mixed = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
+            # Format is [k1_bins, term, k2_bins, l1, l2, l3]
+            self.WinKernel_mixed = np.empty([self.kbins, 4, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
             self.WinKernel_mixed.fill(np.nan)
 
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
         self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
-        for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
+        for i, km in self.tqdm(enumerate(kmodes), desc='Computing mixed window kernels', total=self.kbins):
 
             if hasattr(self, '_resume_file') and self._resume_file is not None:
                 # Skip rows that were already computed
-                if not np.isnan(self.WinKernel_mixed[i,0,0,0,0,0]):
-                    # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
+                if not np.isnan(self.WinKernel_mixed[i,0,0,0,0,0,0]):
+                    self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
                     continue
     
+            kmodes_sampled = len(km)
+            # Splitting kmodes in chunks to be sent to each rank
+            kmodes_per_rank = np.array_split(km, self.size)[self.rank]
 
-                if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
-                    self.save(self._resume_file)
-                    last_save = time.time()
+            results_per_rank = self._compute_mixed_kernel_row(i, kmodes_per_rank, G_times_SA_times_WBC, G_times_WAD_times_SB, 
+                                                              G_times_SA_times_WBD, G_times_WAC_times_SB, Ylm_table)
+            self.comm.Barrier()
+
+            results_per_rank = np.sum(results_per_rank, axis=0)
+            if self.rank == 0:
+                results_combined = np.zeros_like(results_per_rank)
+            else:
+                results_combined = None # None on non-root processes
+            self.comm.Reduce(results_per_rank, results_combined, op=MPI.SUM, root=0)
+
+            if self.rank == 0:
+                self.WinKernel_mixed[i] = results_combined.real * weights[i] / kmodes_sampled
+                for k2_bin_index in range(0, 2*delta_k_max + 1):
+                    if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
+                        self.WinKernel_mixed[i, :, k2_bin_index, :, :, :, :] = 0
+                    else:
+                        self.WinKernel_mixed[i, :, k2_bin_index, :, :, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
+
+            if hasattr(self, '_resume_file') and self._resume_file is not None and (time.time() - last_save) > 600:
+                self.save(self._resume_file)
+                last_save = time.time()
 
             self.logger.info('Mixed term Window kernel computed.')
 
             if self._resume_file is not None:
                 self.save(self._resume_file)
 
+
+    def _compute_mixed_kernel_row(self, idx:int, bin_kmodes:np.ndarray, 
+                                  G_times_SA_times_WBC:base.SparseNDArray, 
+                                  G_times_WAD_times_SB:base.SparseNDArray,
+                                  G_times_SA_times_WBD:base.SparseNDArray,
+                                  G_times_WAC_times_SB:base.SparseNDArray,
+                                  Ylm_table:np.ndarray):
+        '''Computes a row of the window kernels. This function is called in parallel for each k1 bin.
+        Gives window kernels for L=0,2,4 auto and cross covariance
+
+        Args:
+            idx (int):, the index of the current k1 bin
+            bin_kmodes (np.ndarray): 4D array of x, y, z, and r coordinates of sampled modes in the current k1 bin
+            G_times_SA_times_WBC (SparseNDArray): Precomputed product of the Gaunt coefficients and S_A * W_BC
+            G_times_WAD_times_SB (SparseNDArray): Precomputed product of the Gaunt coefficients and W_AD * S_B
+            G_times_SA_times_WBD (SparseNDArray): Precomputed product of the Gaunt coefficients and S_A * W_BD
+            G_times_WAC_times_SB (SparseNDArray): Precomputed product of the Gaunt coefficients and W_AC * S_B
+            Ylm_table (np.ndarray): Precomputed Ylm callables for each ell
+        Returns:
+            WinKernel (np.ndarray): an array with [2*delta_k_max+1,num_ell,num_ell,num_ell,num_ell] dimensions.
+                The first dim corresponds to the k-bin of k2
+                (only 3 bins on each side of diagonal are included by default as the Gaussian covariance drops quickly away from diagonal)
+                The remaining dims correspond to specific ells
+        '''
+
+        # k1_bin_index is a scalar
+        k1_bin_index = idx + self.kmin//self.dk
+        
+        WinKernel_mixed = np.zeros((4, 2*self.delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1), dtype=np.complex128)
+        iix, iiy, iiz = np.meshgrid(*self.window_AB.ikgrid, indexing='ij')
+
+        k2xh = np.zeros_like(iix)
+        k2yh = np.zeros_like(iiy)
+        k2zh = np.zeros_like(iiz)
+        kfun = 2 * np.pi / self.boxsize
+
+        mode_idx = 1
+        t_avg = 0
+        for ik1x, ik1y, ik1z, ik1r in bin_kmodes:
+            t_start = time.time()
+            if ik1r <= 1e-10:
+                k1xh = 0
+                k1yh = 0
+                k1zh = 0
+            else:
+                k1xh = ik1x/ik1r
+                k1yh = ik1y/ik1r
+                k1zh = ik1z/ik1r
+
+            # Build a 3D array of modes around the selected mode
+            k2xh = ik1x-iix
+            k2yh = ik1y-iiy
+            k2zh = ik1z-iiz
+
+            k2r = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
+
+            # to decide later which shell the k2 mode belongs to
+            # k2_bin_index has shape (nmesh, nmesh, nmesh)
+            k2_bin_index = (k2r * kfun / self.dk).astype(int)
+            k2r[k2r <= 1e-10] = np.inf
+            k2xh /= k2r
+            k2yh /= k2r
+            k2zh /= k2r
+            
+            # Evaluate ylm factors at the given k1 and k2 modes
+            Ylm_k1 = math.evaluate_Ylms(Ylm_table, self.pk_ellmax, k1xh, k1yh, k1zh)
+            Ylm_k2 = math.evaluate_Ylms(Ylm_table, self.pk_ellmax, k2xh, k2yh, k2zh)
+
+            result_1 = np.zeros((list(G_times_SA_times_WBC.shape_in) + [3,3,3]), dtype=np.complex128)
+            result_2 = np.zeros((list(G_times_WAD_times_SB.shape_in) + [3,3,3]), dtype=np.complex128)
+            result_3 = np.zeros((list(G_times_SA_times_WBD.shape_in) + [3,3,3]), dtype=np.complex128)
+            result_4 = np.zeros((list(G_times_WAC_times_SB.shape_in) + [3,3,3]), dtype=np.complex128)
+            # multiply by Ylms
+            for l1, l2, l3 in itt.product(np.arange(0, self.pk_ellmax+1, 2), repeat=3):
+                l1_idx = int(l1 / 2)
+                l2_idx = int(l2 / 2)
+                l3_idx = int(l3 / 2)
+                
+                for m1, m2, m3 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3)]):
+                    m1_idx = int((m1 + l1) / 2)
+                    m2_idx = int((m2 + l2) / 2)
+                    m3_idx = int((m3 + l3) / 2)
+
+                    G_SA_WBC = G_times_SA_times_WBC[l1_idx,l2_idx,l3_idx,m1_idx,m2_idx,m3_idx]
+                    G_WAD_SB = G_times_WAD_times_SB[l1_idx,l2_idx,l3_idx,m1_idx,m2_idx,m3_idx]
+                    G_SA_WBD = G_times_SA_times_WBD[l1_idx,l2_idx,l3_idx,m1_idx,m2_idx,m3_idx]
+                    G_WAC_SB = G_times_WAC_times_SB[l1_idx,l2_idx,l3_idx,m1_idx,m2_idx,m3_idx]
+
+                    Ylms = Ylm_k1[l1_idx][m1_idx] * \
+                           Ylm_k2[l2_idx][m2_idx] * \
+                           Ylm_k2[l3_idx][m3_idx]
+                    
+                    result_1[:,:,:,l1_idx,l2_idx,l3_idx] += Ylms * G_SA_WBC.toarray().reshape(G_times_SA_times_WBC.shape_in)
+                    result_2[:,:,:,l1_idx,l2_idx,l3_idx] += Ylms * G_WAD_SB.toarray().reshape(G_times_WAD_times_SB.shape_in)
+                    result_3[:,:,:,l1_idx,l2_idx,l3_idx] += Ylms * G_SA_WBD.toarray().reshape(G_times_SA_times_WBD.shape_in)
+                    result_4[:,:,:,l1_idx,l2_idx,l3_idx] += Ylms * G_WAC_SB.toarray().reshape(G_times_WAC_times_SB.shape_in)
+
+            for delta_k in range(-self.delta_k_max, self.delta_k_max + 1):
+                modes = (k2_bin_index - k1_bin_index == delta_k)
+                if np.any(modes == True):
+                    WinKernel_mixed[0, delta_k] = np.sum(result_1[modes], axis=0)
+                    WinKernel_mixed[1, delta_k] = np.sum(result_2[modes], axis=0)
+                    WinKernel_mixed[2, delta_k] = np.sum(result_3[modes], axis=0)
+                    WinKernel_mixed[3, delta_k] = np.sum(result_4[modes], axis=0)
+
+            t_avg += time.time() - t_start
+            self.logger.debug(f"process {os.getpid()}, mode {mode_idx} / {len(bin_kmodes)} done. Avg time per iteration = {t_avg / mode_idx:.1f}s")
+            mode_idx += 1
+
+        return WinKernel_mixed
 
     def _compute_shotnoise_kernel(self, cache_dir, kmodes, Nmodes, weights):
 
