@@ -139,7 +139,7 @@ class PowerSpectrumMultiTracerCovariance(base.MultipoleFourierCovariance):
         # If kbins are set for the covariance matrix but not for the geometry,
         # set them for the geometry as well
         if self.k_binning.is_kbins_set and not self.geometry.is_kbins_set:
-            self.geometry.set_kbins(self.k_binning.kmin, self.k_binning.kmax, self.k_binning.dk)
+            self.geometry.set_kbins(self.k_binning)
 
         # has shape [k, k, ell, tracer]
         cov = np.zeros((self.num_spectra, self.k_binning.kbins, self.k_binning.kbins, len(self.ells[0])*len(self.ells[1])))
@@ -184,7 +184,7 @@ class PowerSpectrumMultiTracerCovariance(base.MultipoleFourierCovariance):
         if isinstance(self.geometry, geometry.SurveyGeometry):
             alphas = np.array(list(self.alpha.values()))
             for t in range(self.num_tracers):
-                shotnoise.append(self.pk_renorm * (1 + alphas[t]) * self.geometry.I_12[t]/self.geometry.I_22[t])
+                shotnoise.append(self.pk_renorm * (1 + alphas[t]) * self.geometry.I(TRACER_LABELS[t], 1, 2)/self.geometry.I(TRACER_LABELS[t], 2, 2))
             return np.array(shotnoise)
         elif isinstance(self.geometry, geometry.BoxGeometry):
             return self.pk_renorm * self.geometry.shotnoise

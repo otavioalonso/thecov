@@ -13,12 +13,14 @@ authors = [
     { name = "Joe Adamo", email = 'jadamo@arizona.edu'}
 ]
 requires-python = ">= 3.9"
+# TODO: See if we can remove some explicit dependencies
 dependencies = ['numpy<2.0', 
                 'scipy', 
                 'tqdm',
                 'Cython',
                 'fitsio',
                 'healpy',
+                'sympy',
                 'psutil', #<- TODO: check if we really need this
                 'pmesh',
                 # We need a specific version of pfft-python (see https://github.com/MP-Gadget/pmesh/issues/53)

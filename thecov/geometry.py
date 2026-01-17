@@ -115,7 +115,10 @@ class SurveyWindow(base.BaseClass):
         if nmesh is None and cellsize is None:
             # Pick value that will give at least k_mask = kmax_window in the FFTs
             self.cellsize = np.pi / kmax / (1. + 1e-9)
+        if boxsize is None:
+            boxsize = max(np.amax(randoms['POSITION'], axis=0) - np.amin(randoms['POSITION'], axis=0))
 
+        if self.rank == 0: self.logger.info("Creating survey mesh W...")
         mesh = CatalogMesh(
             data_positions=randoms['POSITION'],
             data_weights=randoms['WEIGHT'],
@@ -129,7 +132,7 @@ class SurveyWindow(base.BaseClass):
         )
 
         if shotnoise==True:
-            if self.rank == 0: self.logger.info("Calculating shotnoise mesh S...")
+            if self.rank == 0: self.logger.info("Creating shotnoise mesh S...")
             shotnoise_mesh = CatalogMesh(
                 data_positions=randoms['POSITION'],
                 data_weights=randoms['WEIGHT_FKP']**2 * randoms[f'WEIGHT'] * alpha,
@@ -195,7 +198,7 @@ class SurveyWindow(base.BaseClass):
         rebin_factor = trim_to_nmesh//target_nmesh
 
         if rebin_factor == 0:
-            self.logger.error(f"Rebin factor = 0 with the given values of dk ({dk}) and kmax ({kmax})! This might mean your nmesh is too small")
+            self.logger.error(f"trim_to_nmesh ({trim_to_nmesh}) smaller than target mesh {target_nmesh} with the given values of dk ({dk}) and kmax ({kmax})! Try increasing nmesh.")
             raise ZeroDivisionError
 
         # Ensure that trim_to_nmesh is a multiple of rebin_factor
@@ -256,6 +259,8 @@ class SurveyWindow(base.BaseClass):
             mesh_to_clone = self.mesh1
 
         self.comm.Barrier()
+        print("got past barrier")
+
         result = mesh_to_clone.clone(
                 data_positions=mesh_to_clone.data_positions,
                 data_weights=mesh_to_clone.data_weights*Ylm(mesh_to_clone.data_positions.T[0],
@@ -265,6 +270,7 @@ class SurveyWindow(base.BaseClass):
                 mpicomm=self.comm
             ).to_mesh(compensate=True)
 
+        print("got past to_mesh")
         if hasattr(self, 'mesh2') and not shotnoise:
             result *= self.mesh2.to_mesh(compensate=True)
         elif shotnoise and combine_windows:
@@ -279,26 +285,27 @@ class SurveyWindow(base.BaseClass):
         else:
             result_per_rank = np.zeros((result.shape))
 
+        print("got past result_per_rank")
         result_combined = np.zeros((result_per_rank.shape[0],
                                     result_per_rank.shape[1] * self.size,
                                     result_per_rank.shape[2]))
         result_combined[:,result_per_rank.shape[1]*self.rank:result_per_rank.shape[1]*(self.rank+1), :] = result_per_rank
         self.comm.Barrier()
         result_combined = self.comm.reduce(result_combined, op=MPI.SUM, root=0)
+        print("got past reduce")
 
-        if self.rank == 0:
-            if self.dk is not None and self.kmax is not None:
-                trim_to_nmesh, rebin_factor = self._rebin_parameters(self.dk, self.kmax)
+        if self.dk is not None and self.kmax is not None:
+            trim_to_nmesh, rebin_factor = self._rebin_parameters(self.dk, self.kmax)
 
-                if trim_to_nmesh <= self.nmesh and self.kboxsize <= self.boxsize:
-                    result_combined = result_combined[:trim_to_nmesh, :trim_to_nmesh, :trim_to_nmesh]
-                    self.logger.info(f"Trimmed mesh from {self.nmesh} to {trim_to_nmesh} and boxsize from {self.boxsize:.0f} to {self.kboxsize:.0f}.")
+            if trim_to_nmesh <= self.nmesh and self.kboxsize <= self.boxsize:
+                result_combined = result_combined[:trim_to_nmesh, :trim_to_nmesh, :trim_to_nmesh]
+                if self.rank == 0: self.logger.info(f"Trimmed mesh from {self.nmesh} to {trim_to_nmesh} and boxsize from {self.boxsize:.0f} to {self.kboxsize:.0f}.")
 
-                    # Sum mesh values in the new mesh
-                    if rebin_factor > 1:
-                        result_combined = result_combined.reshape((self.knmesh, rebin_factor, self.knmesh, rebin_factor, self.knmesh, rebin_factor)).sum(axis=(1, 3, 5))
+                # Sum mesh values in the new mesh
+                if rebin_factor > 1:
+                    result_combined = result_combined.reshape((self.knmesh, rebin_factor, self.knmesh, rebin_factor, self.knmesh, rebin_factor)).sum(axis=(1, 3, 5))
 
-                    self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result.shape[0]} with factor {rebin_factor}.")
+                if self.rank == 0:self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result.shape[0]} with factor {rebin_factor}.")
 
             # pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
             if fourier:
@@ -307,15 +314,15 @@ class SurveyWindow(base.BaseClass):
                 result_combined = np.fft.fftn(result_combined, axes=(0, 1, 2), norm='backward')
                 self.logger.info(f"Mesh Fourier transform done in {time.time() - time_start:.2f} seconds")
 
-            # result = result.value if not fourier else result.r2c().value
-            if threshold is not None:
-                # Convert the result to a sparse array to save memory
-                result_combined[np.abs(result_combined) < threshold] = 0
-                result_combined = base.SparseNDArray.from_dense(result_combined, shape_in=(self.nmesh,self.nmesh), shape_out=self.nmesh)
+        # result = result.value if not fourier else result.r2c().value
+        if threshold is not None:
+            # Convert the result to a sparse array to save memory
+            result_combined[np.abs(result_combined) < threshold] = 0
+            result_combined = base.SparseNDArray.from_dense(result_combined, shape_in=(self.nmesh,self.nmesh), shape_out=self.nmesh)
 
         self.comm.Barrier()
-        if self.rank == 0: return result_combined
-        else:              return None
+        return result_combined
+
     
 # barebones class so covariance.py compiles without error for now
 # TODO for Otavio: restore this class?
@@ -334,7 +341,7 @@ class SurveyGeometry(base.BaseClass):
                  randoms_d=None, alpha_d=None,
                  nmesh=None, boxsize=None, boxpad=2.,
                  kmin=0, kmax=0.2, dk=None, binning_type="linear", mask_ellmax=12, pk_ellmax=4,
-                 sample_mode="lebedev", lebedev_degree=25, resume_file=None, comm=MPI.COMM_WORLD):
+                 sample_mode="monte-carlo", lebedev_degree=25, resume_file=None, comm=MPI.COMM_WORLD):
 
         # set's k-binning
         super().__init__()
@@ -347,7 +354,6 @@ class SurveyGeometry(base.BaseClass):
         self.logger.setLevel(logging.INFO)
         self.tqdm = shell_tqdm
                 
-        #self.delta_k_max = 3
         self.mask_ellmax = mask_ellmax
         self.pk_ellmax = pk_ellmax
         self.sample_mode = sample_mode
@@ -458,8 +464,6 @@ class SurveyGeometry(base.BaseClass):
         
         randoms['WEIGHT'] *= alpha
         
-        # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
-        # NOTE: Sometimes this if statement hangs for some reason...
         if 'NZ' not in randoms:
             if self.rank == 0: self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
             import healpy as hp
@@ -481,6 +485,7 @@ class SurveyGeometry(base.BaseClass):
     def _init_survey_windows(self, **kwargs):
         
         # 'A' will always have an associated random / alpha
+        # TODO: When num_tracer = 1, this code runs thru the same calculation 3 times. Find a way to optimize it.
         self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['B'], self.alphas['B'], shotnoise=True, **kwargs)
         self.window_AC = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['C'], self.alphas['C'], **kwargs)
         self.window_AD = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['D'], self.alphas['D'], **kwargs)
@@ -511,18 +516,23 @@ class SurveyGeometry(base.BaseClass):
         for tracer in self.TRACER_LABELS:
 
             if self.randoms[tracer] is not None:
-                if self.rank == 0: self.logger.info(f"Initializing I factors from random {tracer}...")
-                pbar = self.tqdm(total=len(self.I_LABELS), desc=f"I factors for tracer {tracer}")
+                if self.rank == 0: 
+                    self.logger.info(f"Initializing I factors from random {tracer}...")
+                    pbar = self.tqdm(total=len(self.I_LABELS), desc=f"I factors for tracer {tracer}")
+
                 for i, label in enumerate(self.I_LABELS):
                     nbar_power = int(label[0])
                     fkp_power = int(label[1])
-                    I = (self.randoms[tracer]['NZ']**(nbar_power-1) * \
+                    I_sub = (self.randoms[tracer]['NZ']**(nbar_power-1) * \
                         self.randoms[tracer]['WEIGHT_FKP']**fkp_power * \
                         self.randoms[tracer]['WEIGHT'] * \
                         self.alphas[tracer]).sum().item()
+                    I = self.comm.allreduce(I_sub, op=MPI.SUM)
+                    print(self.rank, I_sub, I)
                     self._I[i, self.TRACER_LABELS.index(tracer)] = I
-                    pbar.update(1)
-                pbar.close()
+                    if self.rank == 0: pbar.update(1)
+
+                if self.rank == 0: pbar.close()
 
     def I(self, tracer:str, nbar_power:int, fkp_power:int):
         """Retrieve the I normalization factor for the given tracer.
@@ -566,12 +576,13 @@ class SurveyGeometry(base.BaseClass):
                     for mb in range(-lb, lb+1):
                         total_iterations+=1
 
-            pbar = self.tqdm(total=total_iterations)
+            if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc="W * Ylm mesh calculation")
             for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
                 for ma in range(-la, la+1):
                     for mb in range(-lb, lb+1):
                         window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.mesh(la, ma) * self.window_CD.mesh(lb, mb)
-                        pbar.update(1)
+                        if self.rank == 0:pbar.update(1)
+            if self.rank == 0:pbar.close()
             window_ABCD.save(filename)
             return window_ABCD
 
@@ -661,18 +672,40 @@ class SurveyGeometry(base.BaseClass):
 
     @property
     def delta_k_max(self):
+        # TODO: This will usually give much larger values than we probably need. Would be good to test that
         return self.nmesh // 2 - 1
 
     @property
     def cosmic_variance_kernel(self):
+        """
+        The survey window kernel corresponding to the cosmic variance Gaussian term.
+        Upon first calling this property, the window kernels are computed and cached.
+        Subsequent calls return the cached value.
+        """
+        if not hasattr(self, 'WinKernel_cosmic') or np.any(np.isnan(self.WinKernel_cosmic)):
+            self.compute_window_kernels()
         return self.WinKernel_cosmic
     
     @property
     def mixed_kernel(self):
+        """
+        The survey window kernel corresponding to the mixed Gaussian term.
+        Upon first calling this property, the window kernels are computed and cached.
+        Subsequent calls return the cached value.
+        """
+        if not hasattr(self, 'WinKernel_mixed') or np.any(np.isnan(self.WinKernel_mixed)):
+            self.compute_window_kernels()
         return self.WinKernel_mixed
 
     @property
     def shotnoise_kernel(self):
+        """
+        The survey window kernel corresponding to the shotnoise Gaussian term.
+        Upon first calling this property, the window kernels are computed and cached.
+        Subsequent calls return the cached value.
+        """
+        if not hasattr(self, 'WinKernel_shotnoise') or np.any(np.isnan(self.WinKernel_shotnoise)):
+            self.compute_window_kernels()
         return self.WinKernel_shotnoise
 
     @property
@@ -825,16 +858,6 @@ class SurveyGeometry(base.BaseClass):
         self._window_power = None
         self._I = {}
 
-    def get_window_kernels(self):
-        '''Returns the window kernels to be used in the calculation of the covariance.
-
-        Returns:
-            WinKernel (SparseNDArray): Window kernels to be used in the calculation of the covariance.
-        '''
-        if self.WinKernel is None or np.isnan(self.WinKernel).any():
-            self.compute_window_kernels(cache_dir=None, kmodes_sampled=250)
-        return self.WinKernel
-
     def compute_window_kernels(self, cache_dir:str=None, kmodes_sampled:int=250):
         """Wrapper function that sequentially runs all kernel computations.
         Each term is calculated seperately in order to save memory
@@ -849,34 +872,31 @@ class SurveyGeometry(base.BaseClass):
 
         # Sample k1 modes
         if self.rank == 0:
-            kmodes, Nmodes, weights = math.sample_kmodes(kmin=self.kmin,
-                                                        kmax=self.k_binningkmax,
-                                                        dk=self.k_binning.dk,
-                                                        boxsize=self.boxsize,
-                                                        max_modes=kmodes_sampled,
-                                                        k_shell_approx=0.05,
-                                                        sample_mode="monte-carlo")
+            kmodes, Nmodes, weights = math.sample_kmodes(self.k_binning, boxsize=self.boxsize,
+                                        max_modes=kmodes_sampled, k_shell_approx=0.05, sample_mode="monte-carlo")
         else:
-            kmodes = None
-            Nmodes = None
-            weights = None
+            kmodes, Nmodes, weights = None, None, None
         
         kmodes = self.comm.bcast(kmodes, root=0)
         Nmodes = self.comm.bcast(Nmodes, root=0)
         weights = self.comm.bcast(weights, root=0)
 
-        if self.rank == 0: self.logger.info("Computing cosmic variance term kernels...")
         self._compute_cosmic_variance_kernel(cache_dir, kmodes, Nmodes, weights)
-        self.logger.info("Computing mixed term kernels...")
         self._compute_mixed_kernel(cache_dir, kmodes, Nmodes, weights)
-        if self.rank == 0: self.logger.info("Computing shotnoise term kernels...")
         self._compute_shotnoise_kernel(cache_dir, kmodes, Nmodes, weights)
 
     def _compute_cosmic_variance_kernel(self, cache_dir:str, kmodes:np.ndarray, nmodes:np.ndarray, weights:np.ndarray):
         
         # points on the unit sphere with corresponding integration weights
         # x, y, z, w = math.get_lebedev_points(self.lebedev_degree)
-        
+        if hasattr(self, "WinKernel_cosmic") and self.WinKernel_cosmic is not None:
+            return
+        else:
+            if self.rank == 0: self.logger.info("Computing cosmic variance term kernels...")
+            # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
+            self.WinKernel_cosmic = np.empty([self.k_binning.kbins, 2*self.delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
+            self.WinKernel_cosmic.fill(np.nan)
+
         # Gaunt coefficients
         if self.rank == 0:
             # calculate Gaunt coefficients first to avoid race conditions
@@ -905,14 +925,6 @@ class SurveyGeometry(base.BaseClass):
         # load in ylm callables
         Ylm_table = math.build_Ylm_table(self.pk_ellmax)
 
-        #delta_k_max = 3
-        delta_k_max = self.nmesh // 2 - 1
-
-        if not hasattr(self, 'WinKernel_cosmic') or self.WinKernel_cosmic is None and self.rank == 0:
-            # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
-            self.WinKernel_cosmic = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
-            self.WinKernel_cosmic.fill(np.nan)
-
         last_save = time.time()
         if self.rank == 0:
             self.logger.info(f"Beginning window kernel calculations on {self.size} ranks...")
@@ -926,7 +938,7 @@ class SurveyGeometry(base.BaseClass):
             if hasattr(self, '_resume_file') and self._resume_file is not None and self.rank == 0:
                 # Skip rows that were already computed
                 if not np.isnan(self.WinKernel_cosmic[i,0,0,0,0,0]):
-                    self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
+                    self.logger.debug(f'Skipping bin {i} of {self.k_binning.kbins}.')
                     continue
 
             kmodes_sampled = len(km)
@@ -950,8 +962,8 @@ class SurveyGeometry(base.BaseClass):
     
             if self.rank == 0:
                 self.WinKernel_cosmic[i] = results_combined * weights[i] / kmodes_sampled
-                for k2_bin_index in range(0, 2*delta_k_max + 1):
-                    if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
+                for k2_bin_index in range(0, 2*self.delta_k_max + 1):
+                    if (k2_bin_index + i - self.delta_k_max >= self.k_binning.kbins or k2_bin_index + i - self.delta_k_max < 0):
                         self.WinKernel_cosmic[i, k2_bin_index, :, :] = 0
                     else:
                         self.WinKernel_cosmic[i, k2_bin_index, :, :] /= nmodes[i + k2_bin_index - self.delta_k_max]
@@ -983,7 +995,7 @@ class SurveyGeometry(base.BaseClass):
         '''
 
         # k1_bin_index is a scalar
-        k1_bin_index = idx + self.kmin//self.dk
+        k1_bin_index = idx + self.k_binning.kmin//self.dk
 
         WinKernel = np.zeros((2*self.delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1), dtype=np.complex128)
         iix, iiy, iiz = np.meshgrid(*self.window_AB.ikgrid, indexing='ij')
@@ -1061,6 +1073,14 @@ class SurveyGeometry(base.BaseClass):
     
     def _compute_mixed_kernel(self, cache_dir:str, kmodes, Nmodes, weights):
 
+        if hasattr(self, "WinKernel_mixed") and self.WinKernel_mixed is not None:
+            return
+        else:
+            self.logger.info("Computing mixed term kernels...")
+            # Format is [k1_bins, term, k2_bins, l1, l2, l3]
+            self.WinKernel_mixed = np.empty([self.k_binning.kbins, 4, 2*self.delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
+            self.WinKernel_mixed.fill(np.nan)
+
         if self.rank == 0:
             self.logger.info("Retrieving survey and shotnoise windows...")
             G_shot = self.get_shotnoise_gaunt_coefficients(pk_ellmax=self.pk_ellmax, mask_ellmax=self.mask_ellmax)
@@ -1091,22 +1111,16 @@ class SurveyGeometry(base.BaseClass):
 
          # load in ylm callables
         Ylm_table = math.build_Ylm_table(self.pk_ellmax)
-        delta_k_max = self.nmesh // 2 - 1
-
-        if not hasattr(self, 'WinKernel_mixed') or self.WinKernel_mixed is None:
-            # Format is [k1_bins, term, k2_bins, l1, l2, l3]
-            self.WinKernel_mixed = np.empty([self.kbins, 4, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
-            self.WinKernel_mixed.fill(np.nan)
 
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
         self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
-        for i, km in self.tqdm(enumerate(kmodes), desc='Computing mixed window kernels', total=self.kbins):
+        for i, km in self.tqdm(enumerate(kmodes), desc='Computing mixed window kernels', total=self.k_binning.kbins):
 
             if hasattr(self, '_resume_file') and self._resume_file is not None:
                 # Skip rows that were already computed
                 if not np.isnan(self.WinKernel_mixed[i,0,0,0,0,0,0]):
-                    self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
+                    self.logger.debug(f'Skipping bin {i} of {self.k_binning.kbins}.')
                     continue
     
             kmodes_sampled = len(km)
@@ -1126,8 +1140,8 @@ class SurveyGeometry(base.BaseClass):
 
             if self.rank == 0:
                 self.WinKernel_mixed[i] = results_combined.real * weights[i] / kmodes_sampled
-                for k2_bin_index in range(0, 2*delta_k_max + 1):
-                    if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
+                for k2_bin_index in range(0, 2*self.delta_k_max + 1):
+                    if (k2_bin_index + i - self.delta_k_max >= self.k_binning.kbins or k2_bin_index + i - self.delta_k_max < 0):
                         self.WinKernel_mixed[i, :, k2_bin_index, :, :, :, :] = 0
                     else:
                         self.WinKernel_mixed[i, :, k2_bin_index, :, :, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
@@ -1167,7 +1181,7 @@ class SurveyGeometry(base.BaseClass):
         '''
 
         # k1_bin_index is a scalar
-        k1_bin_index = idx + self.kmin//self.dk
+        k1_bin_index = idx + self.k_binning.kmin//self.dk
         
         WinKernel_mixed = np.zeros((4, 2*self.delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1), dtype=np.complex128)
         iix, iiy, iiz = np.meshgrid(*self.window_AB.ikgrid, indexing='ij')
@@ -1254,6 +1268,14 @@ class SurveyGeometry(base.BaseClass):
 
     def _compute_shotnoise_kernel(self, cache_dir, kmodes, Nmodes, weights):
 
+        if hasattr(self, "WinKernel_shotnoise") and self.WinKernel_shotnoise is not None:
+            return
+        else:
+            if self.rank == 0: self.logger.info("Computing shotnoise term kernels...")
+            # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
+            self.WinKernel_shotnoise = np.empty([self.k_binning.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
+            self.WinKernel_shotnoise.fill(np.nan)
+
         if self.rank == 0:
             self.logger.info("Retrieving shotnoise windows S_AB...")
             G = self.get_shotnoise_gaunt_coefficients(pk_ellmax=self.pk_ellmax, mask_ellmax=self.mask_ellmax)
@@ -1278,14 +1300,6 @@ class SurveyGeometry(base.BaseClass):
         # load in ylm callables
         Ylm_table = math.build_Ylm_table(self.pk_ellmax)
 
-        #delta_k_max = 3
-        delta_k_max = self.nmesh // 2 - 1
-
-        if not hasattr(self, 'WinKernel_shotnoise') or self.WinKernel_shotnoise is None and self.rank == 0:
-            # Format is [k1_bins, k2_bins, l1, l2, l3, l4]
-            self.WinKernel_shotnoise = np.empty([self.kbins, 2*delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1])
-            self.WinKernel_shotnoise.fill(np.nan)
-
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
 
@@ -1300,7 +1314,7 @@ class SurveyGeometry(base.BaseClass):
             if hasattr(self, '_resume_file') and self._resume_file is not None and self.rank == 0:
                 # Skip rows that were already computed
                 if not np.isnan(self.WinKernel_shotnoise[i,0,0,0,0,0]):
-                    self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
+                    self.logger.debug(f'Skipping bin {i} of {self.k_binning.kbins}.')
                     continue
 
             kmodes_sampled = len(km)
@@ -1319,8 +1333,8 @@ class SurveyGeometry(base.BaseClass):
     
             if self.rank == 0:
                 self.WinKernel_shotnoise[i] = results_combined.real * weights[i] / kmodes_sampled
-                for k2_bin_index in range(0, 2*delta_k_max + 1):
-                    if (k2_bin_index + i - delta_k_max >= self.kbins or k2_bin_index + i - delta_k_max < 0):
+                for k2_bin_index in range(0, 2*self.delta_k_max + 1):
+                    if (k2_bin_index + i - self.delta_k_max >= self.k_binning.kbins or k2_bin_index + i - self.delta_k_max < 0):
                         self.WinKernel_shotnoise[i, k2_bin_index, :, :] = 0
                     else:
                         self.WinKernel_shotnoise[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
@@ -1340,7 +1354,7 @@ class SurveyGeometry(base.BaseClass):
 
     def _compute_shotnoise_kernel_row(self, idx, bin_kmodes, product, S_A, S_B, Ylm_table):
 
-        k1_bin_index = idx + self.kmin//self.dk
+        k1_bin_index = idx + self.k_binning.kmin//self.dk
 
         WinKernel = np.zeros((2*self.delta_k_max+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1, self.pk_ellmax//2+1), dtype=np.complex128)
         iix, iiy, iiz = np.meshgrid(*self.window_AB.ikgrid, indexing='ij')

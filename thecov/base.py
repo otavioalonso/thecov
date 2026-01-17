@@ -909,6 +909,10 @@ class SparseNDArray:
         logger = logging.getLogger('SparseNDArray')
         rank = self.comm.Get_rank()
 
+        # We don't need to do anything if we are running on a single rank
+        if self.comm.get_size() == 1:
+            return self
+
         if rank == 0:
             available_memory = utils.get_available_memory()
             required_memory = (self._matrix.data.nbytes*2 +
