@@ -116,9 +116,11 @@ class SurveyWindow(base.BaseClass):
             # Pick value that will give at least k_mask = kmax_window in the FFTs
             self.cellsize = np.pi / kmax / (1. + 1e-9)
         if boxsize is None:
-            boxsize = max(np.amax(randoms['POSITION'], axis=0) - np.amin(randoms['POSITION'], axis=0))
+            boxsize_rank = max(np.amax(randoms['POSITION'], axis=0) - np.amin(randoms['POSITION'], axis=0))
+            boxsize = self.comm.allreduce(boxsize_rank, op=MPI.MAX)
 
         if self.rank == 0: self.logger.info("Creating survey mesh W...")
+        print(f"rank {self.rank} creating mesh...", flush=True)
         mesh = CatalogMesh(
             data_positions=randoms['POSITION'],
             data_weights=randoms['WEIGHT'],
@@ -128,9 +130,11 @@ class SurveyWindow(base.BaseClass):
             boxsize=boxsize,
             boxpad=boxpad,
             dtype='c16',
+            mpicomm=self.comm,
             **{'interlacing': 3, 'resampler': 'tsc'}
         )
-
+        print(f"rank {self.rank} finished creating mesh!")
+        self.comm.Barrier()
         if shotnoise==True:
             if self.rank == 0: self.logger.info("Creating shotnoise mesh S...")
             shotnoise_mesh = CatalogMesh(
@@ -142,6 +146,7 @@ class SurveyWindow(base.BaseClass):
                 boxsize=boxsize,
                 boxpad=boxpad,
                 dtype='c16',
+                mpicomm=self.comm,
                 **{'interlacing': 3, 'resampler': 'tsc'}
             )
         else:
@@ -366,7 +371,10 @@ class SurveyGeometry(base.BaseClass):
 
         self._init_randoms(randoms_a, alpha_a, randoms_b, alpha_b, randoms_c, alpha_c, randoms_d, alpha_d)
         self._init_I_factors()
+        self.comm.Barrier()
         self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk)
+        print(f"rank {self.rank} initialized survey windows", flush=True)
+        self.comm.Barrier()
         del self.randoms
 
     def load_resume_file(self, filename):
@@ -377,13 +385,10 @@ class SurveyGeometry(base.BaseClass):
         filename : str
             Name of the file to load the window kernels from.
         '''
-        for r in range(self.size):
-            if self.rank == r: 
-                if self.rank == 0: self.logger.info(f'Loading window kernels from {filename}.')
-                self.logger.debug(f'rank {r} loading window kernels...')
-                self.__setstate__(self.load(filename))
-            self.comm.Barrier()
 
+        if self.rank == 0: self.logger.info(f'Loading window kernels from {filename}.')
+        self.__setstate__(self.load(filename))
+        self.comm.Barrier()
 
     def set_resume_file(self, filename):
         '''Set the resume file for the window kernels.
@@ -396,14 +401,12 @@ class SurveyGeometry(base.BaseClass):
         self._resume_file = filename
 
         if self._resume_file is not None:
-            try:
+            if os.path.exists(self._resume_file):
                 self.load_resume_file(self._resume_file)
                 if self.rank == 0: self.logger.warning(f'Loaded resume file {self._resume_file}. This might override your settings. See debug messages for more details on the loaded attributes.')
-            except FileNotFoundError:
-                if self.rank == 0:
-                    self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
-                    utils.mkdir(os.path.dirname(self._resume_file))
-                    self.save(self._resume_file)
+            else:
+                if self.rank == 0: self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
+                self.save(self._resume_file)
 
         self.comm.Barrier()
 
@@ -524,11 +527,11 @@ class SurveyGeometry(base.BaseClass):
                     nbar_power = int(label[0])
                     fkp_power = int(label[1])
                     I_sub = (self.randoms[tracer]['NZ']**(nbar_power-1) * \
-                        self.randoms[tracer]['WEIGHT_FKP']**fkp_power * \
-                        self.randoms[tracer]['WEIGHT'] * \
-                        self.alphas[tracer]).sum().item()
+                            self.randoms[tracer]['WEIGHT_FKP']**fkp_power * \
+                            self.randoms[tracer]['WEIGHT'] * \
+                            self.alphas[tracer]).sum().item()
                     I = self.comm.allreduce(I_sub, op=MPI.SUM)
-                    print(self.rank, I_sub, I)
+
                     self._I[i, self.TRACER_LABELS.index(tracer)] = I
                     if self.rank == 0: pbar.update(1)
 

@@ -60,29 +60,81 @@ class BaseClass:
     @property
     def with_mpi(self):
         """Whether to use MPI."""
-        return getattr(self, 'mpicomm', None) is not None and self.mpicomm.size > 1
+        comm = getattr(self, 'mpicomm', None) or getattr(self, 'comm', None) or MPI.COMM_WORLD
+        try:
+            return comm.Get_size() > 1
+        except Exception:
+            return False
 
     def save(self, filename):
         """Save to ``filename``."""
         start = time.time()
-        if not self.with_mpi or self.mpicomm.rank == 0:
-            
+        comm = getattr(self, 'mpicomm', None) or getattr(self, 'comm', None) or MPI.COMM_WORLD
+        root = 0
+
+        # Single-process: write normally
+        if comm.Get_size() == 1:
             utils.mkdir(os.path.dirname(filename))
             with open(filename, "wb") as f:
                 pickle.dump(self.get_pickleable_state(), f, protocol=pickle.HIGHEST_PROTOCOL)
-        # if self.with_mpi:
-        #     self.mpicomm.Barrier()
+            if hasattr(self, 'logger'):
+                self.logger.info(f'Saved to {filename} in {time.time() - start:.3f}s.')
+            return
 
-        if hasattr(self, 'logger'):
+        # Only root writes; broadcast outcome and synchronize
+        if comm.Get_rank() == root:
+            try:
+                utils.mkdir(os.path.dirname(filename))
+                with open(filename, "wb") as f:
+                    pickle.dump(self.get_pickleable_state(), f, protocol=pickle.HIGHEST_PROTOCOL)
+                payload = (True, None)
+            except Exception as e:
+                payload = (False, repr(e))
+        else:
+            payload = None
+
+        payload = comm.bcast(payload, root=root)
+        success, err = payload
+        comm.Barrier()
+
+        if not success:
+            raise IOError(f"Error saving {filename} on root rank: {err}")
+
+        if hasattr(self, 'logger') and comm.Get_rank() == root:
             self.logger.info(f'Saved to {filename} in {time.time() - start:.3f}s.')
 
     @classmethod
     def load(cls, filename):
-        # state = np.load(filename, allow_pickle=True)[()]
-        # new = cls.from_state(state)
-        with open(filename, "rb") as f:
-            state = pickle.load(f)
-        return state
+        """Load pickled state from `filename` in an MPI-safe way.
+
+        Only the root rank reads the file; the loaded state is broadcast to
+        all ranks. If an error occurs on the root rank while reading, the
+        error is propagated to all ranks to avoid deadlocks.
+        """
+        comm = getattr(cls, 'mpicomm', None) or getattr(cls, 'comm', None) or MPI.COMM_WORLD
+        root = 0
+
+        if comm.Get_size() == 1:
+            with open(filename, "rb") as f:
+                state = pickle.load(f)
+            return state
+
+        if comm.Get_rank() == root:
+            try:
+                with open(filename, "rb") as f:
+                    state = pickle.load(f)
+                payload = (True, state)
+            except Exception as e:
+                payload = (False, repr(e))
+        else:
+            payload = None
+
+        payload = comm.bcast(payload, root=root)
+        success, data = payload
+        if not success:
+            raise IOError(f"Error loading {filename} on root rank: {data}")
+
+        return data
         #     new = cls.from_state(state)
         # return new
 
@@ -910,7 +962,7 @@ class SparseNDArray:
         rank = self.comm.Get_rank()
 
         # We don't need to do anything if we are running on a single rank
-        if self.comm.get_size() == 1:
+        if self.comm.Get_size() == 1:
             return self
 
         if rank == 0:

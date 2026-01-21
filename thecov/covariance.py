@@ -25,7 +25,18 @@ __all__ = ['GaussianCovariance',
 TRACER_LABELS = ['A', 'B', 'C', 'D']
 
 cache_dir = os.path.join(os.path.dirname(__file__), "cache")
-os.makedirs(cache_dir, exist_ok=True)
+# Create the cache directory only on rank 0 when running under MPI to
+# avoid race conditions
+try:
+    from mpi4py import MPI
+    _cov_rank = MPI.COMM_WORLD.Get_rank()
+    if _cov_rank == 0:
+        os.makedirs(cache_dir, exist_ok=True)
+    # ensure all ranks wait until the directory is created
+    MPI.COMM_WORLD.Barrier()
+except Exception:
+    os.makedirs(cache_dir, exist_ok=True)
+    
 class PowerSpectrumMultiTracerCovariance(base.MultipoleFourierCovariance):
     '''Parent Covariance matrix of power spectrum multipoles class in a given geometry.
 

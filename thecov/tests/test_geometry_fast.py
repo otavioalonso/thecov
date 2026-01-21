@@ -2,14 +2,27 @@ import numpy as np
 import pytest
 import logging
 from thecov import geometry
+from mockfactory.make_survey import RandomBoxCatalog
 
+def create_basic_randoms(num_tracers):
+
+	nbar = np.random.rand(num_tracers) * 1e-5
+	boxsize = 1000.0
+
+	randoms = []
+	for t in range(4):
+		if t+1 <= num_tracers:
+			randoms.append(RandomBoxCatalog(nbar=nbar[t], boxsize=boxsize))
+			randoms[t]["POSITION"] = randoms[t]["Position"]
+		else:
+			randoms.append(None)
+	return randoms
 
 def make_surveywindow_stub():
     # Create an instance of SurveyWindow without running __init__ to avoid heavy setup
     w = geometry.SurveyWindow.__new__(geometry.SurveyWindow)
     w.logger = logging.getLogger('SurveyWindow')
     return w
-
 
 def test_rebin_parameters_sets_attributes_and_returns_expected_values():
 

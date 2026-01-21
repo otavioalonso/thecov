@@ -1,28 +1,38 @@
 import numpy as np
 import pytest
-from types import SimpleNamespace
 
+from mockfactory.make_survey import RandomBoxCatalog
 from thecov import covariance, geometry, binning
 
+def create_basic_randoms(num_tracers):
 
-class StubGeometry:
-	"""Creates a dummy geometry object for testing multi-tracer covariance."""
-	def __init__(self, num_tracers=2, alphas=None, I12=None, I22=None):
-		self.num_tracers = num_tracers
-		# keep insertion order consistent with TRACER_LABELS
-		if alphas is None:
-			alphas = {l: 0.0 for l in covariance.TRACER_LABELS[:num_tracers]}
-		self.alphas = alphas
-		self.I_12 = np.array(I12) if I12 is not None else np.ones(num_tracers)
-		self.I_22 = np.array(I22) if I22 is not None else np.ones(num_tracers)
+	nbar = np.random.rand(num_tracers) * 1e-5
+	boxsize = 1000.0
 
+	randoms = []
+	for t in range(4):
+		if t+1 <= num_tracers:
+			randoms.append(RandomBoxCatalog(nbar=nbar[t], boxsize=boxsize))
+			randoms[t]["POSITION"] = randoms[t]["Position"]
+		else:
+			randoms.append(None)
+	return randoms
 
 def test_set_galaxy_pk_multipole_stores_symmetric_keys():
-	g = StubGeometry(num_tracers=3)
+	
+	randoms = create_basic_randoms(num_tracers=3)
+	alpha = [0.1, 0.1, 0.1]
+	kmax = 0.05
+	g = geometry.SurveyGeometry(randoms[0], alpha[0],
+							    randoms[1], alpha[1],
+							    randoms[2], alpha[2],
+							    None, None,
+							    nmesh=32, boxpad=1.2,
+							    kmin=0.001, kmax=kmax, dk=0.005)
 	cov = covariance.GaussianCovariance(geometry=g)
 
 	# provide a k-binning stub matching pk length
-	cov.set_kbins(0.001, 0.2, 0.005)
+	cov.set_kbins(0.001, kmax, 0.005)
 	pk = np.arange(cov.k_binning.kbins)
 
 	ell = 0
@@ -44,9 +54,17 @@ def test_set_galaxy_pk_multipole_stores_symmetric_keys():
     (3, "A", "C", None),
 ])
 def test_get_tracer_cov_labels(num_tracers, tracer1, tracer2, expected):
-	g = StubGeometry(num_tracers=num_tracers)
+	randoms = create_basic_randoms(num_tracers)
+	alpha = [0.1, 0.1, 0.1, 0.1]
+	kmax = 0.05
+	g = geometry.SurveyGeometry(randoms[0], alpha[0],
+							    randoms[1], alpha[1],
+							    randoms[2], alpha[2],
+							    randoms[3], alpha[3],
+							    nmesh=32, boxpad=1.2,
+							    kmin=0.001, kmax=kmax, dk=0.005)
 	cov = covariance.PowerSpectrumMultiTracerCovariance(geometry=g)
-	cov.set_kbins(0.001, 0.2, 0.005)
+	cov.set_kbins(0.001, kmax, 0.005)
 	cov._cov = np.zeros((num_tracers * cov.k_binning.kbins * 2, num_tracers * cov.k_binning.kbins * 2))  # dummy covariance
 
 	if isinstance(expected, type) and issubclass(expected, Exception):
@@ -58,7 +76,16 @@ def test_get_tracer_cov_labels(num_tracers, tracer1, tracer2, expected):
 def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 	# Build a stub geometry and temporarily make isinstance checks pass by
 	# treating geometry.SurveyGeometry as object during this test.
-	g = StubGeometry(num_tracers=2, alphas={"A": 0.1, "B": 0.2}, I12=[10.0, 20.0], I22=[5.0, 4.0])
+	TRACER_LABELS = ["A", "B", "C", "D"]
+	randoms = create_basic_randoms(num_tracers=2)
+	alpha = [0.1, 0.1]
+	kmax = 0.05
+	g = geometry.SurveyGeometry(randoms[0], alpha[0],
+							    randoms[1], alpha[1],
+								None, None,
+							    None, None,
+							    nmesh=32, boxpad=1.2,
+							    kmin=0.001, kmax=kmax, dk=0.005)
 
 	cov = covariance.PowerSpectrumMultiTracerCovariance(geometry=g)
 
@@ -70,7 +97,7 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 		alphas_array = np.array(list(g.alphas.values()))
 		expected = []
 		for t in range(g.num_tracers):
-			expected.append(cov.pk_renorm * (1 + alphas_array[t]) * g.I_12[t] / g.I_22[t])
+			expected.append(cov.pk_renorm * (1 + alphas_array[t]) * g.I(TRACER_LABELS[t], 1, 2) / g.I(TRACER_LABELS[t], 2, 2))
 		expected = np.array(expected)
 
 		sn = cov.shotnoise
@@ -80,7 +107,15 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 
 
 def test_load_npy_file_raises_on_wrong_dimensions(tmp_path):
-	g = StubGeometry(num_tracers=1)
+	randoms = create_basic_randoms(num_tracers=2)
+	alpha = [0.1, 0.1, 0.1]
+	kmax = 0.05
+	g = geometry.SurveyGeometry(randoms[0], alpha[0],
+							    randoms[1], alpha[1],
+							    randoms[2], alpha[2],
+							    None, None,
+							    nmesh=32, boxpad=1.2,
+							    kmin=0.001, kmax=kmax, dk=0.005)
 	cov = covariance.GaussianCovariance(geometry=g)
 
 	arr = np.zeros((2, 2, 2))  # not 4D
