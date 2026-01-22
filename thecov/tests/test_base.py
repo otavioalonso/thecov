@@ -174,34 +174,6 @@ def test_multipole_covariance_addition():
     assert (addition.get_ell_cov(2,4).cov == cov1_24 + cov2_24).all()
 
 
-# NOTE: Commented out since we will be changing the relavent code to handle multi-tracer covariance
-# def test_multipole_fourier_covariance_save_load_csv():
-#     cov = thecov.base.MultipoleFourierCovariance()
-#     cov.set_kbins(0., 0.4, 0.005)
-
-#     cov00, cov22, cov44, cov02, cov04, cov24 = np.random.rand(6, cov.kbins, cov.kbins)
-
-#     cov.set_ell_cov(0, 0, cov00)
-#     cov.set_ell_cov(2, 2, cov22)
-#     cov.set_ell_cov(4, 4, cov44)
-
-#     cov.set_ell_cov(0, 2, cov02)
-#     cov.set_ell_cov(0, 4, cov04)
-#     cov.set_ell_cov(4, 2, cov24.T)
-
-#     cov.savecsv('test1.txt')
-#     cov.savecsv('test2.txt', ells_both_ways=True)
-
-#     cov1 = thecov.base.MultipoleFourierCovariance.fromcsv('test1.txt')
-#     cov2 = thecov.base.MultipoleFourierCovariance.fromcsv('test2.txt')
-
-#     assert np.allclose(cov1.cov, cov.cov)
-#     assert np.allclose(cov2.cov, cov.cov)
-
-#     os.remove('test1.txt')
-#     os.remove('test2.txt')
-
-
 def test_sparse_ndarray_basic():
     # shape_out: (2, ), shape_in: (3, ) => dense shape (2,3)
     s = base.SparseNDArray((2,), (3,))
@@ -242,3 +214,58 @@ def test_sparse_ndarray_to_shared_memory():
     dense_shared = s_shared.to_dense()
     assert dense_shared[1, 2] == 3.0
     assert dense_shared[3, 0] == 7.0
+
+def test_save_load_one_rank():
+    rng = np.random.default_rng(4)
+    a = rng.random((3, 3))
+    mat = a @ a.T + np.eye(3) * 1e-3
+
+    cov = base.Covariance(mat)
+
+    filename = "test_cov.npy"
+    cov.save(filename)
+
+    loaded_cov = base.Covariance.load(filename)
+
+    assert np.allclose(cov.cov, loaded_cov.cov)
+    os.remove(filename)
+
+@pytest.mark.mpi(min_size=2)
+def test_save_load_multi_rank():
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    # First, let's define data on all ranks
+    rng = np.random.default_rng(4)
+    a = rng.random((3, 3))
+    mat = a @ a.T + np.eye(3) * 1e-3
+
+    cov = base.Covariance(mat)
+    filename = "test_cov.npy"
+    cov.save(filename)
+
+    loaded_cov = base.Covariance.load(filename)
+    assert np.allclose(cov.cov, loaded_cov.cov)
+
+    if rank == 0:
+        os.remove(filename)
+
+    # next, let's define data only on rank 0
+    if rank == 0:
+        a = rng.random((3, 3))
+        mat = a @ a.T + np.eye(3) * 1e-3
+    else:
+        mat = np.zeros((3, 3))
+
+    cov = base.Covariance(mat)
+    filename = "test_cov.npy"
+    cov.save(filename) # <- should save data on rank 0
+
+    loaded_cov = base.Covariance.load(filename) # <- should load data onto all ranks
+    if rank == 0:
+        assert np.allclose(cov.cov, loaded_cov.cov)
+    else:
+        assert not np.allclose(cov.cov, loaded_cov.cov)
+
+    if rank == 0:
+        os.remove(filename)

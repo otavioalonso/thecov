@@ -1,6 +1,7 @@
 """This module contains utility functions for thecov.
 """
 import os, functools, psutil, sys
+import numpy as np
 
 def mkdir(dirname):
     """Try to create ``dirname`` and catch :class:`OSError`."""
@@ -89,6 +90,12 @@ def get_tqdm():
         # Not in a Jupyter environment
         from tqdm import tqdm as tqdm
     return tqdm
+
+def get_minimum_mesh_size(dk, kmax, boxsize):
+    """Get the minimum mesh size for a given dk, kmax, and boxsize."""
+    target_boxsize = 2*np.pi/dk
+    min_nmesh = (target_boxsize * kmax / np.pi) / (target_boxsize/boxsize)
+    return int(np.ceil(min_nmesh))
 
 def get_available_memory():
     """Get the available system memory in Gigabytes."""

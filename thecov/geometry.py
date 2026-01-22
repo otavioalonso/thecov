@@ -116,11 +116,11 @@ class SurveyWindow(base.BaseClass):
             # Pick value that will give at least k_mask = kmax_window in the FFTs
             self.cellsize = np.pi / kmax / (1. + 1e-9)
         if boxsize is None:
+            self.logger.debug("boxsize not provided, estimating from randoms' positions.")
             boxsize_rank = max(np.amax(randoms['POSITION'], axis=0) - np.amin(randoms['POSITION'], axis=0))
-            boxsize = self.comm.allreduce(boxsize_rank, op=MPI.MAX)
+            boxsize = self.comm.allreduce(boxsize_rank, op=MPI.MAX) * 1.05
 
         if self.rank == 0: self.logger.info("Creating survey mesh W...")
-        print(f"rank {self.rank} creating mesh...", flush=True)
         mesh = CatalogMesh(
             data_positions=randoms['POSITION'],
             data_weights=randoms['WEIGHT'],
@@ -133,7 +133,6 @@ class SurveyWindow(base.BaseClass):
             mpicomm=self.comm,
             **{'interlacing': 3, 'resampler': 'tsc'}
         )
-        print(f"rank {self.rank} finished creating mesh!")
         self.comm.Barrier()
         if shotnoise==True:
             if self.rank == 0: self.logger.info("Creating shotnoise mesh S...")
@@ -204,6 +203,7 @@ class SurveyWindow(base.BaseClass):
 
         if rebin_factor == 0:
             self.logger.error(f"trim_to_nmesh ({trim_to_nmesh}) smaller than target mesh {target_nmesh} with the given values of dk ({dk}) and kmax ({kmax})! Try increasing nmesh.")
+            self.logger.error(f"HINT: minimum mesh size for this configuration is {utils.get_minimum_mesh_size(dk, kmax, self.boxsize)}")
             raise ZeroDivisionError
 
         # Ensure that trim_to_nmesh is a multiple of rebin_factor
@@ -373,7 +373,6 @@ class SurveyGeometry(base.BaseClass):
         self._init_I_factors()
         self.comm.Barrier()
         self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk)
-        print(f"rank {self.rank} initialized survey windows", flush=True)
         self.comm.Barrier()
         del self.randoms
 

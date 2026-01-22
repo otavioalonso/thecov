@@ -51,11 +51,11 @@ class BaseClass:
 
         return state
 
-    # @classmethod
-    # def from_state(cls, state):
-    #     new = cls.__new__(cls)
-    #     new.__setstate__(state)
-    #     return new
+    @classmethod
+    def from_state(cls, state):
+        new = cls.__new__(cls)
+        new.__setstate__(state)
+        return new
 
     @property
     def with_mpi(self):
@@ -114,11 +114,14 @@ class BaseClass:
         comm = getattr(cls, 'mpicomm', None) or getattr(cls, 'comm', None) or MPI.COMM_WORLD
         root = 0
 
+        # single rank
         if comm.Get_size() == 1:
             with open(filename, "rb") as f:
                 state = pickle.load(f)
-            return state
+            new = cls.from_state(state)
+            return new
 
+        # multiple ranks
         if comm.Get_rank() == root:
             try:
                 with open(filename, "rb") as f:
@@ -130,13 +133,12 @@ class BaseClass:
             payload = None
 
         payload = comm.bcast(payload, root=root)
-        success, data = payload
+        success, state = payload
         if not success:
-            raise IOError(f"Error loading {filename} on root rank: {data}")
+            raise IOError(f"Error loading {filename} on root rank: {state}")
 
-        return data
-        #     new = cls.from_state(state)
-        # return new
+        new = cls.from_state(state)
+        return new
 
 class Covariance(BaseClass):
     '''A class that represents a covariance matrix.
