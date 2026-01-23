@@ -20,6 +20,15 @@ class BaseClass:
     """
     Base class that implements copy, save/load, etc.
     """
+    def __init__(self):
+        self.comm = MPI.COMM_WORLD
+        try:
+            self.rank = self.comm.Get_rank()
+            self.size = self.comm.Get_size()
+        except Exception:
+            self.rank = 0
+            self.size = 1
+
     def __copy__(self):
         new = self.__class__.__new__(self.__class__)
         new.__dict__.update(self.__dict__)
@@ -60,7 +69,7 @@ class BaseClass:
     @property
     def with_mpi(self):
         """Whether to use MPI."""
-        comm = getattr(self, 'mpicomm', None) or getattr(self, 'comm', None) or MPI.COMM_WORLD
+        comm = getattr(self, 'comm', None) or MPI.COMM_WORLD
         try:
             return comm.Get_size() > 1
         except Exception:
@@ -69,7 +78,7 @@ class BaseClass:
     def save(self, filename):
         """Save to ``filename``."""
         start = time.time()
-        comm = getattr(self, 'mpicomm', None) or getattr(self, 'comm', None) or MPI.COMM_WORLD
+        comm = getattr(self, 'comm', None) or MPI.COMM_WORLD
         root = 0
 
         # Single-process: write normally
@@ -111,7 +120,7 @@ class BaseClass:
         all ranks. If an error occurs on the root rank while reading, the
         error is propagated to all ranks to avoid deadlocks.
         """
-        comm = getattr(cls, 'mpicomm', None) or getattr(cls, 'comm', None) or MPI.COMM_WORLD
+        comm = getattr(cls, 'comm', None) or MPI.COMM_WORLD
         root = 0
 
         # single rank
@@ -153,6 +162,7 @@ class Covariance(BaseClass):
         covariance : numpy.ndarray
             (n,n) numpy array with elements corresponding to the covariance.
         '''
+        super().__init__()
         self._cov = covariance
         self._ells = []
         self._mshape = (0, 0)
@@ -827,8 +837,18 @@ class SparseNDArray:
 
     @staticmethod
     def from_dense(dense_array, shape_out=None, shape_in=None, comm=MPI.COMM_WORLD, root=0):
-        """
-        Create a SparseNDArray from a dense array.
+        """Create a SparseNDArray from a dense array.
+
+        Currently, this function only loads dense_array from the root rank.
+
+        Args:
+            dense_array (np.ndarray): The dense array to convert. Will only read in data on the root rank.
+            shape_out (list, optional): Outer shape that defines the ND array layout. If None, inferred from dense_array.
+            shape_in (list, optional): Inner shape that defines the ND array layout. If None, inferred from dense_array.
+            comm (mpi4py.MPI.Comm, optional): MPI communicator to use. Defaults to MPI.COMM_WORLD.
+            root (int, optional): Rank which should hold the data. Default 0.
+        Returns:
+            SparseNDArray: The resulting sparse ND array.
         """
         if shape_out is None:
             shape_out = dense_array.shape[:-len(dense_array.shape)//2]

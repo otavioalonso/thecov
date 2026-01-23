@@ -29,11 +29,13 @@ cache_dir = os.path.join(os.path.dirname(__file__), "cache")
 # avoid race conditions
 try:
     from mpi4py import MPI
-    _cov_rank = MPI.COMM_WORLD.Get_rank()
-    if _cov_rank == 0:
+    if MPI.Is_initialized():
+        _cov_rank = MPI.COMM_WORLD.Get_rank()
+        if _cov_rank == 0:
+            os.makedirs(cache_dir, exist_ok=True)
+        MPI.COMM_WORLD.Barrier()
+    else:
         os.makedirs(cache_dir, exist_ok=True)
-    # ensure all ranks wait until the directory is created
-    MPI.COMM_WORLD.Barrier()
 except Exception:
     os.makedirs(cache_dir, exist_ok=True)
     
@@ -254,7 +256,7 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
             raise ValueError(f"Error in PowerSpectrumMultipolesCovariance.set_galaxy_pk_multipole: Requested tracer combo ({tracer1}, {tracer2}) must both be < total number of tracers ({self.num_tracers})")
 
         if ell == 0 and has_shotnoise and tracer1 == tracer2:
-            self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
+            if self.rank == 0: self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
             pk = pk - self.shotnoise[tracer1]
         
         self._pk[ell, tracer1, tracer2] = pk
@@ -445,10 +447,10 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
             else:
                 remove_shotnoise = True
 
-        if remove_shotnoise:
+        if remove_shotnoise and self.rank == 0:
             self.logger.info(
                 'pypower is removing shotnoise from the power spectrum.')
-        else:
+        elif self.rank == 0:
             self.logger.info(
                 'pypower is NOT removing shotnoise from the power spectrum.')
 

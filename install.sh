@@ -74,7 +74,7 @@ echo "Creating new anaconda environment..."
 conda create -n "$ENVNAME" python=3.11 "numpy<2.0" -y --platform $PLATFORM
 conda activate "$ENVNAME"
 
-conda install -c conda-forge -y mpi4py matplotlib fftw jupyter
+conda install -c conda-forge -y openmpi mpi4py matplotlib fftw jupyter
 
 echo "Done! installing thecov..."
 python -m pip install -e .

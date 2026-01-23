@@ -20,7 +20,6 @@ import mockfactory
 from pypower import CatalogMesh
 
 # from scipy.integrate import lebedev_rule
-
 import functools
 
 from . import base, utils, math, binning
@@ -154,16 +153,6 @@ class SurveyWindow(base.BaseClass):
         self.comm.Barrier()
         if self.rank == 0: self.logger.info(f'Created meshes in {time.time() - start_time:.2f} seconds.')
         return mesh, shotnoise_mesh
-
-    # def __getstate__(self):
-    #     state = self.__dict__.copy()
-    #     for key in ['logger', 'tqdm', 'mesh1',  'mesh2', '_resume_file']:
-    #         if hasattr(self, key):
-    #             del state[key]
-    #     return state
-    
-    # def __setstate__(self, state):
-    #     self.__dict__.update(state)
         
     @property
     def knyquist(self):
@@ -225,31 +214,21 @@ class SurveyWindow(base.BaseClass):
     #         position_type='pos',
     #     ).to_mesh(compensate=True)
 
+    # NOTE: cashing might behave differently now that we're using mpi4py
     @functools.cache
-    def mesh(self, ell, m, shotnoise=False, combine_windows=True, fourier=True, threshold=None):
+    def compute_mesh(self, ell, m, shotnoise=False, combine_windows=True, fourier=True, threshold=None):
         """Compute the product of meshes and multiply by real Ylm evaluated at the same coordinates.
 
-        Parameters
-        ----------
-        ell : int
-            Degree of the spherical harmonic.
+        Args:
+            ell (int): Degree of the spherical harmonic.
+            m (int): Order of the spherical harmonic.
+            shotnoise (bool, optional): If True, the shotnoise mesh is used instead of the original mesh. Default is False.
+            combine_windows (bool, optional): Determines whether or not to multiply mesh1 by mesh2. Default True
+            fourier (bool, optional): If True, the Fourier transform of the mesh is returned. Default is True.
+            threshold (float, optional): If provided, values in the resulting mesh below this threshold are set to zero to save memory. Default is None.
 
-        m : int
-            Order of the spherical harmonic.
-
-        shotnoise : bool, optional
-            If True, the shotnoise mesh is used instead of the original mesh. Default is False.
-
-        combine_windows : bool, optional
-            Determines whether or not to multiply mesh1 by mesh2. Default True
-            
-        fourier : bool, optional
-            If True, the Fourier transform of the mesh is returned. Default is True.
-
-        Returns
-        -------
-        mesh
-            Resulting mesh (numpy array) after computation with size [nmesh, nmesh, nmesh] on rank 0
+        Returns:
+            np.ndarray: mesh * Ylm(ell, m) with shape_in: [nmesh, nmesh] and shape_out: [nmesh]
         """
 
         assert ell >= 0, "ell must be non-negative"
@@ -264,8 +243,6 @@ class SurveyWindow(base.BaseClass):
             mesh_to_clone = self.mesh1
 
         self.comm.Barrier()
-        print("got past barrier")
-
         result = mesh_to_clone.clone(
                 data_positions=mesh_to_clone.data_positions,
                 data_weights=mesh_to_clone.data_weights*Ylm(mesh_to_clone.data_positions.T[0],
@@ -275,7 +252,6 @@ class SurveyWindow(base.BaseClass):
                 mpicomm=self.comm
             ).to_mesh(compensate=True)
 
-        print("got past to_mesh")
         if hasattr(self, 'mesh2') and not shotnoise:
             result *= self.mesh2.to_mesh(compensate=True)
         elif shotnoise and combine_windows:
@@ -290,15 +266,14 @@ class SurveyWindow(base.BaseClass):
         else:
             result_per_rank = np.zeros((result.shape))
 
-        print("got past result_per_rank")
         result_combined = np.zeros((result_per_rank.shape[0],
                                     result_per_rank.shape[1] * self.size,
-                                    result_per_rank.shape[2]))
+                                    result_per_rank.shape[2]), dtype=result_per_rank.dtype)
         result_combined[:,result_per_rank.shape[1]*self.rank:result_per_rank.shape[1]*(self.rank+1), :] = result_per_rank
         self.comm.Barrier()
-        result_combined = self.comm.reduce(result_combined, op=MPI.SUM, root=0)
-        print("got past reduce")
+        self.comm.reduce(result_combined, op=MPI.SUM, root=0)
 
+        # trim mesh to desired size and rebin if needed
         if self.dk is not None and self.kmax is not None:
             trim_to_nmesh, rebin_factor = self._rebin_parameters(self.dk, self.kmax)
 
@@ -310,8 +285,9 @@ class SurveyWindow(base.BaseClass):
                 if rebin_factor > 1:
                     result_combined = result_combined.reshape((self.knmesh, rebin_factor, self.knmesh, rebin_factor, self.knmesh, rebin_factor)).sum(axis=(1, 3, 5))
 
-                if self.rank == 0:self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result.shape[0]} with factor {rebin_factor}.")
+                if self.rank == 0: self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result.shape[0]} with factor {rebin_factor}.")
 
+        if self.rank == 0:
             # pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
             if fourier:
                 result_combined *= self.knmesh**3
@@ -319,13 +295,12 @@ class SurveyWindow(base.BaseClass):
                 result_combined = np.fft.fftn(result_combined, axes=(0, 1, 2), norm='backward')
                 self.logger.info(f"Mesh Fourier transform done in {time.time() - time_start:.2f} seconds")
 
-        # result = result.value if not fourier else result.r2c().value
-        if threshold is not None:
-            # Convert the result to a sparse array to save memory
-            result_combined[np.abs(result_combined) < threshold] = 0
-            result_combined = base.SparseNDArray.from_dense(result_combined, shape_in=(self.nmesh,self.nmesh), shape_out=self.nmesh)
+            # result = result.value if not fourier else result.r2c().value
+            if threshold is not None:
+                # Convert the result to a sparse array to save memory
+                result_combined[np.abs(result_combined) < threshold] = 0
 
-        self.comm.Barrier()
+        self.comm.Barrier()    
         return result_combined
 
     
@@ -497,17 +472,17 @@ class SurveyGeometry(base.BaseClass):
             self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], shotnoise=True, **kwargs)
             self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
         elif self.randoms['B'] != None and self.randoms['C'] == None:
-            self.window_CD = self.window_AB
+            self.window_CD = self.window_AB.copy()
             self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], shotnoise=True, **kwargs)
             self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
         elif self.randoms['B'] == None and self.randoms['C'] != None:
             self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
-            self.window_BC = self.window_AB
-            self.window_BD = self.window_AB
+            self.window_BC = self.window_AB.copy()
+            self.window_BD = self.window_AB.copy()
         else:
-            self.window_CD = self.window_AB
-            self.window_BC = self.window_AB
-            self.window_BD = self.window_AB
+            self.window_CD = self.window_AB.copy()
+            self.window_BC = self.window_AB.copy()
+            self.window_BD = self.window_AB.copy()
 
     def _init_I_factors(self):
         """initializes all relavent I factors from the input randoms"""
@@ -558,8 +533,6 @@ class SurveyGeometry(base.BaseClass):
         tracer_idx = self.TRACER_LABELS.index(tracer)
         return self._I[label_idx, tracer_idx]
 
-
-    @functools.cache
     def get_combined_survey_window(self, cache_dir=None):
 
         if cache_dir is None:
@@ -569,8 +542,8 @@ class SurveyGeometry(base.BaseClass):
         if os.path.exists(filename):
             return base.SparseNDArray.load(filename)
         else:
-            window_ABCD = base.SparseNDArray(shape_out=(MASK_ELL_MAX//2+1,MASK_ELL_MAX//2+1,2*MASK_ELL_MAX+1,2*MASK_ELL_MAX+1),
-                                            shape_in=(self.nmesh,self.nmesh,self.nmesh))
+            window_ABCD = base.SparseNDArray(shape_out=(self.mask_ellmax//2+1,self.mask_ellmax//2+1,2*self.mask_ellmax+1,2*self.mask_ellmax+1),
+                                             shape_in=(self.nmesh,self.nmesh,self.nmesh))
 
             total_iterations = 0
             for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
@@ -578,13 +551,17 @@ class SurveyGeometry(base.BaseClass):
                     for mb in range(-lb, lb+1):
                         total_iterations+=1
 
+            self.comm.Barrier()
             if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc="W * Ylm mesh calculation")
+
             for la, lb in itt.product(range(0, self.mask_ellmax+1, 2), repeat=2):
                 for ma in range(-la, la+1):
                     for mb in range(-lb, lb+1):
-                        window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.mesh(la, ma) * self.window_CD.mesh(lb, mb)
-                        if self.rank == 0:pbar.update(1)
-            if self.rank == 0:pbar.close()
+                        window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.compute_mesh(la, ma) * \
+                                                               self.window_CD.compute_mesh(lb, mb)
+                        if self.rank == 0: pbar.update(1)
+
+            if self.rank == 0: pbar.close()
             window_ABCD.save(filename)
             return window_ABCD
 
@@ -612,20 +589,20 @@ class SurveyGeometry(base.BaseClass):
         if os.path.exists(filename):
             return base.SparseNDArray.load(filename)
         else:
-            window = base.SparseNDArray(shape_out=(MASK_ELL_MAX//2+1,2*MASK_ELL_MAX+1),
+            window = base.SparseNDArray(shape_out=(self.mask_ellmax//2+1,2*self.mask_ellmax+1),
                                         shape_in=(self.nmesh,self.nmesh,self.nmesh))
 
             if self.rank == 0:
                 for l in range(0, self.mask_ellmax+1, 2):
                     for m in range(-l, l+1):
                         if idx_1 == "A" and idx_2 == "C":
-                            window[l//2,m] = self.window_AC.mesh(l, m)
+                            window[l//2,m] = self.window_AC.compute_mesh(l, m)
                         elif idx_1 == "A" and idx_2 == "D":
-                            window[l//2,m] = self.window_AD.mesh(l, m)
+                            window[l//2,m] = self.window_AD.compute_mesh(l, m)
                         elif idx_1 == "B" and idx_2 == "C":
-                            window[l//2,m] = self.window_BC.mesh(l, m)
+                            window[l//2,m] = self.window_BC.compute_mesh(l, m)
                         elif idx_1 == "B" and idx_2 == "D":
-                            window[l//2,m] = self.window_BD.mesh(l, m)
+                            window[l//2,m] = self.window_BD.compute_mesh(l, m)
                         else:
                             raise ValueError(f"ERROR! invalid values for A ({idx_1}) and B ({idx_2})")
 
@@ -653,21 +630,21 @@ class SurveyGeometry(base.BaseClass):
             return base.SparseNDArray.load(filename)
         else:
             if self.rank == 0:
-                window = base.SparseNDArray(shape_out=(MASK_ELL_MAX//2+1,2*MASK_ELL_MAX+1),
+                window = base.SparseNDArray(shape_out=(self.mask_ellmax//2+1,2*self.mask_ellmax+1),
                                             shape_in=(self.nmesh,self.nmesh,self.nmesh))
             else: window = None
 
             for l in range(0, self.mask_ellmax+1, 2):
                 for m in range(-l, l+1):
                     if idx == "A":
-                        result = self.window_AB.mesh(l, m, shotnoise=True, combine_windows=False)
+                        result = self.window_AB.compute_mesh(l, m, shotnoise=True, combine_windows=False)
                     elif idx == "B":
-                        result = self.window_BC.mesh(l, m, shotnoise=True, combine_windows=False)
+                        result = self.window_BC.compute_mesh(l, m, shotnoise=True, combine_windows=False)
                     elif idx == "AB":
-                        result = self.window_AB.mesh(l, m, shotnoise=True, combine_windows=True)
+                        result = self.window_AB.compute_mesh(l, m, shotnoise=True, combine_windows=True)
                     else:
                         raise ValueError(f"ERROR! invalid value for input index. Should be one of [A, B, AB] but was {idx}")
-                    if self.rank == 0: window[l//2,m+MASK_ELL_MAX] = result
+                    if self.rank == 0: window[l//2,m+self.mask_ellmax] = result
             
             if self.rank == 0: window.save(filename)
             return window
@@ -724,14 +701,18 @@ class SurveyGeometry(base.BaseClass):
 
     @staticmethod
     def get_cosmic_variance_gaunt_coefficients(cache_dir=None, mask_ellmax=12, pk_ellmax=4):
-        """Calculates all relavent Gaunt coefficients for the cosmic variance term, or loads them from file"""
+        """Calculates all relavent Gaunt coefficients for the cosmic variance term, or loads them from file
+           
+           This function should only be called by rank 0."""
 
+        logger = logging.getLogger('GauntCoefficients')
         # Load mask coupling Gaunt coefficients if cache exists, otherwise compute them
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
         filename = os.path.join(cache_dir, f"cosmic_variance_coefficients_{pk_ellmax}_{mask_ellmax}.npz")
 
         if os.path.exists(filename):
+            logger.info(f"Loading cosmic variance Gaunt coefficients from {filename}.")
             return base.SparseNDArray.load(filename)
         else:
             import sympy.physics.wigner
@@ -740,6 +721,7 @@ class SurveyGeometry(base.BaseClass):
             # shape_in =  la, lb, ma, mb
             # Only including positive m values, as -m is equivalent to m
             # when Ylm is real and m is even
+            # NOTE for Otavio: Why do we use the global variables here?
             shape_out = 4*[PK_ELL_MAX//2 + 1] + 4*[2*PK_ELL_MAX + 1]
             shape_in = 2*[MASK_ELL_MAX//2 + 1] + 2*[2*MASK_ELL_MAX + 1]
             gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
@@ -906,17 +888,16 @@ class SurveyGeometry(base.BaseClass):
             G = self.get_cosmic_variance_gaunt_coefficients(cache_dir=cache_dir, mask_ellmax=self.mask_ellmax, pk_ellmax=self.pk_ellmax)
         else:
             G = None
+        self.comm.Barrier()
+        G = self.comm.bcast(G, root=0)
 
         # W_AB * W_CD (outer product)
-        self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
+        if self.rank == 0: self.logger.info("Retrieving survey window outer product W_AB x W_CD...")
         W_ABCD_not_shared = self.get_combined_survey_window(cache_dir=cache_dir)
 
         self.comm.Barrier()
         W_ABCD = W_ABCD_not_shared.to_shared_memory()
         del W_ABCD_not_shared
-        
-        self.comm.Barrier()
-        G = self.comm.bcast(G, root=0)
 
         # multiply by Gaunt factors
         # give 3x3x3x3x9x9x9x9 x nmesh x nmesh x nmesh
@@ -1116,7 +1097,7 @@ class SurveyGeometry(base.BaseClass):
 
         #ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
         last_save = time.time()
-        self.logger.info(f"Beginning window kernel calculations with {self.nthreads} threads...")
+        self.logger.info(f"Beginning window kernel calculations with {self.size} ranks...")
         for i, km in self.tqdm(enumerate(kmodes), desc='Computing mixed window kernels', total=self.k_binning.kbins):
 
             if hasattr(self, '_resume_file') and self._resume_file is not None:
