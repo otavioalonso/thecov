@@ -11,6 +11,7 @@ import scipy
 
 from . import utils, math
 
+
 __all__ = ['Covariance',
            'MultipoleCovariance',
            'Binning',
@@ -36,6 +37,61 @@ class BaseClass:
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+
+    def save_cache(self, cache_dir='./cache'):
+        """Save cached function results to disk.
+        
+        Parameters
+        ----------
+        cache_dir : str
+            Directory where cache files will be saved.
+        """
+        import pickle
+        class_name = self.__class__.__name__
+        for attr_name in dir(self):
+            try:
+                # Get the function from the class, not a bound method from the instance
+                attr = getattr(self.__class__, attr_name, None)
+                if attr is None:
+                    continue
+                # Get the underlying function if it's a method
+                func = getattr(attr, '__func__', attr)
+                if callable(func) and hasattr(func, 'cached') and func.cached:
+                    cache_filename = os.path.join(cache_dir, f"{class_name}_{attr_name}.pkl")
+                    utils.mkdir(os.path.dirname(cache_filename))
+                    with open(cache_filename, 'wb') as f:
+                        pickle.dump(func.cached, f)
+            except Exception:
+                # Skip attributes that can't be accessed or aren't suitable for caching
+                continue
+
+    def load_cache(self, cache_dir='./cache'):
+        """Load cached function results from disk.
+        
+        Parameters
+        ----------
+        cache_dir : str
+            Directory where cache files are stored.
+        """
+        import pickle
+        class_name = self.__class__.__name__
+        for attr_name in dir(self):
+            try:
+                # Get the function from the class, not a bound method from the instance
+                # This ensures we modify the actual function's cached dict
+                attr = getattr(self.__class__, attr_name, None)
+                if attr is None:
+                    continue
+                # Get the underlying function if it's a method
+                func = getattr(attr, '__func__', attr)
+                if callable(func) and hasattr(func, 'cached'):
+                    cache_filename = os.path.join(cache_dir, f"{class_name}_{attr_name}.pkl")
+                    if os.path.isfile(cache_filename):
+                        with open(cache_filename, 'rb') as f:
+                            func.cached.update(pickle.load(f))
+            except Exception:
+                # Skip attributes that can't be accessed or raise errors
+                continue
 
     @classmethod
     def from_state(cls, state):
@@ -1501,10 +1557,10 @@ class SparseNDArray:
     the @ operator and requires the shapes to be compatible, i.e., shape_in
     of the leftmost array must match shape_out of the rightmost array.
     """
-    def __init__(self, shape_out, shape_in):
+    def __init__(self, shape_out, shape_in, dtype=float):
         self.shape_in = np.asarray(shape_in).astype(int)
         self.shape_out = np.asarray(shape_out).astype(int)
-        self._matrix = scipy.sparse.csr_matrix((np.prod(shape_out), np.prod(shape_in)))
+        self._matrix = scipy.sparse.csr_matrix((np.prod(shape_out), np.prod(shape_in)), dtype=dtype)
 
     def _nd_to_2d_indices(self, *indices):
         indices = np.asarray(indices).astype(int)
@@ -1535,7 +1591,17 @@ class SparseNDArray:
 
     def __getitem__(self, indices):
         indices = np.asarray(indices).astype(int)
-        return self._matrix[self._nd_to_2d_indices(*indices)]
+        result = self._matrix[self._nd_to_2d_indices(*indices)]
+        # If we indexed a single element (all indices provided), return a scalar
+        if len(indices) == len(self.shape_out) + len(self.shape_in):
+            # Extract scalar from sparse matrix (returns a matrix, need to get the value)
+            if hasattr(result, 'toarray'):
+                return result.toarray().item()
+            return result
+        elif len(indices) == len(self.shape_out):
+            if hasattr(result, 'toarray'):
+                return result.toarray().reshape(self.shape_in)
+        return result
 
     def __repr__(self):
         return f"SparseNDArray(shape_out={self.shape_out} -> {np.prod(self.shape_out)}, shape_in={self.shape_in} -> {np.prod(self.shape_in)}, nnz={self._matrix.nnz})"
@@ -1652,3 +1718,17 @@ class SparseNDArray:
         Transpose the sparse matrix.
         """
         return self.transpose()
+
+def cache(func):
+    """Cache decorator for instance methods. Excludes 'self' from the cache key."""
+    from functools import wraps
+    func.cached = {}
+    @wraps(func)
+    def wrapper(self, *args):
+        try:
+            return wrapper.cached[args]
+        except KeyError:
+            wrapper.cached[args] = result = func(self, *args)
+            return result
+    wrapper.cached = func.cached
+    return wrapper

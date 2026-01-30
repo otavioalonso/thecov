@@ -21,7 +21,7 @@ import itertools as itt
 
 import numpy as np
 
-from . import base, geometry, math
+from . import base, geometry, math, utils
 
 __all__ = ['GaussianCovariance',
            'TrispectrumCovariance',
@@ -154,8 +154,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             Whether the power spectrum has shotnoise included or not.
         '''
 
-        assert len(
-            pk) == self.kbins, 'Power spectrum must have the same number of bins as the covariance matrix.'
+        assert len(pk) == self.kbin1.kbins and len(pk) == self.kbin2.kbins, 'Power spectrum must have the same number of bins as the covariance matrix.'
 
         if ell == 0 and has_shotnoise:
             self.logger.info(
@@ -331,92 +330,36 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             pypower.attrs['sum_randoms_weights1']
         self.logger.info(
             f'alpha = sum_data_weights/sum_randoms_weights estimated from pypower is {self.alpha:.2f}')
-        self.logger.info(
-            f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
         if self.geometry is not None:
             if set_shotnoise:
                 self.set_shotnoise(shotnoise=pypower.shotnoise)
             else:
-                self.pk_renorm = self.geometry.I(2,2) / pypower.wnorm * naverage
+                self.pk_renorm = self.geometry.normalization(2,2) / pypower.wnorm * naverage
                 self.logger.info(
                     f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
-    def _compute_cosmic_variance(self):
-        
-        # Load mask coupling Gaunt coefficients if cache exists, otherwise compute them
-        filename = os.path.join(cache_dir, "cosmic_variance_coefficients.npz")
+    def _compute_covariance_survey(self):
 
-        if os.path.exists(filename):
-            coefficients = base.SparseNDArray.load(filename)
-        else:
-            import sympy.physics.wigner
+        if self.geometry.window_matrix is None:
+            self.geometry.compute_window_matrix()
 
-            # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
-            # shape_in =  la, lb, ma, mb
-            # Only including positive m values, as -m is equivalent to m
-            # when Ylm is real and m is even
-            coefficients = base.SparseNDArray(shape_out=(3,3,3,3,3,3,3,3), shape_in=(7,7,7,7))
+        pks = np.array([4 * np.pi / (2*ell + 1) * self.get_pk(ell, force_return=0.0) for ell in self.ells])
 
-            for l1, l2, l3, l4 in itt.product((0,2,4), repeat=4):
-                for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
-                    for la in np.arange(np.abs(l1-l4), l1+l4+1, 2):
-                        for lb in np.arange(np.abs(l2-l3), l2+l3+1, 2):
-                            for ma, mb in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lb)]):
+        cosmic_variance = np.einsum('ijklxy,kx,ly->ijxy', self.geometry.window_matrix['cosmic_variance'], pks, pks)
 
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
-                                                   sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
-                                if value != 0.:
-                                    # Taking absolute values of all m as -m is equivalent to m
-                                    # when Ylm is real and m is even
-                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
-                                    ma, mb = np.abs(ma), np.abs(mb)
-                                    coefficients[l1//2,l2//2,
-                                                 l3//2,l4//2,
-                                                 m1//2,m2//2,
-                                                 m3//2,m4//2,
-                                                 la//2,lb//2,
-                                                 ma//2,mb//2] += value
-                                    
-                    for lc in np.arange(np.abs(l1-l2), l1+l2+1, 2):
-                        for la in np.arange(np.abs(lc-l4), lc+l4+1, 2):
-                            for ma, mc in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lc)]):
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                   sympy.physics.wigner.gaunt(lc,l4,la,mc,m4,ma))
-                                lb, mb = l3, m3
-                                if value != 0.:
-                                    # Taking absolute values of all m as -m is equivalent to m
-                                    # when Ylm is real and m is even
-                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
-                                    ma, mb = np.abs(ma), np.abs(mb)
-                                    coefficients[l1//2,l2//2,
-                                                 l3//2,l4//2,
-                                                 m1//2,m2//2,
-                                                 m3//2,m4//2,
-                                                 la//2,lb//2,
-                                                 ma//2,mb//2] += value
-            coefficients.save(filename)
+        mixed_term  = np.einsum('ijkxy,kx->ijxy', self.geometry.window_matrix['mixed_term'], pks)
+        mixed_term += np.einsum('ijkxy,ky->ijxy', self.geometry.window_matrix['mixed_term'], pks)
+        mixed_term *= (1 + self.alpha) / 2
 
-        nmesh = 512
-        windows_ab = base.SparseNDArray(shape_out=(7,7), shape_in=(nmesh,nmesh,nmesh))
-        windows_cd = base.SparseNDArray(shape_out=(7,7), shape_in=(nmesh,nmesh,nmesh))
-        
-        ellmax = 12
-        
-        for iell, ell in enumerate(np.arange(0, ellmax, 2)):
-            for im, m in enumerate(np.arange(0, ell+1, 2)):
-                windows_ab[iell,im] = self.geometry['ab'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
-                windows_cd[iell,im] = self.geometry['cd'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
+        shotnoise = (1 + self.alpha)**2 * self.geometry.window_matrix['cosmic_variance']
 
-        windows_prod = base.SparseNDArray(shape_out=(7,7,7,7), shape_in=(nmesh,nmesh,nmesh))
+        covariance = cosmic_variance + mixed_term + shotnoise
 
-        for l1, l2 in itt.product((0,2,4), repeat=2):
-            for m1, m2 in itt.product(*[np.arange(0, l+1, 2) for l in (l1, l2)]):
-                windows_prod[l1//2,l2//2,m1//2,m2//2] = windows_ab[l1//2,m1//2]*windows_cd[l2//2,m2//2]
-        # l1, l2, l3, l4, m1, m2, m3, m4, 
-        coefficients @ windows_prod
+        for l1,l2 in utils.elliter(max(self.ells), 2):
+            self.set_ell_cov(l1,l2, covariance[l1//2,l2//2,:,:])
 
-
+        return
 
 class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.

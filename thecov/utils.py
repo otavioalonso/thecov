@@ -1,6 +1,7 @@
 """This module contains utility functions for thecov.
 """
 import os, functools
+import itertools as itt
 
 def mkdir(dirname):
     """Try to create ``dirname`` and catch :class:`OSError`."""
@@ -75,3 +76,17 @@ def cache_method(func):
         return cache[key]
 
     return cached_func
+
+def ellmiter(lmax, n):
+    for ls in itt.product(range(0, lmax + 1, 2), repeat=n):
+        for ms in itt.product(*[range(-l, l+1, 2) for l in ls]):
+            yield ls + ms
+
+def elliter(lmax, n):
+    for ls in itt.product(range(0, lmax + 1, 2), repeat=n):
+        yield ls
+
+
+def miter(*ls):
+    for ms in itt.product(*[range(-l, l+1, 2) for l in ls]):
+        yield ms
