@@ -1719,6 +1719,75 @@ class SparseNDArray:
         """
         return self.transpose()
 
+    def __reduce__(self):
+        """
+        Custom pickling for MPI serialization.
+        Returns the necessary data to reconstruct the SparseNDArray.
+        """
+        return (
+            self.__class__._reconstruct,
+            (self.shape_out, self.shape_in, self._matrix)
+        )
+
+    @classmethod
+    def _reconstruct(cls, shape_out, shape_in, matrix):
+        """Reconstruct a SparseNDArray from pickled components."""
+        obj = cls.__new__(cls)
+        obj.shape_out = shape_out
+        obj.shape_in = shape_in
+        obj._matrix = matrix
+        return obj
+
+    def allgather(self, mpicomm, axis=None):
+        """
+        Gather and concatenate SparseNDArray slabs from all ranks using allgather.
+        Designed to be called as: result = SparseNDArray.allgather(mpicomm)
+
+        Parameters
+        ----------
+        local_sparse : SparseNDArray
+            Local slab on this rank
+        comm : MPI.Comm
+            MPI communicator
+        axis : int
+            Axis along which slabs are distributed (within shape_in)
+            
+        Returns
+        -------
+        SparseNDArray
+            Complete SparseNDArray with all slabs concatenated
+        """
+        
+        # Gather all objects from all ranks
+        all_sparse = mpicomm.allgather(self)
+        
+        # Extract all CSR matrices and concatenate horizontally
+        all_matrices = [s._matrix for s in all_sparse]
+        combined_matrix = scipy.sparse.hstack(all_matrices, format='csr')
+
+        # Calculate full shape_in by summing along concatenation axis
+        shape_out = all_sparse[0].shape_out.copy()
+        full_shape_in = all_sparse[0].shape_in.copy()
+
+        if axis is None:
+            # Pick the axis with length 1 if possible
+            if (full_shape_in == 1).sum() == 1:
+                axis = np.where(full_shape_in == 1)[0][0]
+            else:
+                # Default to axis 0
+                axis = np.argmin(full_shape_in)
+
+        full_shape_in[axis] = sum(s.shape_in[axis] for s in all_sparse)
+        
+        # Create new SparseNDArray
+        result = self.__new__(self.__class__)
+        result.shape_out = shape_out
+        result.shape_in = full_shape_in
+        result._matrix = combined_matrix
+        
+        return result
+
+
 def cache(func):
     """Cache decorator for instance methods. Excludes 'self' from the cache key."""
     from functools import wraps
