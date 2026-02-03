@@ -2,6 +2,7 @@
 """
 import os, functools, psutil, sys
 import numpy as np
+import itertools as itt
 
 def mkdir(dirname):
     """Try to create ``dirname`` and catch :class:`OSError`."""
@@ -77,6 +78,20 @@ def cache_method(func):
 
     return cached_func
 
+def ellmiter(lmax, n):
+    for ls in itt.product(range(0, lmax + 1, 2), repeat=n):
+        for ms in itt.product(*[range(-l, l+1, 2) for l in ls]):
+            yield ls + ms
+
+def elliter(lmax, n):
+    for ls in itt.product(range(0, lmax + 1, 2), repeat=n):
+        yield ls
+
+
+def miter(*ls):
+    for ms in itt.product(*[range(-l, l+1, 2) for l in ls]):
+        yield ms
+
 def get_tqdm():
     """Get the tqdm module, compatible with Jupyter notebooks and terminals."""
     try: 
@@ -100,3 +115,49 @@ def get_minimum_mesh_size(dk, kmax, boxsize):
 def get_available_memory():
     """Get the available system memory in Gigabytes."""
     return psutil.virtual_memory().available / (1024 ** 3)
+
+
+def gather_field_to_root(field, root=0):
+    """Gather a distributed 3D slab `field` onto `root`, preserving spatial layout.
+
+    Args:
+        field (pmesh Field): A pmesh Field (e.g. `RealField`) with attributes `pm`, `start`, `shape`, and
+            `value` representing the local slab (numpy array) on each rank.
+        root (int): MPI rank to gather to. Default is 0.
+
+    Returns:
+        (numpy.ndarray or None): On `root`, returns the reconstructed full array with global shape
+            On `root`, returns the reconstructed full array with global shape
+            `field.pm.Nmesh` (or `field.pm.Nmesh` for real fields). On non-root ranks,
+            returns ``None``.
+    """
+    import numpy as _np
+
+    pm = field.pm
+    comm = pm.comm
+
+    # local slab and its global start/shape
+    local = _np.array(field.value, copy=False)
+    start = tuple(int(s) for s in field.start)
+    shape = tuple(int(s) for s in field.shape)
+
+    # gather starts and shapes from all ranks to the root
+    all_starts = comm.gather(start, root=root)
+    all_shapes = comm.gather(shape, root=root)
+    all_slabs = comm.gather(local, root=root)
+
+    if comm.rank != root:
+        return 0 # <- dummy number to avoid NoneType issues
+
+    # allocate full array on root
+    # use Nmesh for real-space fields, for complex fields use pm.Nmesh but their
+    # represented storage may differ. We'll use pm.Nmesh for spatial layout.
+    full_shape = tuple(int(n) for n in pm.Nmesh)
+    full = _np.zeros(full_shape, dtype=local.dtype)
+
+    # place each slab into the full array at the recorded start
+    for st, sh, slab in zip(all_starts, all_shapes, all_slabs):
+        slices = tuple(slice(s, s + n) for s, n in zip(st, sh))
+        full[slices] = slab
+
+    return full

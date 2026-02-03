@@ -331,14 +331,13 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
         '''
 
         # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
-        # TODO: Impliment mixed and shotnoise terms
         def func(ik, jk, A, B, C, D): 
             I_AB = self.geometry.I(TRACER_LABELS[A], 2, 2) * self.geometry.I(TRACER_LABELS[B], 2, 2)
             I_CD = self.geometry.I(TRACER_LABELS[C], 2, 2) * self.geometry.I(TRACER_LABELS[D], 2, 2)
             return (1 / (I_AB * I_CD)) * \
             (self._get_cosmic_variance_term(ik, jk, A, B, C, D) + \
              self._get_mixed_term(ik, jk, A, B, C, D) + \
-            (1 + self.alpha["A"]) * (1 + self.alpha["B"]) * self._get_shotnoise_term(ik, jk, A, B, C, D))
+            (1 + self.alpha[TRACER_LABELS[A]]) * (1 + self.alpha[TRACER_LABELS[B]]) * self._get_shotnoise_term(ik, jk, A, B, C, D))
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
         eigvals = self.eigvals
@@ -578,13 +577,13 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
         cov = np.zeros((len(self.ells[0]), len(self.ells[0])))
         for ell1, ell2, ell3 in itt.product(self.ells[0], repeat=3):
             if A == D:
-                cov[ell1, ell2] += (1 + self.alpha["A"]) * P_BC[ell3, jk] * self.geometry.WinKernel_mixed[ik, 0, delta_k, ell1, ell2, ell3]
+                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BC[ell3, jk] * self.geometry.WinKernel_mixed[ik, 0, delta_k, ell1, ell2, ell3]
             if B == C:
-                cov[ell1, ell2] += (1 + self.alpha["B"]) * P_AD[ell3, jk] * self.geometry.WinKernel_mixed[ik, 1, delta_k, ell1, ell2, ell3]
+                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AD[ell3, jk] * self.geometry.WinKernel_mixed[ik, 1, delta_k, ell1, ell2, ell3]
             if A == C:
-                cov[ell1, ell2] += (1 + self.alpha["A"]) * P_BD[ell3, jk] * self.geometry.WinKernel_mixed[ik, 2, delta_k, ell1, ell2, ell3]
+                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BD[ell3, jk] * self.geometry.WinKernel_mixed[ik, 2, delta_k, ell1, ell2, ell3]
             if B == D:
-                cov[ell1, ell2] += (1 + self.alpha["B"]) * P_AC[ell3, jk] * self.geometry.WinKernel_mixed[ik, 3, delta_k, ell1, ell2, ell3]
+                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AC[ell3, jk] * self.geometry.WinKernel_mixed[ik, 3, delta_k, ell1, ell2, ell3]
 
         return cov.flatten()
 

@@ -457,7 +457,7 @@ def evaluate_Ylms(ylm_table:list, pk_ellmax:int, kxh, kyh, kzh):
         kzh (list): list of k-modes (z component) to evalutate the Ylms at
 
     Returns:
-        np.array: Evaluated ylm factors as a numpy array.
+        list: Evaluated ylm factors as a list of numpy arrays.
     """
     Ylm_k = []
     for l in range(0, pk_ellmax+1, 2):

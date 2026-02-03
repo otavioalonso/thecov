@@ -40,6 +40,7 @@ class BaseClass:
         return new
 
     def __setstate__(self, state):
+        
         self.__dict__.update(state)
         if self.__dict__.get("comm") is None:
             self.comm = MPI.COMM_WORLD
@@ -55,7 +56,7 @@ class BaseClass:
         state = self.__dict__.copy()
         # Drop MPI communicators or other non-pickleable attributes
         for key, _ in state.items():
-            if "comm" in key or "rank" in key or "size" in key or "window_" in key:
+            if "comm" in key or "rank" in key or "size" in key or "window_matrix" in key:
                 state[key] = None
 
         return state
@@ -863,7 +864,8 @@ class SparseNDArray:
     
     def __add__(self, other):
         if isinstance(other, SparseNDArray):
-            assert (self.shape_in == other.shape_in) and (self.shape_out == other.shape_out), \
+            assert np.all(self.shape_in == other.shape_in) and \
+                   np.all(self.shape_out == other.shape_out), \
                 "Shapes do not match for multiplication."
             
             import copy
@@ -873,17 +875,17 @@ class SparseNDArray:
         else:
             raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
         
+
     def __mul__(self, other):
         if isinstance(other, SparseNDArray):
-            assert (self.shape_in == other.shape_in) and (self.shape_out == other.shape_out), \
+            assert np.all(self.shape_in == other.shape_in) and np.all(self.shape_out == other.shape_out), \
                 "Shapes do not match for multiplication."
             
             import copy
             other = copy.deepcopy(other)
-            other._matrix *= self._matrix
+            other._matrix = other._matrix.multiply(self._matrix)
             return other
         elif isinstance(other, scipy.sparse.csr_matrix):
-
             import copy
             result = copy.deepcopy(self)
             result._matrix = self._matrix * other
@@ -1095,3 +1097,18 @@ class SparseNDArray:
             result._matrix = scipy.sparse.csr_matrix((data, indices, indptr), shape=(np.prod(shape_out), np.prod(shape_in)))
         
         return result
+
+
+def cache(func):
+    """Cache decorator for instance methods. Excludes 'self' from the cache key."""
+    from functools import wraps
+    func.cached = {}
+    @wraps(func)
+    def wrapper(self, *args):
+        try:
+            return wrapper.cached[args]
+        except KeyError:
+            wrapper.cached[args] = result = func(self, *args)
+            return result
+    wrapper.cached = func.cached
+    return wrapper
