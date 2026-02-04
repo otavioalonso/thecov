@@ -679,9 +679,9 @@ class SurveyGeometry(base.BaseClass):
         Upon first calling this property, the window kernels are computed and cached.
         Subsequent calls return the cached value.
         """
-        if self.window_matrix is None or np.any(np.isnan(self.window_matrix["mixed"])):
+        if self.window_matrix is None or np.any(np.isnan(self.window_matrix["mixed_term"])):
             self.compute_window_matrix()
-        return self.window_matrix["mixed"]
+        return self.window_matrix["mixed_term"]
 
     @property
     def shotnoise_kernel(self):
@@ -922,7 +922,7 @@ class SurveyGeometry(base.BaseClass):
         self._I = {}
 
     @base.cache
-    def compute_window_matrix(self, cache_dir:str=None, kmodes_sampled=5):
+    def compute_window_matrix(self, cache_dir:str=None, kmodes_sampled=200):
         '''Computes the window matrix to be used in the calculation of the covariance.
 
         Notes
@@ -971,8 +971,8 @@ class SurveyGeometry(base.BaseClass):
 
         # HYBRID SAMPLING
         # Sample k1 modes
-        self.logger.info('Sampling k-modes for binning...')
         if self.rank == 0:
+            self.logger.info('Sampling k-modes for binning...')
             kmodes, Nmodes, weights = math.sample_kmodes(self.k_binning, boxsize=self.boxsize,
                                         max_modes=kmodes_sampled, k_shell_approx=0.05, sample_mode="monte-carlo")
         else:

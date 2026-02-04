@@ -20,7 +20,7 @@ def test_base_covariance_operations():
     cor = cov.cor
     assert np.allclose(np.diag(cor), np.ones(4))
 
-def test_multipole_covariance_stack_and_get():
+def test_multipole_multitracer_covariance_stack_and_get():
     rng = np.random.default_rng(2)
     # small 2x2 blocks
     b00 = rng.random((2, 2))
@@ -28,20 +28,19 @@ def test_multipole_covariance_stack_and_get():
     b20 = rng.random((2, 2))
     b22 = rng.random((2, 2))
 
-    m = base.MultipoleCovariance()
+    m = base.MultipoleMultiTracerCovariance()
 
-    m.set_ell_cov(0, 0, b00)
-    m.set_ell_cov(0, 2, b02)
-    m.set_ell_cov(2, 0, b20)
-    m.set_ell_cov(2, 2, b22)
+    m.set_ell_tracer_cov(0, 0, 0, 0, b00)
+    m.set_ell_tracer_cov(0, 2, 0, 0, b02)
+    m.set_ell_tracer_cov(2, 0, 0, 0, b20)
+    m.set_ell_tracer_cov(2, 2, 0, 0, b22)
 
     # verify that the stacked matrix contains the blocks from get_ell_cov
     full = m.cov
     ells1, ells2 = m.ells
-
     # compute block sizes by inspecting diagonal blocks when present
-    sizes1 = [m.get_ell_cov(l1, l1).cov.shape[0] for l1 in ells1]
-    sizes2 = [m.get_ell_cov(l2, l2).cov.shape[1] for l2 in ells2]
+    sizes1 = [m.get_ell_tracer_cov(l1, l1, 0, 0).cov.shape[0] for l1 in ells1]
+    sizes2 = [m.get_ell_tracer_cov(l2, l2, 0, 0).cov.shape[1] for l2 in ells2]
 
     rstart = 0
     for i, l1 in enumerate(ells1):
@@ -50,7 +49,7 @@ def test_multipole_covariance_stack_and_get():
         for j, l2 in enumerate(ells2):
             cend = cstart + sizes2[j]
             block = full[rstart:rend, cstart:cend]
-            expected_block = m.get_ell_cov(l1, l2).cov
+            expected_block = m.get_ell_tracer_cov(l1, l2, 0, 0).cov
             assert np.allclose(block, expected_block)
             cstart = cend
         rstart = rend
@@ -69,10 +68,10 @@ def test_multipole_fourier_covariance_integration():
     b20 = rng.random((kb, kb))
     b22 = rng.random((kb, kb))
 
-    cov.set_ell_cov(0, 0, b00)
-    cov.set_ell_cov(0, 2, b02)
-    cov.set_ell_cov(2, 0, b20)
-    cov.set_ell_cov(2, 2, b22)
+    cov.set_ell_tracer_cov(0, 0, 0, 0, b00)
+    cov.set_ell_tracer_cov(0, 2, 0, 0, b02)
+    cov.set_ell_tracer_cov(2, 0, 0, 0, b20)
+    cov.set_ell_tracer_cov(2, 2, 0, 0, b22)
 
     full = cov.cov
     assert full.shape == (2 * kb, 2 * kb)
@@ -87,91 +86,87 @@ def test_multipole_fourier_covariance_integration():
             r0, r1 = row_offsets[i], row_offsets[i + 1]
             c0, c1 = col_offsets[j], col_offsets[j + 1]
             block = full[r0:r1, c0:c1]
-            expected_block = cov.get_ell_cov(l1, l2).cov
+            expected_block = cov.get_ell_tracer_cov(l1, l2, 0, 0).cov
             assert np.allclose(block, expected_block)
 
 def test_multipole_covariance_symmetrization():
     cov00, cov22, cov44, cov02, cov04, cov24 = np.random.rand(6, 100, 100)
 
-    cov = base.MultipoleCovariance()
+    cov = base.MultipoleMultiTracerCovariance()
 
-    cov.set_ell_cov(0, 0, cov00)
-    cov.set_ell_cov(2, 2, cov22)
-    cov.set_ell_cov(4, 4, cov44)
+    cov.set_ell_tracer_cov(0, 0, 0, 0, cov00)
+    cov.set_ell_tracer_cov(2, 2, 0, 0, cov22)
+    cov.set_ell_tracer_cov(4, 4, 0, 0, cov44)
+    cov.set_ell_tracer_cov(0, 2, 0, 0, cov02)
+    cov.set_ell_tracer_cov(0, 4, 0, 0, cov04)
+    cov.set_ell_tracer_cov(4, 2, 0, 0, cov24)
 
-    cov.set_ell_cov(0, 2, cov02)
-    cov.set_ell_cov(0, 4, cov04)
-    cov.set_ell_cov(4, 2, cov24.T)
+    assert (cov.get_ell_tracer_cov(0, 2, 0, 0).cov == cov02).all()
+    assert (cov.get_ell_tracer_cov(2, 0, 0, 0).cov == cov02.T).all()
 
-    assert (cov.get_ell_cov(0,2).cov == cov02).all()
-    assert (cov.get_ell_cov(2,0).cov == cov02.T).all()
+    assert (cov.get_ell_tracer_cov(0, 4, 0, 0).cov == cov04).all()
+    assert (cov.get_ell_tracer_cov(4, 0, 0, 0).cov == cov04.T).all()
+    assert (cov.get_ell_tracer_cov(4, 2, 0, 0).cov == cov24).all()
+    assert (cov.get_ell_tracer_cov(2, 4, 0, 0).cov == cov24.T).all()
 
-    assert (cov.get_ell_cov(0,4).cov == cov04).all()
-    assert (cov.get_ell_cov(4,0).cov == cov04.T).all()
-
-    assert (cov.get_ell_cov(2,4).cov == cov24).all()
-    assert (cov.get_ell_cov(4,2).cov == cov24.T).all()
-
-    assert not (cov.get_ell_cov(0,0).cov == cov.get_ell_cov(0,0).cov.T).all()
-    assert not (cov.get_ell_cov(2,2).cov == cov.get_ell_cov(2,2).cov.T).all()
-    assert not (cov.get_ell_cov(4,4).cov == cov.get_ell_cov(4,4).cov.T).all()
+    assert not (cov.get_ell_tracer_cov(0, 0, 0, 0).cov == cov.get_ell_tracer_cov(0, 0, 0, 0).cov.T).all()
+    assert not (cov.get_ell_tracer_cov(2, 2, 0, 0).cov == cov.get_ell_tracer_cov(2, 2, 0, 0).cov.T).all()
+    assert not (cov.get_ell_tracer_cov(4, 4, 0, 0).cov == cov.get_ell_tracer_cov(4, 4, 0, 0).cov.T).all()
 
     cov.symmetrize()
 
-    assert (cov.get_ell_cov(0,2).cov == cov02).all()
-    assert (cov.get_ell_cov(2,0).cov == cov02.T).all()
+    assert (cov.get_ell_tracer_cov(0, 2, 0, 0).cov == cov02).all()
+    assert (cov.get_ell_tracer_cov(2, 0, 0, 0).cov == cov02.T).all()
 
-    assert (cov.get_ell_cov(0,4).cov == cov04).all()
-    assert (cov.get_ell_cov(4,0).cov == cov04.T).all()
+    assert (cov.get_ell_tracer_cov(0, 4, 0, 0).cov == cov04).all()
+    assert (cov.get_ell_tracer_cov(4, 0, 0, 0).cov == cov04.T).all()
 
-    assert (cov.get_ell_cov(2,4).cov == cov24).all()
-    assert (cov.get_ell_cov(4,2).cov == cov24.T).all()
+    assert (cov.get_ell_tracer_cov(4, 2, 0, 0).cov == cov24).all()
+    assert (cov.get_ell_tracer_cov(2, 4, 0, 0).cov == cov24.T).all()
+    assert (cov.get_ell_tracer_cov(0, 0, 0, 0).cov == cov.get_ell_tracer_cov(0, 0, 0, 0).cov.T).all()
+    assert (cov.get_ell_tracer_cov(2, 2, 0, 0).cov == cov.get_ell_tracer_cov(2, 2, 0, 0).cov.T).all()
+    assert (cov.get_ell_tracer_cov(4, 4, 0, 0).cov == cov.get_ell_tracer_cov(4, 4, 0, 0).cov.T).all()
 
-    assert (cov.get_ell_cov(0,0).cov == cov.get_ell_cov(0,0).cov.T).all()
-    assert (cov.get_ell_cov(2,2).cov == cov.get_ell_cov(2,2).cov.T).all()
-    assert (cov.get_ell_cov(4,4).cov == cov.get_ell_cov(4,4).cov.T).all()
-
-    assert not (cov.get_ell_cov(0,2).cov == cov.get_ell_cov(0,2).cov.T).all()
-    assert not (cov.get_ell_cov(2,4).cov == cov.get_ell_cov(2,4).cov.T).all()
-    assert not (cov.get_ell_cov(4,0).cov == cov.get_ell_cov(4,0).cov.T).all()
-
-    assert (cov.get_ell_cov(0,0).cov == (cov00 + cov00.T)/2).all()
-    assert (cov.get_ell_cov(2,2).cov == (cov22 + cov22.T)/2).all()
-    assert (cov.get_ell_cov(4,4).cov == (cov44 + cov44.T)/2).all()
+    assert not (cov.get_ell_tracer_cov(0, 2, 0, 0).cov == cov.get_ell_tracer_cov(0, 2, 0, 0).cov.T).all()
+    assert not (cov.get_ell_tracer_cov(2, 4, 0, 0).cov == cov.get_ell_tracer_cov(2, 4, 0, 0).cov.T).all()
+    assert not (cov.get_ell_tracer_cov(4, 0, 0, 0).cov == cov.get_ell_tracer_cov(4, 0, 0, 0).cov.T).all()
+    assert (cov.get_ell_tracer_cov(0, 0, 0, 0).cov == (cov00 + cov00.T)/2).all()
+    assert (cov.get_ell_tracer_cov(2, 2, 0, 0).cov == (cov22 + cov22.T)/2).all()
+    assert (cov.get_ell_tracer_cov(4, 4, 0, 0).cov == (cov44 + cov44.T)/2).all()
 
 
 def test_multipole_covariance_addition():
     cov1_00, cov1_22, cov1_44, cov1_02, cov1_04, cov1_24 = np.random.rand(6, 100, 100)
     cov2_00, cov2_22, cov2_44, cov2_02, cov2_04, cov2_24 = np.random.rand(6, 100, 100)
 
-    cov1 = base.MultipoleCovariance()
-    cov2 = base.MultipoleCovariance()
+    cov1 = base.MultipoleMultiTracerCovariance()
+    cov2 = base.MultipoleMultiTracerCovariance()
 
-    cov1.set_ell_cov(0,0, cov1_00)
-    cov1.set_ell_cov(2,2, cov1_22)
-    cov1.set_ell_cov(4,4, cov1_44)
+    cov1.set_ell_tracer_cov(0, 0, 0, 0, cov1_00)
+    cov1.set_ell_tracer_cov(2, 2, 0, 0, cov1_22)
+    cov1.set_ell_tracer_cov(4, 4, 0, 0, cov1_44)
+    cov1.set_ell_tracer_cov(0, 2, 0, 0, cov1_02)
+    cov1.set_ell_tracer_cov(0, 4, 0, 0, cov1_04)
+    cov1.set_ell_tracer_cov(4, 2, 0, 0, cov1_24.T)
 
-    cov1.set_ell_cov(0,2, cov1_02)
-    cov1.set_ell_cov(0,4, cov1_04)
-    cov1.set_ell_cov(4,2, cov1_24.T)
-
-    cov2.set_ell_cov(0,0, cov2_00)
-    cov2.set_ell_cov(2,2, cov2_22)
-    cov2.set_ell_cov(4,4, cov2_44)
-
-    cov2.set_ell_cov(0,2, cov2_02)
-    cov2.set_ell_cov(0,4, cov2_04)
-    cov2.set_ell_cov(4,2, cov2_24.T)
-
+    cov2.set_ell_tracer_cov(0, 0, 0, 0, cov2_00)
+    cov2.set_ell_tracer_cov(2, 2, 0, 0, cov2_22)
+    cov2.set_ell_tracer_cov(4, 4, 0, 0, cov2_44)
+    cov2.set_ell_tracer_cov(0, 2, 0, 0, cov2_02)
+    cov2.set_ell_tracer_cov(0, 4, 0, 0, cov2_04)
+    cov2.set_ell_tracer_cov(4, 2, 0, 0, cov2_24.T)
     addition = cov1 + cov2
 
-    assert (addition.get_ell_cov(0,0).cov == cov1_00 + cov2_00).all()
-    assert (addition.get_ell_cov(2,2).cov == cov1_22 + cov2_22).all()
-    assert (addition.get_ell_cov(4,4).cov == cov1_44 + cov2_44).all()
+    print(cov1._multipole_tracer_covariance.keys())
+    print(cov2._multipole_tracer_covariance.keys())
+    print(addition._multipole_tracer_covariance.keys())
+    assert (addition.get_ell_tracer_cov(0, 0, 0, 0).cov == cov1_00 + cov2_00).all()
+    assert (addition.get_ell_tracer_cov(2, 2, 0, 0).cov == cov1_22 + cov2_22).all()
+    assert (addition.get_ell_tracer_cov(4, 4, 0, 0).cov == cov1_44 + cov2_44).all()
 
-    assert (addition.get_ell_cov(0,2).cov == cov1_02 + cov2_02).all()
-    assert (addition.get_ell_cov(0,4).cov == cov1_04 + cov2_04).all()
-    assert (addition.get_ell_cov(2,4).cov == cov1_24 + cov2_24).all()
+    assert (addition.get_ell_tracer_cov(0, 2, 0, 0).cov == cov1_02 + cov2_02).all()
+    assert (addition.get_ell_tracer_cov(0, 4, 0, 0).cov == cov1_04 + cov2_04).all()
+    assert (addition.get_ell_tracer_cov(4, 2, 0, 0).cov == cov1_24.T + cov2_24.T).all()
 
 
 def test_sparse_ndarray_basic():

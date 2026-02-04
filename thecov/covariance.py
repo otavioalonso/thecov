@@ -16,7 +16,7 @@ import logging, os
 import itertools as itt
 import numpy as np
 
-from . import base, geometry, math
+from . import base, geometry, math, utils
 
 __all__ = ['GaussianCovariance',
            'TrispectrumCovariance',
@@ -39,7 +39,7 @@ try:
 except Exception:
     os.makedirs(cache_dir, exist_ok=True)
     
-class PowerSpectrumMultiTracerCovariance(base.MultipoleFourierCovariance):
+class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
     '''Parent Covariance matrix of power spectrum multipoles class in a given geometry.
 
     Attributes
@@ -56,7 +56,6 @@ class PowerSpectrumMultiTracerCovariance(base.MultipoleFourierCovariance):
         self._pk = {}
         self.num_tracers = geometry.num_tracers
         self.num_spectra = int(self.num_tracers * (self.num_tracers+1)/2)
-
         self.pk_renorm = 1
 
     @property
@@ -86,46 +85,6 @@ class PowerSpectrumMultiTracerCovariance(base.MultipoleFourierCovariance):
         '''
         self._alpha = alpha
 
-    @property
-    def cov(self):
-        if self.num_tracers == 1:
-            return super().cov
-        else:
-            full_cov = np.zeros((self.num_tracers * len(self.ells) * self.k_binning.kbins,
-                                 self.num_tracers * len(self.ells) * self.k_binning.kbins))
-            block_size = len(self.ells) * self.k_binning.kbins
-
-            for (tracer1, tracer2) in itt.product(range(self.num_tracers), repeat=2):
-                if tracer1 <= tracer2:
-                    block_cov = self.get_tracer_cov(TRACER_LABELS[tracer1], TRACER_LABELS[tracer2])
-                else:
-                    block_cov = self.get_tracer_cov(TRACER_LABELS[tracer2], TRACER_LABELS[tracer1]).T
-                full_cov[tracer1*block_size:(tracer1+1)*block_size,
-                         tracer2*block_size:(tracer2+1)*block_size] = block_cov
-                
-            return full_cov
-
-    def get_tracer_cov(self, tracer1:str, tracer2:str):
-        """Retrieves the sub-covariance matrix for the given tracer combination.
-
-        Args:
-            tracer1 (str): first tracer index. Must be one of ["A", "B", "C", "D"].
-            tracer2 (str): second tracer index. Must be one of ["A", "B", "C", "D"].
-
-        Raises:
-            ValueError: If tracer1 or tracer2 are not valid given the number of tracers.
-
-        Returns:
-            np.ndarray: Sub-covariance matrix for the given tracer combination.
-        """
-        if tracer1 not in TRACER_LABELS[:self.num_tracers] or tracer2 not in TRACER_LABELS[:self.num_tracers]:
-            raise ValueError(f"Error in PowerSpectrumMultiTracerCovariance.get_tracer_cov: tracer1 and tracer2 must be one of {TRACER_LABELS[:self.num_tracers]}.")
-
-        block_size = len(self.ells[0]) * self.k_binning.kbins
-        idx1 = TRACER_LABELS.index(tracer1) * block_size
-        idx2 = TRACER_LABELS.index(tracer2) * block_size
-        return self._cov[idx1: idx1 + block_size, idx2: idx2 + block_size]
-
     def compute_covariance(self):
         '''Compute the covariance matrix for the given geometry and power spectra.
 
@@ -154,35 +113,36 @@ class PowerSpectrumMultiTracerCovariance(base.MultipoleFourierCovariance):
         if self.k_binning.is_kbins_set and not self.geometry.is_kbins_set:
             self.geometry.set_kbins(self.k_binning)
 
-        # has shape [k, k, ell, tracer]
-        cov = np.zeros((self.num_spectra, self.k_binning.kbins, self.k_binning.kbins, len(self.ells[0])*len(self.ells[1])))
+        # has shape [tracer, tracer, k, k, ell]
+        cov = np.zeros((self.num_tracers, self.num_tracers, self.k_binning.kbins, self.k_binning.kbins, 3*3))
         
         for ki in range(self.k_binning.kbins):
             # Iterate delta_k_max bins either side of the diagonal
-            for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max + 1, self.k_binning.kbins)):
-                tracer_idx = 0
+            for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max+1, self.k_binning.kbins)):
+                n_AB = 0
                 for idx_A, idx_B in itt.product(range(self.num_tracers), repeat=2):
                     if idx_B < idx_A: continue
+                    n_CD = 0
                     for idx_C, idx_D in itt.product(range(self.num_tracers), repeat=2):
                         if idx_D < idx_C: continue
-                        cov[tracer_idx, ki, kj, :] += func(ki, kj, idx_A, idx_B, idx_C, idx_D)
-                        tracer_idx += 1
+                        cov[n_AB, n_CD, ki, kj, :] += func(ki, kj, idx_A, idx_B, idx_C, idx_D)
+                        n_CD += 1
+                    n_AB += 1
 
         cov *= (self.pk_renorm)
         return cov
 
-    @staticmethod
-    def _set_survey_covariance(cov_array, covariance=None):
-        if covariance is None:
-            covariance = base.MultipoleFourierCovariance()
+    def _set_survey_covariance(self, cov_array):
 
-        ell1 = covariance.ells[0]
+        ell1 = self.ells[0]
         ell_idx = 0
         for l1, l2 in itt.product(ell1, repeat=2):
-            covariance.set_ell_cov(l1, l2, cov_array[:, :, ell_idx])
+            for t1, t2 in itt.product(range(self.num_tracers), repeat=2):
+                if t2 < t1: continue
+                tracer1 = TRACER_LABELS[t1]
+                tracer2 = TRACER_LABELS[t2]
+                self.set_ell_tracer_cov(l1, l2, t1, t2, cov_array[t1, t2, :, :, ell_idx])
             ell_idx += 1
-
-        return covariance
 
     @property
     def shotnoise(self):
@@ -219,7 +179,7 @@ class PowerSpectrumMultiTracerCovariance(base.MultipoleFourierCovariance):
         self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')
     
 
-class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
+class GaussianCovariance(PowerSpectrumCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -255,10 +215,14 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
         if tracer1 >= self.num_tracers or tracer2 >= self.num_tracers:
             raise ValueError(f"Error in PowerSpectrumMultipolesCovariance.set_galaxy_pk_multipole: Requested tracer combo ({tracer1}, {tracer2}) must both be < total number of tracers ({self.num_tracers})")
 
+        # NOTE: This might not be necesary
+        if not self.has_ells(ell, ell):
+            self.ells = [list(range(0, ell + 1, 2)), list(range(0, ell + 1, 2))]
+
         if ell == 0 and has_shotnoise and tracer1 == tracer2:
             if self.rank == 0: self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
             pk = pk - self.shotnoise[tracer1]
-        
+
         self._pk[ell, tracer1, tracer2] = pk
         if tracer1 != tracer2: # <- assuming cross spectra are symmetric (P(t1, t2) = P(t2, t1))
             self._pk[ell, tracer2, tracer1] = pk
@@ -339,8 +303,9 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
              self._get_mixed_term(ik, jk, A, B, C, D) + \
             (1 + self.alpha[TRACER_LABELS[A]]) * (1 + self.alpha[TRACER_LABELS[B]]) * self._get_shotnoise_term(ik, jk, A, B, C, D))
 
-        self._set_survey_covariance(self._build_covariance_survey(func), self)
+        self._set_survey_covariance(self._build_covariance_survey(func))
         eigvals = self.eigvals
+
         if (eigvals < 0).any():
             self.logger.warning(
                 f'Covariance matrix is not positive definite. Worst of {sum(eigvals < 0)} negative eigenvalues is {eigvals.min():.2e}.')
@@ -493,6 +458,7 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
         
         #[nz, nt, nk, nl]
         pk_galaxy_raw = pk_data
+
         if pk_galaxy_raw.ndim != 4:
             raise ValueError(f"Error in load_npy_file: input power spectrum must have 4 dimensions, found {pk_galaxy_raw.ndim} instead.")
         if pk_galaxy_raw.shape[1] == self.num_spectra:
@@ -525,8 +491,6 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
         """
         WinKernel = self.geometry.cosmic_variance_kernel
 
-        delta_k = jk - ik + self.geometry.delta_k_max
-
         P_AB = np.array([self.get_pk(0, A, B, force_return=True, remove_shotnoise=True),
                          self.get_pk(2, A, B, force_return=True),
                          self.get_pk(4, A, B, force_return=True)])
@@ -535,9 +499,9 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
                          self.get_pk(2, C, D, force_return=True),
                          self.get_pk(4, C, D, force_return=True)])
 
-        cov = np.zeros((len(self.ells[0]), len(self.ells[0])))
-        for ell1, ell2, ell3, ell4 in itt.product(self.ells[0], repeat=4):
-            cov[ell1, ell2] += WinKernel[ik, delta_k, ell1, ell2, ell3, ell4] * \
+        cov = np.zeros((3, 3))
+        for ell1, ell2, ell3, ell4 in itt.product(range(3), repeat=4):
+            cov[ell1, ell2] += WinKernel[ell1, ell2, ell3, ell4, ik, jk] * \
                                          P_AB[ell3, ik] * P_CD[ell4, jk]
 
         return cov.flatten()
@@ -556,6 +520,7 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
         Returns:
             np.ndarray: Flattened covariance matrix elements for the mixed term.
         """
+        WinKernel = self.geometry.mixed_kernel
         delta_k = jk - ik + self.geometry.delta_k_max
 
         P_AC = np.array([self.get_pk(0, A, C, force_return=True, remove_shotnoise=True),
@@ -574,16 +539,16 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
                          self.get_pk(2, B, D, force_return=True),
                          self.get_pk(4, B, D, force_return=True)])
         
-        cov = np.zeros((len(self.ells[0]), len(self.ells[0])))
-        for ell1, ell2, ell3 in itt.product(self.ells[0], repeat=3):
+        cov = np.zeros((3,3))
+        for ell1, ell2, ell3 in itt.product(range(3), repeat=3):
             if A == D:
-                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BC[ell3, jk] * self.geometry.WinKernel_mixed[ik, 0, delta_k, ell1, ell2, ell3]
+                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BC[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
             if B == C:
-                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AD[ell3, jk] * self.geometry.WinKernel_mixed[ik, 1, delta_k, ell1, ell2, ell3]
+                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AD[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
             if A == C:
-                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BD[ell3, jk] * self.geometry.WinKernel_mixed[ik, 2, delta_k, ell1, ell2, ell3]
+                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BD[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
             if B == D:
-                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AC[ell3, jk] * self.geometry.WinKernel_mixed[ik, 3, delta_k, ell1, ell2, ell3]
+                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AC[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
 
         return cov.flatten()
 
@@ -604,14 +569,14 @@ class GaussianCovariance(PowerSpectrumMultiTracerCovariance):
         WinKernel = self.geometry.shotnoise_kernel
         delta_k = jk - ik + self.geometry.delta_k_max
 
-        cov_ij = np.zeros((len(self.ells[0]), len(self.ells[1])))
-        for ell1, ell2, ell3, ell4 in itt.product(self.ells[0], repeat=4):
-            cov_ij[ell1, ell2] += WinKernel[ik, delta_k, ell1, ell2, ell3, ell4]
+        cov_ij = np.zeros((3, 3))
+        for ell1, ell2 in itt.product(range(3), repeat=2):
+            cov_ij[ell1, ell2] += WinKernel[ell1, ell2, ik, jk]
 
         return cov_ij.flatten()
 
 # TODO: Update this to multi-tracer
-class RegularTrispectrumCovariance(PowerSpectrumMultiTracerCovariance):
+class RegularTrispectrumCovariance(PowerSpectrumCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
 
     Args:
@@ -639,7 +604,7 @@ class RegularTrispectrumCovariance(PowerSpectrumMultiTracerCovariance):
             Width of the k bins.
         '''
 
-        self._ells = ells
+        self.ells = ells
         base.PowerSpectrumMultipolesCovariance.set_kbins(self, kmin, kmax, dk)
 
         # Set the FFTLog
@@ -798,7 +763,7 @@ class RegularTrispectrumCovariance(PowerSpectrumMultiTracerCovariance):
         return self
 
 
-class SuperSampleCovariance(PowerSpectrumMultiTracerCovariance):
+class SuperSampleCovariance(PowerSpectrumCovariance):
     '''Regular super sample covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -826,7 +791,7 @@ class SuperSampleCovariance(PowerSpectrumMultiTracerCovariance):
             Width of the k bins.
         '''
 
-        self._ells = ells
+        self.ells = ells
         base.PowerSpectrumMultipolesCovariance.set_kbins(self, kmin, kmax, dk)
 
         return self

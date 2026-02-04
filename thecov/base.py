@@ -368,20 +368,8 @@ class Covariance(BaseClass):
 
         return cls(covariance=a)
 
-    @property
-    def ells(self):
-        '''The multipoles for which the covariance matrix is defined. Sorted in ascending order.
-
-        Returns
-        -------
-        tuple
-            A tuple of multipole values.
-        '''
-
-        return sorted(self._ells)
-
-class MultipoleCovariance(Covariance):
-    '''A class to represent a covariance matrix for a set of multipoles.
+class MultipoleMultiTracerCovariance(Covariance):
+    '''A class to represent a covariance matrix for a set of multipoles and tracers.
 
     Attributes
     ----------
@@ -393,10 +381,13 @@ class MultipoleCovariance(Covariance):
 
     def __init__(self, symmetric=False):
         super().__init__() # <- calls Covariance.__init__()
-        self._multipole_covariance = {}
+        self._multipole_tracer_covariance = {}
         self._symmetric = symmetric
+        self.num_tracers = 1
+        self._ells1 = []
+        self._ells2 = []
 
-    def set_ell_cov(self, l1, l2, cov, cls=Covariance):
+    def set_ell_tracer_cov(self, l1, l2, t1, t2, cov, cls=Covariance):
         '''Sets the covariance matrix for a given pair of multipoles.
 
         Parameters
@@ -405,6 +396,10 @@ class MultipoleCovariance(Covariance):
             The first multipole.
         l2 : int
             The second multipole.
+        t1: int
+            The first tracer index.
+        t2: int
+            The second tracer index.
         cov : Covariance or numpy.ndarray
             The covariance matrix. Can be an instance of Covariance or a numpy array.
         cls : class, optional
@@ -412,23 +407,28 @@ class MultipoleCovariance(Covariance):
         '''
 
         if l1 > l2:
-            return self.set_ell_cov(l2, l1, cov.T if cov is not None else None)
+            return self.set_ell_tracer_cov(l2, l1, t1, t2, cov.T if cov is not None else None)
 
-        if self._ells == []:
+        if t1 + 1 > self.num_tracers or t2 + 1 > self.num_tracers:
+            self.num_tracers = max(t1 + 1, t2 + 1)
+
+        # NOTE: This assumes that each block has the same shape
+        if self._mshape == (0, 0):
             self._mshape = cov.shape
-        else:
-            if l1 not in self.ells:
-                self._ells.append(l1)
-            if l2 not in self.ells:
-                self._ells.append(l2)
+
+        if l1 not in self._ells1:
+            self._ells1.append(l1)
+            self._ells1 = sorted(self._ells1)
+        if l2 not in self._ells2:
+            self._ells2.append(l2)
+            self._ells2 = sorted(self._ells2)
 
         cov = cov if isinstance(cov, cls) else cls(cov)
-
-        self._multipole_covariance[l1, l2] = cov
+        self._multipole_tracer_covariance[l1, l2, t1, t2] = cov
 
         return cov
 
-    def get_ell_cov(self, l1, l2,  force_return=False, cls=Covariance):
+    def get_ell_tracer_cov(self, l1, l2, t1, t2, force_return=False, cls=Covariance):
         '''Returns the covariance matrix for a given pair of multipoles.
 
         Parameters
@@ -437,7 +437,10 @@ class MultipoleCovariance(Covariance):
             the first multipole.
         l2
             the second multipole.
-
+        t1 
+            the first tracer index.
+        t2
+            the second tracer index.
         Returns
         -------
         Covariance
@@ -445,17 +448,22 @@ class MultipoleCovariance(Covariance):
         '''
 
         if l1 > l2:
-            return self.get_ell_cov(l2, l1, cls=cls).T
+            return self.get_ell_tracer_cov(l2, l1, t1, t2, cls=cls).T
 
-        if (l1, l2) in self._multipole_covariance:
-            return self._multipole_covariance[l1, l2]
+        if (l1, l2, t1, t2) in self._multipole_tracer_covariance:
+            return self._multipole_tracer_covariance[l1, l2, t1, t2]
         elif type(force_return) != bool:
             return cls(force_return*np.ones(self._mshape))
         elif force_return:
             return cls(np.zeros(self._mshape))
+        else:
+            raise KeyError(f"Covariance for multipoles ({l1}, {l2}) and tracers ({t1}, {t2}) not found.")
 
     def is_ell_set(self, l1, l2):
-        return (l1,l2) in self._multipole_covariance.keys()
+        return (l1,l2) in self._multipole_tracer_covariance.keys()
+
+    def is_tracer_set(self, t1, t2):
+        return (t1,t2) in self._multipole_tracer_covariance.keys()
 
     @property
     def ells(self):
@@ -465,19 +473,26 @@ class MultipoleCovariance(Covariance):
         -------
         tuple of two lists
         '''
-        ells1, ells2 = set(), set()
-        
-        for (l1, l2) in self._multipole_covariance.keys():
-            ells1.add(l1)
-            ells2.add(l2)
-            
-        return sorted(ells1), sorted(ells2)
+        return self._ells1.copy(), self._ells2.copy()
 
     def has_ells(self, l1, l2):
-        if self._symmetric and l1 > l2:
-            return self.has_ells(l2, l1)
-        return (l1, l2) in self._multipole_covariance.keys()
+        '''Check if the given multipoles are in the covariance structure.
+        
+        Parameters
+        ----------
+        l1 : int
+            First multipole.
+        l2 : int
+            Second multipole.
+            
+        Returns
+        -------
+        bool
+            True if both l1 and l2 are in the ells lists.
+        '''
+        return l1 in self._ells1 and l2 in self._ells2
 
+    
     def foreach(self, func):
         '''Applies a function to each covariance matrix.
 
@@ -487,8 +502,8 @@ class MultipoleCovariance(Covariance):
             The function to be applied to each covariance matrix.
         '''
 
-        for (l1, l2), cov in self._multipole_covariance.items():
-            self.set_ell_cov(l1, l2, func(cov))
+        for (l1, l2, t1, t2), cov in self._multipole_tracer_covariance.items():
+            self.set_ell_tracer_cov(l1, l2, t1, t2, func(cov))
         
         return self
 
@@ -498,19 +513,18 @@ class MultipoleCovariance(Covariance):
 
     @ells.setter
     def ells(self, ells):
-        '''Initializes all entries in the self._multipole_covariance dict based on the input ells tuple.
+        '''Initializes the ells structure.
 
         Parameters
         ----------
         ells : tuple
             A tuple of two lists: (l1s, l2s), where l1s and l2s are lists of multipoles.
         '''
-        
-        # Initialize the covariance matrices for each pair
-        for l1 in ells[0]:
-            for l2 in ells[1]:
-                if not self.has_ells(l1,l2):
-                    self.set_ell_cov(l1, l2, None)
+        if isinstance(ells, (list, np.ndarray)) and not isinstance(ells[0], (list, np.ndarray, tuple)):
+            ells = (list(ells), list(ells))
+        self._ells1 = sorted(list(ells[0]))
+        self._ells2 = sorted(list(ells[1]))
+
 
     @property
     def cov(self):
@@ -524,11 +538,17 @@ class MultipoleCovariance(Covariance):
         '''
 
         ells1, ells2 = self.ells
+        cov_return = np.zeros(np.array(self._mshape)*self.num_tracers*len(ells1))
 
-        cov_return = np.zeros(np.array(self._mshape)*len(ells1))
         for (i, l1), (j, l2) in itt.product(enumerate(ells1), enumerate(ells2)):
-            cov_return[i*self._mshape[0]:(i+1)*self._mshape[0],
-                j*self._mshape[1]:(j+1)*self._mshape[1]] = self.get_ell_cov(l1, l2).cov
+            for (t1, t2) in itt.product(range(self.num_tracers), repeat=2):
+                row_start = (t1 * len(ells1) + i) * self._mshape[0]
+                row_end   = row_start + self._mshape[0]
+                col_start = (t2 * len(ells2) + j) * self._mshape[1]
+                col_end   = col_start + self._mshape[1]
+                cov_return[row_start:row_end,
+                           col_start:col_end] = self.get_ell_tracer_cov(l1, l2, t1, t2, cls=Covariance).cov                
+        
         return cov_return
 
     @cov.setter
@@ -553,18 +573,27 @@ class MultipoleCovariance(Covariance):
         size1 = cov.shape[0]//len(ells1)
         size2 = cov.shape[1]//len(ells2)
 
-        for i1,l1 in enumerate(ells1):
-            for i2,l2 in enumerate(ells2):
-                self.set_ell_cov(l1,l2,Covariance(cov[i1*size1:(i1+1)*size1,i2*size2:(i2+1)*size2]))
+        for (i, l1), (j, l2) in itt.product(enumerate(ells1), enumerate(ells2)):
+            for (t1, t2) in itt.product(range(self.num_tracers), repeat=2):
+                row_start = (t1 * len(ells1) + i) * self._mshape[0]
+                row_end   = row_start + self._mshape[0]
+                col_start = (t2 * len(ells2) + j) * self._mshape[1]
+                col_end   = col_start + self._mshape[1]
+  
+                self.set_ell_tracer_cov(l1, l2, t1, t2, cov[row_start:row_end, col_start:col_end])
+
 
     def __add__(self, y):
-        assert isinstance(y, MultipoleCovariance)
+        assert isinstance(y, MultipoleMultiTracerCovariance)
 
-        cov = MultipoleCovariance(symmetric=self.symmetric and y.symmetric)
+        cov = MultipoleMultiTracerCovariance(symmetric=self.symmetric and y.symmetric)
         ells1, ells2 = self.ells
+        print(ells1, ells2)
         for l1 in ells1:
             for l2 in ells2:
-                cov.set_ell_cov(l1,l2, self.get_ell_cov(l1,l2) + y.get_ell_cov(l1,l2))
+                for t1 in range(self.num_tracers):
+                    for t2 in range(self.num_tracers):
+                        cov.set_ell_tracer_cov(l1,l2, t1, t2, self.get_ell_tracer_cov(l1,l2, t1, t2) + y.get_ell_tracer_cov(l1,l2, t1, t2))
         return cov
 
     def __sub__(self, y):
@@ -601,7 +630,7 @@ class MultipoleCovariance(Covariance):
         return cov
 
 
-class MultipoleFourierCovariance(MultipoleCovariance):
+class MultipoleFourierCovariance(MultipoleMultiTracerCovariance):
 
     def __init__(self, binning_type="linear"):
         
@@ -711,7 +740,7 @@ class MultipoleFourierCovariance(MultipoleCovariance):
             #assert np.allclose(k1[block_mask].reshape(kmid_matrix.shape),   kmid_matrix)
             #assert np.allclose(k2[block_mask].reshape(kmid_matrix.T.shape), kmid_matrix.T)
             c = value[block_mask].reshape(kbins, kbins)
-            self.set_ell_cov(l1, l2, c)
+            self.set_ell_tracer_cov(l1, l2, 0, 0, c)
 
         return self
 
@@ -719,14 +748,6 @@ class MultipoleFourierCovariance(MultipoleCovariance):
     def fromcsv(cls, filename):
         cov = cls()
         cov.loadcsv(filename)
-        return cov
-    
-    def set_ell_cov(self, l1, l2, cov, cls=Covariance):
-        cov = super().set_ell_cov(l1, l2, cov, cls=cls)
-        if not self.k_binning.is_kbins_set:
-            self.k_binning.set_kbins(self.k_binning.kmin, 
-                                     self.k_binning.kmax, 
-                                     self.k_binning.dk)
         return cov
 
     def kcut(self, kmin=None, kmax=None):
