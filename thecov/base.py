@@ -546,6 +546,7 @@ class MultipoleMultiTracerCovariance(Covariance):
                 row_end   = row_start + self._mshape[0]
                 col_start = (t2 * len(ells2) + j) * self._mshape[1]
                 col_end   = col_start + self._mshape[1]
+
                 cov_return[row_start:row_end,
                            col_start:col_end] = self.get_ell_tracer_cov(l1, l2, t1, t2, cls=Covariance).cov                
         

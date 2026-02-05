@@ -132,6 +132,7 @@ def sample_from_cube(rmin:float, rmax:float, dr:float, max_modes=np.inf):
         Nmodes.append(N)
     return modes, Nmodes
 
+
 # TODO: Might want to split into smaller functions for better readability
 def sample_kmodes(k_binning:binning.FourierBinning, boxsize:float, max_modes=1000, k_shell_approx=0.05, sample_mode="monte-carlo"):
     """Samples kmodes for use in calculating survey window function using either monte-carlo or lebedev sampling
@@ -147,7 +148,9 @@ def sample_kmodes(k_binning:binning.FourierBinning, boxsize:float, max_modes=100
         NotImplementedError: If sample_mode is not "monte-carlo"
 
     Returns:
-        modes, n_modes, weights: _description_
+        modes (list): list of np arrays containing the sampled kmodes
+        n_modes (np.array): array containing the number of modes in each k-bin
+        weights (np.array): array containing the weights for each k-bin
     """
     import logging
     logger = logging.getLogger('SampleModes')

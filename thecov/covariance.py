@@ -118,6 +118,7 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
         
         for ki in range(self.k_binning.kbins):
             # Iterate delta_k_max bins either side of the diagonal
+            #for kj in range(self.k_binning.kbins):
             for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max+1, self.k_binning.kbins)):
                 n_AB = 0
                 for idx_A, idx_B in itt.product(range(self.num_tracers), repeat=2):
@@ -135,14 +136,11 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
     def _set_survey_covariance(self, cov_array):
 
         ell1 = self.ells[0]
-        ell_idx = 0
         for l1, l2 in itt.product(ell1, repeat=2):
             for t1, t2 in itt.product(range(self.num_tracers), repeat=2):
                 if t2 < t1: continue
-                tracer1 = TRACER_LABELS[t1]
-                tracer2 = TRACER_LABELS[t2]
+                ell_idx = (l1 * len(self.ells[1]) + l2) // 2
                 self.set_ell_tracer_cov(l1, l2, t1, t2, cov_array[t1, t2, :, :, ell_idx])
-            ell_idx += 1
 
     @property
     def shotnoise(self):
@@ -215,7 +213,7 @@ class GaussianCovariance(PowerSpectrumCovariance):
         if tracer1 >= self.num_tracers or tracer2 >= self.num_tracers:
             raise ValueError(f"Error in PowerSpectrumMultipolesCovariance.set_galaxy_pk_multipole: Requested tracer combo ({tracer1}, {tracer2}) must both be < total number of tracers ({self.num_tracers})")
 
-        # NOTE: This might not be necesary
+        # NOTE: Find a better way to set ells
         if not self.has_ells(ell, ell):
             self.ells = [list(range(0, ell + 1, 2)), list(range(0, ell + 1, 2))]
 
@@ -243,7 +241,7 @@ class GaussianCovariance(PowerSpectrumCovariance):
 
         pk_renorm = self.pk_renorm if renorm else 1.0
 
-        if ell in self._pk.keys():
+        if (ell, tracer1, tracer2) in self._pk.keys():
             pk = self._pk[ell, tracer1, tracer2]
             if (not remove_shotnoise) and ell == 0:
                 self.logger.info(
@@ -254,6 +252,8 @@ class GaussianCovariance(PowerSpectrumCovariance):
             return force_return*np.ones(self.kbins)
         elif force_return:
             return np.zeros(self.kbins)
+        else:
+            raise ValueError(f"Power spectrum for ell = {ell} and tracer combo ({tracer1}, {tracer2}) not set.")
 
     def _compute_covariance_box(self):
         '''Compute the covariance matrix for a box geometry.
@@ -489,21 +489,30 @@ class GaussianCovariance(PowerSpectrumCovariance):
         Returns:
             np.ndarray: Flattened covariance matrix elements for the cosmic variance term.
         """
-        WinKernel = self.geometry.cosmic_variance_kernel
+        WinKernel_1 = self.geometry.cosmic_variance_kernel[0]
+        WinKernel_2 = self.geometry.cosmic_variance_kernel[1]
 
-        P_AB = np.array([self.get_pk(0, A, B, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, A, B, force_return=True),
-                         self.get_pk(4, A, B, force_return=True)])
+        P_AD = np.array([self.get_pk(0, A, D, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, A, D, force_return=True),
+                         self.get_pk(4, A, D, force_return=True)])
+        
+        P_BC = np.array([self.get_pk(0, B, C, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, B, C, force_return=True),
+                         self.get_pk(4, B, C, force_return=True)])
 
-        P_CD = np.array([self.get_pk(0, C, D, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, C, D, force_return=True),
-                         self.get_pk(4, C, D, force_return=True)])
+        P_BD = np.array([self.get_pk(0, B, D, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, B, D, force_return=True),
+                         self.get_pk(4, B, D, force_return=True)])
+        
+        P_AC = np.array([self.get_pk(0, A, C, force_return=True, remove_shotnoise=True),
+                         self.get_pk(2, A, C, force_return=True),
+                         self.get_pk(4, A, C, force_return=True)])
 
         cov = np.zeros((3, 3))
         for ell1, ell2, ell3, ell4 in itt.product(range(3), repeat=4):
-            cov[ell1, ell2] += WinKernel[ell1, ell2, ell3, ell4, ik, jk] * \
-                                         P_AB[ell3, ik] * P_CD[ell4, jk]
-
+            cov[ell1, ell2] += WinKernel_1[ell1, ell2, ell3, ell4, ik, jk] * P_AD[ell3, ik] * P_BC[ell4, jk] + \
+                               WinKernel_2[ell1, ell2, ell3, ell4, ik, jk] * P_BD[ell3, ik] * P_AC[ell4, jk]
+            #cov[ell1, ell2] += P_AD[ell3, ik] * P_BC[ell4, jk] + P_BD[ell3, ik] * P_AC[ell4, jk]
         return cov.flatten()
 
     def _get_mixed_term(self, jk:int, ik:int, A:int, B:int, C:int, D:int):
@@ -540,15 +549,15 @@ class GaussianCovariance(PowerSpectrumCovariance):
                          self.get_pk(4, B, D, force_return=True)])
         
         cov = np.zeros((3,3))
-        for ell1, ell2, ell3 in itt.product(range(3), repeat=3):
-            if A == D:
-                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BC[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
-            if B == C:
-                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AD[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
-            if A == C:
-                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BD[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
-            if B == D:
-                cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AC[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
+        # for ell1, ell2, ell3 in itt.product(range(3), repeat=3):
+        #     if A == D:
+        #         cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BC[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
+        #     if B == C:
+        #         cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AD[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
+        #     if A == C:
+        #         cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BD[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
+        #     if B == D:
+        #         cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AC[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
 
         return cov.flatten()
 
@@ -570,8 +579,8 @@ class GaussianCovariance(PowerSpectrumCovariance):
         delta_k = jk - ik + self.geometry.delta_k_max
 
         cov_ij = np.zeros((3, 3))
-        for ell1, ell2 in itt.product(range(3), repeat=2):
-            cov_ij[ell1, ell2] += WinKernel[ell1, ell2, ik, jk]
+        # for ell1, ell2 in itt.product(range(3), repeat=2):
+        #     cov_ij[ell1, ell2] += WinKernel[ell1, ell2, ik, jk]
 
         return cov_ij.flatten()
 

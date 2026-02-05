@@ -168,6 +168,36 @@ def test_multipole_covariance_addition():
     assert (addition.get_ell_tracer_cov(0, 4, 0, 0).cov == cov1_04 + cov2_04).all()
     assert (addition.get_ell_tracer_cov(4, 2, 0, 0).cov == cov1_24.T + cov2_24.T).all()
 
+def test_multipole_covariance_composition_is_correct():
+    rng = np.random.default_rng(5)
+    cov = base.MultipoleMultiTracerCovariance()
+    # set k-bins: kmin=0.0, kmax=0.3, dk=0.1 -> 3 bins
+    kb = 3
+
+    # build two ells -> 0 and 2
+    b00 = rng.random((kb, kb))
+    b02 = rng.random((kb, kb))
+    b22 = rng.random((kb, kb))
+
+    cov.set_ell_tracer_cov(0, 0, 0, 0, b00)
+    cov.set_ell_tracer_cov(0, 2, 0, 0, b02)
+    cov.set_ell_tracer_cov(2, 2, 0, 0, b22)
+
+    full = cov.cov
+    assert full.shape == (2 * kb, 2 * kb)
+
+    # reconstruct full matrix manually
+    manual = np.zeros((2 * kb, 2 * kb))
+    manual[0:kb, 0:kb] = b00
+    manual[0:kb, kb:2*kb] = b02
+    manual[kb:2*kb, 0:kb] = b02.T
+    manual[kb:2*kb, kb:2*kb] = b22
+
+    print(full[0:kb, kb:2*kb], "\n")
+    print(manual[0:kb, kb:2*kb])
+    print(manual[kb:2*kb, 0:kb])
+
+    assert np.allclose(full, manual)
 
 def test_sparse_ndarray_basic():
     # shape_out: (2, ), shape_in: (3, ) => dense shape (2,3)

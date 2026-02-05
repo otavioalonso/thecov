@@ -112,7 +112,6 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 
 	os.remove("test.npy")
 
-
 def test_load_npy_file_raises_on_wrong_dimensions(tmp_path):
 	randoms = create_basic_randoms(num_tracers=2)
 	alpha = [0.1, 0.1, 0.1]
