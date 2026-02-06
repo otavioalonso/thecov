@@ -122,7 +122,7 @@ class SurveyWindow(base.BaseClass):
         if self.rank == 0: self.logger.info("Creating survey mesh W...")
         mesh = CatalogMesh(
             data_positions=randoms['POSITION'],
-            data_weights=randoms["NZ"]**2 * randoms['WEIGHT']**2 * alpha,
+            data_weights=randoms["NZ"] * randoms['WEIGHT']**2 * alpha,
             position_type='pos',
             nmesh=nmesh,
             cellsize=cellsize,
@@ -137,7 +137,7 @@ class SurveyWindow(base.BaseClass):
             if self.rank == 0: self.logger.info("Creating shotnoise mesh S...")
             shotnoise_mesh = CatalogMesh(
                 data_positions=randoms['POSITION'],
-                data_weights=randoms["NZ"]**2 * randoms['WEIGHT']**2 * alpha,
+                data_weights=randoms['WEIGHT']**2 * alpha,
                 position_type='pos',
                 nmesh=nmesh,
                 cellsize=cellsize,
@@ -214,21 +214,20 @@ class SurveyWindow(base.BaseClass):
     #         position_type='pos',
     #     ).to_mesh(compensate=True)
 
-    # NOTE: cashing might behave differently now that we're using mpi4py
     @functools.cache
-    def compute_mesh(self, ell, m, shotnoise=False, combine_windows=True, fourier=True, threshold=None):
+    def compute_mesh(self, ell:int, m:int, mesh_1:str="W", mesh_2:str=None, fourier=True, threshold=None):
         """Compute the product of meshes and multiply by real Ylm evaluated at the same coordinates.
 
         Args:
             ell (int): Degree of the spherical harmonic.
             m (int): Order of the spherical harmonic.
-            shotnoise (bool, optional): If True, the shotnoise mesh is used instead of the original mesh. Default is False.
-            combine_windows (bool, optional): Determines whether or not to multiply mesh1 by mesh2. Default True
-            fourier (bool, optional): If True, the Fourier transform of the mesh is returned. Default is True.
+            mesh_1 (str): Which mesh to use for the first window. Options are "W" for the original mesh and "S" for the shotnoise mesh. Default is "W".
+            mesh_2 (str): Which mesh to use for the second window. Options are "W" for the original mesh and "S" for the shotnoise mesh. Default is None.
+            fourier (bool, optional): If True, the Fourier transform of the mesh is returned. Default is False.
             threshold (float, optional): If provided, values in the resulting mesh below this threshold are set to zero to save memory. Default is None.
 
         Returns:
-            np.ndarray: mesh * Ylm(ell, m) with shape_in: [nmesh, nmesh] and shape_out: [nmesh]
+            np.ndarray: mesh * Ylm(ell, m) with shape: [nmesh, nmesh, nmesh]
         """
 
         assert ell >= 0, "ell must be non-negative"
@@ -238,7 +237,7 @@ class SurveyWindow(base.BaseClass):
         time_start = time.time()
 
         # Initialize the result mesh
-        if shotnoise:
+        if mesh_1 == "S":
             mesh_to_clone = self.shotnoise_mesh1
         else:
             mesh_to_clone = self.mesh1
@@ -246,20 +245,23 @@ class SurveyWindow(base.BaseClass):
         self.comm.Barrier()
         result = mesh_to_clone.clone(
                 data_positions=mesh_to_clone.data_positions,
-                data_weights=mesh_to_clone.data_weights*Ylm(mesh_to_clone.data_positions.T[0],
-                                                            mesh_to_clone.data_positions.T[1],
-                                                            mesh_to_clone.data_positions.T[2]),
+                data_weights=mesh_to_clone.data_weights*Ylm(*mesh_to_clone.data_positions.T),
                 position_type='pos',
                 mpicomm=self.comm, mpiroot = 0
-            ).to_mesh(compensate=True)
+            ).to_mesh(compensate=True).r2c()
 
-        if hasattr(self, 'mesh2') and not shotnoise:
-            result *= self.mesh2.to_mesh(compensate=True)
-        elif shotnoise and hasattr(self, 'shotnoise_mesh2') and combine_windows:
-            result *= self.shotnoise_mesh2.to_mesh(compensate=True)
+        if mesh_2 is not None and hasattr(self, 'mesh2'):
+            if mesh_2 == "S":
+                result *= self.shotnoise_mesh2.to_mesh(compensate=True).r2c()
+            else:
+                result *= self.mesh2.to_mesh(compensate=True).r2c()
+        elif mesh_2 is not None and not hasattr(self, 'mesh2'):
+            if mesh_2 == "S":
+                result *= self.shotnoise_mesh1.to_mesh(compensate=True).r2c()
+            else:
+                result *= self.mesh1.to_mesh(compensate=True).r2c()
 
-        if not shotnoise or combine_windows and self.rank == 0:
-            if self.rank == 0: self.logger.info(f"Mesh computation with Ylm ({ell}, {m}) done in {time.time() - time_start:.2f} seconds")
+        if self.rank == 0: self.logger.info(f"Mesh computation with Ylm ({ell}, {m}) done in {time.time() - time_start:.2f} seconds")
 
         # element-wise addition and send to root rank
         if hasattr(result, 'value'):
@@ -282,7 +284,7 @@ class SurveyWindow(base.BaseClass):
                     if rebin_factor > 1:
                         result_combined = result_combined.reshape((self.knmesh, rebin_factor, self.knmesh, rebin_factor, self.knmesh, rebin_factor)).sum(axis=(1, 3, 5))
 
-                    self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result.shape[0]} with factor {rebin_factor}.")
+                    self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result_combined.shape[0]} with factor {rebin_factor}.")
 
             # pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
             if fourier:
@@ -293,7 +295,6 @@ class SurveyWindow(base.BaseClass):
 
             # result = result.value if not fourier else result.r2c().value
             if threshold is not None:
-                # Convert the result to a sparse array to save memory
                 result_combined[np.abs(result_combined) < threshold] = 0
 
         self.comm.Barrier()    
@@ -440,8 +441,6 @@ class SurveyGeometry(base.BaseClass):
             else:
                 if self.rank == 0: self.logger.warning(f'WEIGHT column not found in randoms. Setting it to 1.')
                 randoms['WEIGHT'] = np.ones(randoms.size, dtype='f8')
-        if 'WEIGHT_FKP' not in randoms:
-            randoms['WEIGHT_FKP'] = np.ones(randoms.size, dtype='f8')
             
         if 'NZ' not in randoms:
             if self.rank == 0: self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
@@ -503,9 +502,7 @@ class SurveyGeometry(base.BaseClass):
                     nbar_power = int(label[0])
                     fkp_power = int(label[1])
                     I_sub = (self.randoms[tracer]['NZ']**(nbar_power-1) * \
-                            self.randoms[tracer]['WEIGHT_FKP']**fkp_power * \
-                            self.randoms[tracer]['WEIGHT'] * \
-                            self.alphas[tracer]).sum().item()
+                            self.randoms[tracer]['WEIGHT']**fkp_power).sum().item()
                     I = self.comm.allreduce(I_sub, op=MPI.SUM)
 
                     self._I[i, self.TRACER_LABELS.index(tracer)] = I
@@ -513,13 +510,14 @@ class SurveyGeometry(base.BaseClass):
 
                 if self.rank == 0: pbar.close()
 
-    def I(self, tracer:str, nbar_power:int, fkp_power:int):
+    def I(self, tracer:str, nbar_power:int, fkp_power:int, apply_alpha=False):
         """Retrieve the I normalization factor for the given tracer.
 
         Args:
         tracer (str, optional): Tracer label. Must be one of 'A', 'B', 'C', 'D'.
         nbar_power (int, optional): Power of nbar in the I factor.
         fkp_power (int, optional): Power of FKP weight in the I factor.
+        apply_alpha (bool, optional): Whether to apply alpha(tracer) Default is False.
 
         Returns
         -------
@@ -533,7 +531,10 @@ class SurveyGeometry(base.BaseClass):
 
         label_idx = self.I_LABELS.index(f"{nbar_power}{fkp_power}")
         tracer_idx = self.TRACER_LABELS.index(tracer)
-        return self._I[label_idx, tracer_idx]
+        if apply_alpha:
+            return self._I[label_idx, tracer_idx] * self.alphas[tracer_idx]
+        else:
+            return self._I[label_idx, tracer_idx]
 
     @functools.cache
     def get_cosmic_variance_window(self, cache_dir=None, term="first"):
@@ -553,15 +554,15 @@ class SurveyGeometry(base.BaseClass):
                 total_iterations+=1
 
             self.comm.Barrier()
-            if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc="Cosmic variance mesh calculation")
+            if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc=f"{term} Cosmic variance mesh calculation")
 
             for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
                 if term == "first":
-                    window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.compute_mesh(la, ma) * \
-                                                           self.window_CD.compute_mesh(lb, mb)
+                    window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.compute_mesh(la, ma, "W", "W") * \
+                                                           self.window_CD.compute_mesh(lb, mb, "W", "W")
                 elif term == "second":
-                    window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AC.compute_mesh(la, ma) * \
-                                                           self.window_BD.compute_mesh(lb, mb)
+                    window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AC.compute_mesh(la, ma, "W", "W") * \
+                                                           self.window_BD.compute_mesh(lb, mb, "W", "W")
                 if self.rank == 0: pbar.update(1)
 
             if self.rank == 0: pbar.close()
@@ -588,8 +589,7 @@ class SurveyGeometry(base.BaseClass):
             self.comm.Barrier()
             if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc="Mixed mesh calculation")
             for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
-                window[la//2,lb//2,ma+la,mb+lb] = self.window_AB.compute_mesh(la, ma, shotnoise=True, combine_windows=False) * \
-                                                  self.window_BC.compute_mesh(lb, mb)
+                window[la//2,lb//2,ma+la,mb+lb] = self.window_AB.compute_mesh(la, ma, "S", "W")
                 if self.rank == 0: pbar.update(1)
 
             if self.rank == 0: pbar.close()                 
@@ -615,8 +615,8 @@ class SurveyGeometry(base.BaseClass):
             self.comm.Barrier()
             if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc="Shotnoise mesh calculation")
             for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
-                window[la//2,lb//2,ma+la,mb+lb] = self.window_AB.compute_mesh(la, ma, shotnoise=True, combine_windows=False) * \
-                                                  self.window_BC.compute_mesh(lb, mb, shotnoise=True, combine_windows=False)
+                window[la//2,lb//2,ma+la,mb+lb] = self.window_AB.compute_mesh(la, ma, "S", None) * \
+                                                  self.window_BC.compute_mesh(lb, mb, "S", None)
                 if self.rank == 0: pbar.update(1)
 
             if self.rank == 0: pbar.close()
@@ -889,7 +889,7 @@ class SurveyGeometry(base.BaseClass):
         self._I = {}
 
     @base.cache
-    def compute_window_matrix(self, cache_dir:str=None, kmodes_sampled=20):
+    def compute_window_matrix(self, cache_dir:str=None, kmodes_sampled=30):
         '''Computes the window matrix to be used in the calculation of the covariance.
 
         Notes
@@ -919,7 +919,6 @@ class SurveyGeometry(base.BaseClass):
             return self.window_matrix
 
         if self.rank == 0:
-
             self.logger.info('='*60)
             self.logger.info('Computing window matrices')
             self.logger.info(f'pk_ellmax={self.pk_ellmax}, mask_ellmax={self.mask_ellmax}')
@@ -990,7 +989,7 @@ class SurveyGeometry(base.BaseClass):
         for key in survey_window:
             survey_window[key] = survey_window[key].to_shared_memory()
 
-        # Read Gaunt coefficients only on rank 0 to avoid IO
+        # Read Gaunt coefficients only on rank 0 to avoid IO race conditions
         if self.rank == 0:
             self.logger.info('Contracting Gaunt coefficients with window meshes...')
             coefficients = {
@@ -1039,8 +1038,8 @@ class SurveyGeometry(base.BaseClass):
 
                 k2_bin_index = (np.sqrt(np.sum(ik2**2, axis=0)) * self.kfun / self.k_binning.dk).astype(int)
 
-                Ylm_k1 = math.evaluate_Ylms(Ylm_table, self.pk_ellmax, ik1[0], ik1[1], ik1[2])
-                Ylm_k2 = math.evaluate_Ylms(Ylm_table, self.pk_ellmax, ik2[0], ik2[1], ik2[2])
+                Ylm_k1 = math.evaluate_Ylms(Ylm_table, self.pk_ellmax, *ik1)
+                Ylm_k2 = math.evaluate_Ylms(Ylm_table, self.pk_ellmax, *ik2)
 
                 # Cosmic Variance Term
                 for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(self.pk_ellmax, 4):
@@ -1081,8 +1080,8 @@ class SurveyGeometry(base.BaseClass):
                     window_matrix['shotnoise'][l1//2,l2//2,k1_bin_index,:] += \
                         np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.k_binning.kbins)[:self.k_binning.kbins]
 
-            for key in window_matrix.keys():
-                window_matrix[key] /= len(km)
+            # for key in window_matrix.keys():
+            #     window_matrix[key] /= len(km)
 
         self.comm.Barrier()
         # Sum contributions from all ranks

@@ -114,21 +114,16 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
             self.geometry.set_kbins(self.k_binning)
 
         # has shape [tracer, tracer, k, k, ell]
-        cov = np.zeros((self.num_tracers, self.num_tracers, self.k_binning.kbins, self.k_binning.kbins, 3*3))
-        
-        for ki in range(self.k_binning.kbins):
-            # Iterate delta_k_max bins either side of the diagonal
-            #for kj in range(self.k_binning.kbins):
-            for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max+1, self.k_binning.kbins)):
-                n_AB = 0
-                for idx_A, idx_B in itt.product(range(self.num_tracers), repeat=2):
-                    if idx_B < idx_A: continue
-                    n_CD = 0
-                    for idx_C, idx_D in itt.product(range(self.num_tracers), repeat=2):
-                        if idx_D < idx_C: continue
-                        cov[n_AB, n_CD, ki, kj, :] += func(ki, kj, idx_A, idx_B, idx_C, idx_D)
-                        n_CD += 1
-                    n_AB += 1
+        cov = np.zeros((self.num_tracers, self.num_tracers, 3, 3, self.k_binning.kbins, self.k_binning.kbins))
+        n_AB = 0
+        for idx_A, idx_B in itt.product(range(self.num_tracers), repeat=2):
+            if idx_B < idx_A: continue
+            n_CD = 0
+            for idx_C, idx_D in itt.product(range(self.num_tracers), repeat=2):
+                if idx_D < idx_C: continue
+                cov[n_AB, n_CD, :, :, :] += func(idx_A, idx_B, idx_C, idx_D)
+                n_CD += 1
+            n_AB += 1
 
         cov *= (self.pk_renorm)
         return cov
@@ -139,8 +134,8 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
         for l1, l2 in itt.product(ell1, repeat=2):
             for t1, t2 in itt.product(range(self.num_tracers), repeat=2):
                 if t2 < t1: continue
-                ell_idx = (l1 * len(self.ells[1]) + l2) // 2
-                self.set_ell_tracer_cov(l1, l2, t1, t2, cov_array[t1, t2, :, :, ell_idx])
+                #ell_idx = (l1 * len(self.ells[1]) + l2) // 2
+                self.set_ell_tracer_cov(l1, l2, t1, t2, cov_array[t1, t2, l1//2, l2//2, :, :])
 
     @property
     def shotnoise(self):
@@ -295,13 +290,14 @@ class GaussianCovariance(PowerSpectrumCovariance):
         '''
 
         # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
-        def func(ik, jk, A, B, C, D): 
-            I_AB = self.geometry.I(TRACER_LABELS[A], 2, 2) * self.geometry.I(TRACER_LABELS[B], 2, 2)
-            I_CD = self.geometry.I(TRACER_LABELS[C], 2, 2) * self.geometry.I(TRACER_LABELS[D], 2, 2)
+        def func(A, B, C, D): 
+            
+            I_AB = (self.geometry.I(TRACER_LABELS[A], 2, 2) * self.geometry.I(TRACER_LABELS[B], 2, 2))
+            I_CD = (self.geometry.I(TRACER_LABELS[C], 2, 2) * self.geometry.I(TRACER_LABELS[D], 2, 2)) 
             return (1 / (I_AB * I_CD)) * \
-            (self._get_cosmic_variance_term(ik, jk, A, B, C, D) + \
-             self._get_mixed_term(ik, jk, A, B, C, D) + \
-            (1 + self.alpha[TRACER_LABELS[A]]) * (1 + self.alpha[TRACER_LABELS[B]]) * self._get_shotnoise_term(ik, jk, A, B, C, D))
+            (self._get_cosmic_variance_term(A, B, C, D) + \
+             self._get_mixed_term(A, B, C, D) + \
+             self._get_shotnoise_term(A, B))
 
         self._set_survey_covariance(self._build_covariance_survey(func))
         eigvals = self.eigvals
@@ -476,12 +472,10 @@ class GaussianCovariance(PowerSpectrumCovariance):
             self.set_galaxy_pk_multipole(pk_galaxy_raw[idx, 0, 2, :], 4, i, j, has_shotnoise=True)
             idx += 1
 
-    def _get_cosmic_variance_term(self, jk:int, ik:int, A:int, B:int, C:int, D:int):
+    def _get_cosmic_variance_term(self, A:int, B:int, C:int, D:int):
         """Calculates elements of the cosmic variance Gaussian term
         
         Args:
-            jk (int): Index of the j-th k-bin
-            ik (int): Index of the i-th k-bin
             A (int): First tracer index
             B (int): Second tracer index
             C (int): Third tracer index
@@ -492,35 +486,38 @@ class GaussianCovariance(PowerSpectrumCovariance):
         WinKernel_1 = self.geometry.cosmic_variance_kernel[0]
         WinKernel_2 = self.geometry.cosmic_variance_kernel[1]
 
-        P_AD = np.array([self.get_pk(0, A, D, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, A, D, force_return=True),
-                         self.get_pk(4, A, D, force_return=True)])
+        P_AD = np.array([4 * np.pi / (2*ell + 1) * \
+                         self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
+
+        P_BC = np.array([4 * np.pi / (2*ell + 1) * \
+                         self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
         
-        P_BC = np.array([self.get_pk(0, B, C, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, B, C, force_return=True),
-                         self.get_pk(4, B, C, force_return=True)])
-
-        P_BD = np.array([self.get_pk(0, B, D, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, B, D, force_return=True),
-                         self.get_pk(4, B, D, force_return=True)])
+        P_BD = np.array([4 * np.pi / (2*ell + 1) * \
+                         self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
         
-        P_AC = np.array([self.get_pk(0, A, C, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, A, C, force_return=True),
-                         self.get_pk(4, A, C, force_return=True)])
+        P_AC = np.array([4 * np.pi / (2*ell + 1) * \
+                         self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
 
-        cov = np.zeros((3, 3))
-        for ell1, ell2, ell3, ell4 in itt.product(range(3), repeat=4):
-            cov[ell1, ell2] += WinKernel_1[ell1, ell2, ell3, ell4, ik, jk] * P_AD[ell3, ik] * P_BC[ell4, jk] + \
-                               WinKernel_2[ell1, ell2, ell3, ell4, ik, jk] * P_BD[ell3, ik] * P_AC[ell4, jk]
-            #cov[ell1, ell2] += P_AD[ell3, ik] * P_BC[ell4, jk] + P_BD[ell3, ik] * P_AC[ell4, jk]
-        return cov.flatten()
+        # NOTE for Otavio: This should be the same as your np.einsum function
+        # but I used the explicit version for now for my understanding
+        l1, l2, l3, l4, nk, nk = WinKernel_1.shape
 
-    def _get_mixed_term(self, jk:int, ik:int, A:int, B:int, C:int, D:int):
+        P_AD = P_AD.reshape(1, 1, l3, 1, nk, 1)   # align with W's k and x axes
+        P_BC = P_BC.reshape(1, 1, 1, l4, 1, nk)   # align with W's l and y axes
+
+        P_BD = P_BD.reshape(1, 1, l3, 1, nk, 1)   # align with W's k and x axes
+        P_AC = P_AC.reshape(1, 1, 1, l4, 1, nk)   # align with W's l and y axes
+
+        # cov has shape [n_ells, n_ells, nk, nk]
+        cov = (WinKernel_1 * P_AD * P_BC).sum(axis=(2, 3)) + \
+              (WinKernel_2 * P_BD * P_AC).sum(axis=(2, 3))
+        
+        return cov
+
+    def _get_mixed_term(self, A:int, B:int, C:int, D:int):
         """Calculates elements of the mixed Gaussian term
 
         Args:
-            jk (int): Index of the j-th k-bin
-            ik (int): Index of the i-th k-bin
             A (int): First tracer index
             B (int): Second tracer index
             C (int): Third tracer index
@@ -530,24 +527,20 @@ class GaussianCovariance(PowerSpectrumCovariance):
             np.ndarray: Flattened covariance matrix elements for the mixed term.
         """
         WinKernel = self.geometry.mixed_kernel
-        delta_k = jk - ik + self.geometry.delta_k_max
 
-        P_AC = np.array([self.get_pk(0, A, C, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, A, C, force_return=True),
-                         self.get_pk(4, A, C, force_return=True)])
+        P_AC = np.array([4 * np.pi / (2*ell + 1) * \
+                         self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
 
-        P_AD = np.array([self.get_pk(0, A, D, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, A, D, force_return=True),
-                         self.get_pk(4, A, D, force_return=True)])
+        P_AD = np.array([4 * np.pi / (2*ell + 1) * \
+                         self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
 
-        P_BC = np.array([self.get_pk(0, B, C, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, B, C, force_return=True),
-                         self.get_pk(4, B, C, force_return=True)])
-
-        P_BD = np.array([self.get_pk(0, B, D, force_return=True, remove_shotnoise=True),
-                         self.get_pk(2, B, D, force_return=True),
-                         self.get_pk(4, B, D, force_return=True)])
+        P_BC = np.array([4 * np.pi / (2*ell + 1) * \
+                         self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
         
+        P_BD = np.array([4 * np.pi / (2*ell + 1) * \
+                         self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])  
+        
+        return 0
         cov = np.zeros((3,3))
         # for ell1, ell2, ell3 in itt.product(range(3), repeat=3):
         #     if A == D:
@@ -561,28 +554,20 @@ class GaussianCovariance(PowerSpectrumCovariance):
 
         return cov.flatten()
 
-    def _get_shotnoise_term(self, jk:int, ik:int, A:int, B:int, C:int, D:int):
+    def _get_shotnoise_term(self, A:int, B:int):
         """Calculates elements of the shotnoise Gaussian term
 
         Args:
-            jk (int): Index of the j-th k-bin
-            ik (int): Index of the i-th k-bin
             A (int): First tracer index
             B (int): Second tracer index
-            C (int): Third tracer index
-            D (int): Fourth tracer index
 
         Returns:
             np.ndarray: Flattened covariance matrix elements for the shotnoise term.
         """
         WinKernel = self.geometry.shotnoise_kernel
-        delta_k = jk - ik + self.geometry.delta_k_max
+        return 0
+        return (1 + self.alpha[TRACER_LABELS[A]]) * (1 + self.alpha[TRACER_LABELS[B]]) * WinKernel
 
-        cov_ij = np.zeros((3, 3))
-        # for ell1, ell2 in itt.product(range(3), repeat=2):
-        #     cov_ij[ell1, ell2] += WinKernel[ell1, ell2, ik, jk]
-
-        return cov_ij.flatten()
 
 # TODO: Update this to multi-tracer
 class RegularTrispectrumCovariance(PowerSpectrumCovariance):
