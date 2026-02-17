@@ -234,7 +234,7 @@ class BoxGeometry(Geometry):
 
 class SurveyGeometry(Geometry, base.LinearBinning):
 
-    def __init__(self, randoms, alpha, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, **kwargs):
+    def __init__(self, randoms, alpha, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, mpi=True, **kwargs):
 
         base.LinearBinning.__init__(self)
 
@@ -248,12 +248,15 @@ class SurveyGeometry(Geometry, base.LinearBinning):
 
         self._resume_file = None
 
-        try:
-            from mpi4py import MPI
-            HAS_MPI = True
-        except ImportError:
+        if mpi:
+            try:
+                from mpi4py import MPI
+                HAS_MPI = True
+            except ImportError:
+                HAS_MPI = False
+                MPI = None
+        else:
             HAS_MPI = False
-            MPI = None
 
         # HAS_MPI = False
         

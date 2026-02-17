@@ -1791,13 +1791,21 @@ class SparseNDArray:
 def cache(func):
     """Cache decorator for instance methods. Excludes 'self' from the cache key."""
     from functools import wraps
+    import inspect
     func.cached = {}
+    sig = inspect.signature(func)
+    
     @wraps(func)
-    def wrapper(self, *args):
+    def wrapper(self, *args, **kwargs):
+        # Bind arguments to get a consistent cache key
+        bound = sig.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        # Exclude 'self' from cache key
+        cache_key = tuple(bound.arguments.items())[1:]  # Skip 'self'
         try:
-            return wrapper.cached[args]
+            return wrapper.cached[cache_key]
         except KeyError:
-            wrapper.cached[args] = result = func(self, *args)
+            wrapper.cached[cache_key] = result = func(self, *args, **kwargs)
             return result
     wrapper.cached = func.cached
     return wrapper
