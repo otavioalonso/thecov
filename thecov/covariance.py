@@ -239,8 +239,7 @@ class GaussianCovariance(PowerSpectrumCovariance):
         if (ell, tracer1, tracer2) in self._pk.keys():
             pk = self._pk[ell, tracer1, tracer2]
             if (not remove_shotnoise) and ell == 0:
-                self.logger.info(
-                    f'Adding shotnoise = {self.shotnoise} to ell = 0.')
+                if self.rank == 0: self.logger.info(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
                 return pk / pk_renorm + self.shotnoise
             return pk / pk_renorm
         elif type(force_return) != bool:
@@ -302,21 +301,22 @@ class GaussianCovariance(PowerSpectrumCovariance):
         self._set_survey_covariance(self._build_covariance_survey(func))
         eigvals = self.eigvals
 
-        if (eigvals < 0).any():
-            self.logger.warning(
-                f'Covariance matrix is not positive definite. Worst of {sum(eigvals < 0)} negative eigenvalues is {eigvals.min():.2e}.')
-            # extra_modes = int(0.2*self.geometry.kmodes_sampled)
-            # self.geometry.kmodes_sampled += extra_modes
-            # self.logger.warning(f'Sampling {extra_modes} more kmodes. Total = {self.geometry.kmodes_sampled}.')
-            # self.geometry.compute_window_kernels()
-            # self._compute_covariance_survey()
-        self.logger.info(
-            f'Condition number is {eigvals.max()/eigvals[eigvals > 0].min():.2e}.')
-        self.logger.info(
-            f'Lowest positive eigval is {eigvals[eigvals > 0].min():.2e}.')
+        if self.rank == 0:
+            if (eigvals < 0).any():
+                self.logger.warning(
+                    f'Covariance matrix is not positive definite. Worst of {sum(eigvals < 0)} negative eigenvalues is {eigvals.min():.2e}.')
+                # extra_modes = int(0.2*self.geometry.kmodes_sampled)
+                # self.geometry.kmodes_sampled += extra_modes
+                # self.logger.warning(f'Sampling {extra_modes} more kmodes. Total = {self.geometry.kmodes_sampled}.')
+                # self.geometry.compute_window_kernels()
+                # self._compute_covariance_survey()
+            self.logger.info(
+                f'Condition number is {eigvals.max()/eigvals[eigvals > 0].min():.2e}.')
+            self.logger.info(
+                f'Lowest positive eigval is {eigvals[eigvals > 0].min():.2e}.')
 
-        if not np.allclose(self.cov, self.cov.T):
-            self.logger.warning('Covariance matrix is not symmetric.')
+            if not np.allclose(self.cov, self.cov.T):
+                self.logger.warning('Covariance matrix is not symmetric.')
 
         return self
 
@@ -486,31 +486,33 @@ class GaussianCovariance(PowerSpectrumCovariance):
         WinKernel_1 = self.geometry.cosmic_variance_kernel[0]
         WinKernel_2 = self.geometry.cosmic_variance_kernel[1]
 
-        P_AD = np.array([4 * np.pi / (2*ell + 1) * \
+        P_AD = np.array([1. / (2*ell + 1) * \
                          self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
 
-        P_BC = np.array([4 * np.pi / (2*ell + 1) * \
+        P_BC = np.array([1. / (2*ell + 1) * \
                          self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
         
-        P_BD = np.array([4 * np.pi / (2*ell + 1) * \
+        P_BD = np.array([1. / (2*ell + 1) * \
                          self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
         
-        P_AC = np.array([4 * np.pi / (2*ell + 1) * \
+        P_AC = np.array([1. / (2*ell + 1) * \
                          self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
 
         # NOTE for Otavio: This should be the same as your np.einsum function
         # but I used the explicit version for now for my understanding
-        l1, l2, l3, l4, nk, nk = WinKernel_1.shape
+        l1, l2, l3, l4, nk1, nk2 = WinKernel_1.shape
 
-        P_AD = P_AD.reshape(1, 1, l3, 1, nk, 1)   # align with W's k and x axes
-        P_BC = P_BC.reshape(1, 1, 1, l4, 1, nk)   # align with W's l and y axes
+        P_AD = P_AD.reshape(1, 1, l3, 1, nk1, 1)   # align with W's k and x axes
+        P_BC = P_BC.reshape(1, 1, 1, l4, 1, nk2)   # align with W's l and y axes
 
-        P_BD = P_BD.reshape(1, 1, l3, 1, nk, 1)   # align with W's k and x axes
-        P_AC = P_AC.reshape(1, 1, 1, l4, 1, nk)   # align with W's l and y axes
+        P_BD = P_BD.reshape(1, 1, l3, 1, nk1, 1)   # align with W's k and x axes
+        P_AC = P_AC.reshape(1, 1, 1, l4, 1, nk2)   # align with W's l and y axes
 
         # cov has shape [n_ells, n_ells, nk, nk]
-        cov = (WinKernel_1 * P_AD * P_BC).sum(axis=(2, 3)) + \
-              (WinKernel_2 * P_BD * P_AC).sum(axis=(2, 3))
+        cov = (4*np.pi)**4 * ((WinKernel_1 * P_AD * P_BC).sum(axis=(2, 3)) + \
+                              (WinKernel_2 * P_BD * P_AC).sum(axis=(2, 3)))
+        # cov = (P_AD * P_BC).sum(axis=(2, 3)) + \
+        #       (P_BD * P_AC).sum(axis=(2, 3))
         
         return cov
 
@@ -565,7 +567,6 @@ class GaussianCovariance(PowerSpectrumCovariance):
             np.ndarray: Flattened covariance matrix elements for the shotnoise term.
         """
         WinKernel = self.geometry.shotnoise_kernel
-        return 0
         return (1 + self.alpha[TRACER_LABELS[A]]) * (1 + self.alpha[TRACER_LABELS[B]]) * WinKernel
 
 
