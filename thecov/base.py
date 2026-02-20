@@ -4,10 +4,15 @@ import copy
 import logging
 import os
 import time
+import warnings
 from abc import ABC, abstractmethod
 
 import numpy as np
 import scipy
+from scipy.sparse import SparseEfficiencyWarning
+
+# Suppress sparse efficiency warnings (intentional element-wise access in SparseNDArray)
+warnings.filterwarnings('ignore', category=SparseEfficiencyWarning)
 
 from . import utils, math
 
@@ -1604,8 +1609,8 @@ class SparseNDArray:
         return result
 
     def __repr__(self):
-        return f"SparseNDArray(shape_out={self.shape_out} -> {np.prod(self.shape_out)}, shape_in={self.shape_in} -> {np.prod(self.shape_in)}, nnz={self._matrix.nnz})"
-    
+        return f"SparseNDArray(shape_out={self.shape_out} -> {np.prod(self.shape_out)}, shape_in={self.shape_in} -> {np.prod(self.shape_in)}, nnz={self._matrix.nnz}, sparsity={self._matrix.nnz / np.prod(self.shape_in) / np.prod(self.shape_out)})"
+
     def to_dense(self):
         """
         Convert the sparse matrix back to a dense ND array.
@@ -1719,6 +1724,70 @@ class SparseNDArray:
         """
         return self.transpose()
 
+    def nonzero_indices_out(self):
+        """
+        Yield shape_out indices (as tuples) that have at least one non-zero element.
+        
+        This is useful for iterating only over the populated rows of the sparse array.
+        
+        Yields
+        ------
+        tuple
+            ND indices into shape_out that have non-zero entries.
+        """
+        nonzero_rows = np.unique(self._matrix.nonzero()[0])
+        for row in nonzero_rows:
+            yield tuple(np.unravel_index(row, self.shape_out))
+
+    def get_nonzero_rows_dense(self):
+        """
+        Get all nonzero rows as dense arrays in a single operation.
+        
+        Much more efficient than iterating with __getitem__ when you need
+        all nonzero rows, as it avoids repeated sparse-to-dense conversions.
+        
+        Returns
+        -------
+        indices : numpy.ndarray
+            Shape (n_nonzero, len(shape_out)) array of ND indices into shape_out.
+        values : numpy.ndarray
+            Shape (n_nonzero, prod(shape_in)) array of row values.
+            Each row corresponds to the flattened shape_in data.
+        """
+        # Get unique nonzero row indices
+        nonzero_rows = np.unique(self._matrix.nonzero()[0])
+        
+        if len(nonzero_rows) == 0:
+            return np.empty((0, len(self.shape_out)), dtype=int), \
+                   np.empty((0, int(np.prod(self.shape_in))), dtype=self._matrix.dtype)
+        
+        # Convert flat row indices to ND indices
+        indices = np.array(np.unravel_index(nonzero_rows, self.shape_out)).T
+        
+        # Extract all nonzero rows at once (much faster than repeated getrow)
+        values = self._matrix[nonzero_rows].toarray()
+        
+        return indices, values
+
+    def get_row_sparse(self, *indices):
+        """
+        Get a row as a sparse CSR matrix (1 x shape_in_flat), without densifying.
+        
+        Parameters
+        ----------
+        *indices : int
+            Indices into shape_out dimensions.
+            
+        Returns
+        -------
+        scipy.sparse.csr_matrix
+            Sparse row vector of shape (1, prod(shape_in)).
+        """
+        if len(indices) != len(self.shape_out):
+            raise ValueError(f"Expected {len(self.shape_out)} indices, got {len(indices)}")
+        row_idx = self._nd_to_2d_indices(*indices)
+        return self._matrix.getrow(row_idx)
+
     def __reduce__(self):
         """
         Custom pickling for MPI serialization.
@@ -1786,6 +1855,92 @@ class SparseNDArray:
         result._matrix = combined_matrix
         
         return result
+
+    def to_shared_memory(self):
+        """
+        Create shared memory arrays for the sparse matrix components.
+        Returns metadata dict needed to reconstruct the sparse array.
+        """
+        from multiprocessing import shared_memory
+        
+        shm_handles = []
+        
+        # Share data array
+        data_shm = shared_memory.SharedMemory(create=True, size=self._matrix.data.nbytes)
+        data_arr = np.ndarray(self._matrix.data.shape, dtype=self._matrix.data.dtype, buffer=data_shm.buf)
+        data_arr[:] = self._matrix.data[:]
+        shm_handles.append(data_shm)
+        
+        # Share indices array
+        indices_shm = shared_memory.SharedMemory(create=True, size=self._matrix.indices.nbytes)
+        indices_arr = np.ndarray(self._matrix.indices.shape, dtype=self._matrix.indices.dtype, buffer=indices_shm.buf)
+        indices_arr[:] = self._matrix.indices[:]
+        shm_handles.append(indices_shm)
+        
+        # Share indptr array
+        indptr_shm = shared_memory.SharedMemory(create=True, size=self._matrix.indptr.nbytes)
+        indptr_arr = np.ndarray(self._matrix.indptr.shape, dtype=self._matrix.indptr.dtype, buffer=indptr_shm.buf)
+        indptr_arr[:] = self._matrix.indptr[:]
+        shm_handles.append(indptr_shm)
+        
+        metadata = {
+            'data_shm_name': data_shm.name,
+            'data_shape': self._matrix.data.shape,
+            'data_dtype': self._matrix.data.dtype,
+            'indices_shm_name': indices_shm.name,
+            'indices_shape': self._matrix.indices.shape,
+            'indices_dtype': self._matrix.indices.dtype,
+            'indptr_shm_name': indptr_shm.name,
+            'indptr_shape': self._matrix.indptr.shape,
+            'indptr_dtype': self._matrix.indptr.dtype,
+            'matrix_shape': self._matrix.shape,
+            'shape_out': self.shape_out,
+            'shape_in': self.shape_in,
+        }
+        
+        return metadata, shm_handles
+
+    @classmethod
+    def from_shared_memory(cls, metadata):
+        """
+        Reconstruct a SparseNDArray from shared memory.
+        Returns a read-only view into shared memory (no copying).
+        """
+        from multiprocessing import shared_memory
+        
+        # Attach to shared memory (no copy)
+        data_shm = shared_memory.SharedMemory(name=metadata['data_shm_name'])
+        data = np.ndarray(metadata['data_shape'], dtype=metadata['data_dtype'], buffer=data_shm.buf)
+        
+        indices_shm = shared_memory.SharedMemory(name=metadata['indices_shm_name'])
+        indices = np.ndarray(metadata['indices_shape'], dtype=metadata['indices_dtype'], buffer=indices_shm.buf)
+        
+        indptr_shm = shared_memory.SharedMemory(name=metadata['indptr_shm_name'])
+        indptr = np.ndarray(metadata['indptr_shape'], dtype=metadata['indptr_dtype'], buffer=indptr_shm.buf)
+        
+        # Create CSR matrix from shared memory arrays (no copy)
+        matrix = scipy.sparse.csr_matrix((data, indices, indptr), shape=metadata['matrix_shape'], copy=False)
+        
+        # Create SparseNDArray
+        obj = cls.__new__(cls)
+        obj.shape_out = metadata['shape_out']
+        obj.shape_in = metadata['shape_in']
+        obj._matrix = matrix
+        obj._shm_refs = [data_shm, indices_shm, indptr_shm]  # Keep references
+        
+        return obj
+
+    def close_shared_memory(self):
+        """Close shared memory references (call from worker processes)."""
+        for shm in getattr(self, '_shm_refs', []):
+            shm.close()
+
+    @staticmethod
+    def cleanup_shared_memory(shm_handles):
+        """Cleanup shared memory (call from main process after workers complete)."""
+        for shm in shm_handles:
+            shm.close()
+            shm.unlink()
 
 
 def cache(func):

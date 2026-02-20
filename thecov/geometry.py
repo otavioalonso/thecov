@@ -13,12 +13,8 @@ SurveyGeometry
 import os, time
 import itertools as itt
 import logging
-import warnings
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-# Suppress JAX fork warning - we're using multiprocessing intentionally
-warnings.filterwarnings("ignore", message="os.fork\\(\\) was called")
 
 import numpy as np
 
@@ -31,8 +27,11 @@ from .monitor import ResourceMonitor, HAS_PSUTIL
 __all__ = ['BoxGeometry',
            'SurveyGeometry']
 
-MASK_ELL_MAX = 12
+MASK_ELL_MAX = 4 # max = 3*PK_ELL_MAX
 PK_ELL_MAX = 4
+
+complex_dtype = np.complex128
+float_dtype = np.float32
 
 class Geometry(base.BaseClass):
     pass
@@ -383,8 +382,19 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         self.logger.info('=' * 60)
         self.logger.info(f'Computing window matrices with {n_workers} workers')
         self.logger.info(f'pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax}')
-            self.logger.info(f'pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax}')
         self.logger.info('=' * 60)
+
+        # Profiling timers
+        profiling = {
+            'total_start': time.time(),
+            'kmode_sampling': 0.0,
+            'mesh_computation': 0.0,
+            'gaunt_loading': 0.0,
+            'gaunt_contraction': 0.0,
+            'shared_memory_setup': 0.0,
+            'mode_integration': 0.0,
+            'normalization': 0.0,
+        }
 
         # Start resource monitor if requested
         resource_monitor = None
@@ -395,22 +405,24 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             else:
                 self.logger.warning("psutil not installed, resource monitoring disabled. Install with: pip install psutil")
 
-        # HYBRID SAMPLING
+        # ==================== PHASE 1: K-MODE SAMPLING ====================
+        phase_start = time.time()
         self.logger.info('Sampling k-modes for binning...')
-        kmodes, Nmodes =  math.sample_kmodes(kmin=self.kmin,
-                                             kmax=self.kmax,
-                                             dk=self.dk,
-                                             boxsize=self.boxsize,
-                                             max_modes=kmodes_sampled,
-                                             k_shell_approx=0.1)
+        kmodes, Nmodes = math.sample_kmodes(
+            kmin=self.kmin, kmax=self.kmax, dk=self.dk,
+            boxsize=self.boxsize, max_modes=kmodes_sampled, k_shell_approx=0.1
+        )
 
         delta_ik = np.array(np.meshgrid(*self.ikgrid, indexing='ij'))
 
         self.logger.info(f'Sampled k-modes for {self.kbins} bins')
         assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, \
             f'Error in sample_kmodes: results should have length {self.kbins}, but had {len(kmodes)}.'
+        profiling['kmode_sampling'] = time.time() - phase_start
+        self.logger.info(f'[PROFILING] K-mode sampling: {profiling["kmode_sampling"]:.2f}s')
 
-        # Compute window products
+        # ==================== PHASE 2: MESH COMPUTATION ====================
+        phase_start = time.time()
         self.logger.info('Beginning of window multipole computation')
         
         # Collect all unique (nbar_power, weight_power, ell, m) combinations
@@ -422,7 +434,6 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             unique_mesh_params.add((1, 2, lb, mb))  # mixed/shotnoise
         
         self.logger.info(f'Computing {len(unique_mesh_params)} window meshes with {n_workers} threads')
-        mesh_start = time.time()
         
         # Compute all meshes in parallel using threads (FFT releases GIL)
         def compute_mesh_wrapper(params):
@@ -435,12 +446,11 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                 params, result = future.result()
                 mesh_cache[params] = result
         
-        self.logger.info(f'All meshes computed in {time.time() - mesh_start:.0f} seconds')
-        
-        # Get shape from any cached mesh
-        shape_slab = next(iter(mesh_cache.values())).shape
+        profiling['mesh_computation'] = time.time() - phase_start
+        self.logger.info(f'[PROFILING] Mesh computation: {profiling["mesh_computation"]:.2f}s')
 
-        # Load Gaunt coefficients
+        # ==================== PHASE 3: GAUNT COEFFICIENT LOADING ====================
+        phase_start = time.time()
         self.logger.info('Loading Gaunt coefficients...')
         coefficients = {
             'first_cosmic_variance': self.get_first_cosmic_variance_gaunt_coefficients(mask_ellmax, pk_ellmax),
@@ -448,12 +458,15 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             'mixed_term': self.get_mixed_gaunt_coefficients(mask_ellmax, pk_ellmax),
             'shotnoise': self.get_shotnoise_gaunt_coefficients(mask_ellmax, pk_ellmax),
         }
+        profiling['gaunt_loading'] = time.time() - phase_start
+        self.logger.info(f'[PROFILING] Gaunt loading: {profiling["gaunt_loading"]:.2f}s')
 
+        # ==================== PHASE 4: GAUNT CONTRACTION ====================
+        phase_start = time.time()
         # window_product will be populated in the loop below
         window_product = {}
 
         self.logger.info('Contracting Gaunt coefficients with window mesh products...')
-        start = time.time()
 
         nbar_weight_indices = {
             'first_cosmic_variance': ((2, 2), (2, 2)),
@@ -462,44 +475,72 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             'shotnoise': ((1, 2), (1, 2)),
         }
 
+        # Track per-term timing
+        term_timings = {}
+
         # Process each term separately to limit memory
         for term_name, coeff in coefficients.items():
+            term_start = time.time()
             self.logger.info(f'Computing {term_name} term')
 
             nw1, nw2 = nbar_weight_indices[term_name]
             
             product = base.SparseNDArray(
                 shape_out=coeff.shape_in,  # (la, lb, ma, mb) indices
-                shape_in=shape_slab,
-                dtype=np.complex128
+                shape_in=[self.nmesh**3],
+                dtype=float_dtype,
             )
             
             # Only compute products for non-zero Gaunt indices
+            n_nonzero = 0
             for index in coeff.T.nonzero_indices_out():
                 la, lb = 2*index[0], 2*index[1]
                 ma, mb = index[2] - la, index[3] - lb
-                
-                product[index] = mesh_cache[(*nw1, la, ma)] * mesh_cache[(*nw2, lb, mb)]
-                
+
+                product[index] = (mesh_cache[(*nw1, la, ma)] * np.conj(mesh_cache[(*nw2, lb, mb)])).real.ravel().astype(float_dtype)
+                n_nonzero += 1
+
             window_product[term_name] = coeff @ product
 
             del product
+            term_timings[term_name] = time.time() - term_start
+            self.logger.info(f'  {term_name}: {n_nonzero} products, {term_timings[term_name]:.2f}s')
             
         del mesh_cache
 
-        self.logger.info(f'Gaunt contraction completed in {time.time() - start:.0f} seconds')
+        profiling['gaunt_contraction'] = time.time() - phase_start
+        self.logger.info(f'[PROFILING] Gaunt contraction: {profiling["gaunt_contraction"]:.2f}s')
 
-        # Create shared memory for sparse arrays
+        # ==================== PHASE 5: SHARED MEMORY SETUP ====================
+        phase_start = time.time()
         self.logger.info('Setting up shared memory for parallel processing')
-        shm_metadata = {}
-        all_shm_handles = []
-        for key, sparse_arr in window_product.items():
-            metadata, handles = sparse_arr.to_shared_memory()
-            shm_metadata[key] = metadata
-            all_shm_handles.extend(handles)
         
-        # Now we can delete window_product to free memory
-        del window_product
+        # Convert sparse window_product to dense arrays for efficient worker access
+        # This eliminates sparse indexing overhead in the hot loop
+        all_shm_handles = []
+        window_shm_info = {}
+        
+        for key, sparse_arr in window_product.items():
+            indices, values = sparse_arr.get_nonzero_rows_dense()
+            self.logger.info(f'  {key}: {len(indices)} nonzero rows, values shape {values.shape}')
+            
+            # Create shared memory for indices and values
+            indices_shm = _create_shared_ndarray(indices)
+            values_shm = _create_shared_ndarray(values.astype(float_dtype))
+            all_shm_handles.append(indices_shm['handle'])
+            all_shm_handles.append(values_shm['handle'])
+            
+            window_shm_info[key] = {
+                'indices_name': indices_shm['name'],
+                'indices_shape': indices.shape,
+                'indices_dtype': indices.dtype,
+                'values_name': values_shm['name'],
+                'values_shape': values.shape,
+                'values_dtype': float_dtype,
+                'shape_out': sparse_arr.shape_out,
+            }
+        
+        del window_product  # Free memory
 
         # Also share delta_ik
         delta_ik_shm = _create_shared_ndarray(delta_ik)
@@ -507,7 +548,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
 
         # Prepare worker arguments (only small data, no large arrays)
         worker_args = {
-            'shm_metadata': shm_metadata,
+            'window_shm_info': window_shm_info,
             'delta_ik_info': {
                 'name': delta_ik_shm['name'],
                 'shape': delta_ik.shape,
@@ -526,6 +567,12 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             'mixed_term': np.zeros(3*[pk_ellmax//2+1] + 2*[self.kbins]),
             'shotnoise': np.zeros(2*[pk_ellmax//2+1] + 2*[self.kbins]),
         }
+
+        profiling['shared_memory_setup'] = time.time() - phase_start
+        self.logger.info(f'[PROFILING] Shared memory setup: {profiling["shared_memory_setup"]:.2f}s')
+
+        # ==================== PHASE 6: MODE INTEGRATION ====================
+        phase_start = time.time()
         
         # Target ~32-64 modes per worker for good efficiency
         avg_modes = np.mean([len(km) for km in kmodes[2:]])
@@ -533,34 +580,63 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         workers_per_bin = max(1, min(n_workers, int(avg_modes / target_modes_per_worker)))
         bins_parallel = max(1, n_workers // workers_per_bin)
         
-        self.logger.info(f'Starting HYBRID integration with {n_workers} workers')
-        self.logger.info(f'  - {bins_parallel} bins in parallel')
-        self.logger.info(f'  - {workers_per_bin} workers per bin')
-        self.logger.info(f'  - ~{avg_modes / workers_per_bin:.0f} modes per worker')
-        start_time = time.time()
+        total_modes = sum(len(km) for km in kmodes)
+        self.logger.info(f'Starting mode integration with {n_workers} workers')
+        self.logger.info(f'  Total modes to process: {total_modes}')
+        self.logger.info(f'  {bins_parallel} bins in parallel')
+        self.logger.info(f'  {workers_per_bin} workers per bin')
+        self.logger.info(f'  {avg_modes / workers_per_bin:.0f} modes per worker (avg)')
+
+        # Worker profiling aggregation
+        worker_timers = {
+            'ylm1_setup': 0.0,
+            'k2_computation': 0.0,
+            'bin_matrix': 0.0,
+            'ylm2_computation': 0.0,
+            'cosmic_variance': 0.0,
+            'mixed_term': 0.0,
+            'shotnoise': 0.0,
+        }
+        
+        # Memory profiling aggregation (track max across all workers)
+        memory_stats = {
+            'baseline': [],
+            'after_ylm1': [],
+            'after_ik2': [],
+            'after_bin_matrix': [],
+            'after_ylm2': [],
+            'peak_cosmic_variance': [],
+            'peak_mixed_term': [],
+            'peak_shotnoise': [],
+            'final': [],
+        }
+        n_tasks_profiled = 0
 
         try:
             with Pool(n_workers, initializer=_init_worker, initargs=(worker_args,)) as pool:
                 
                 # Process bins in batches
                 n_bins = len(kmodes)
+                modes_processed = 0
                 for batch_start in range(0, n_bins, bins_parallel):
+                    batch_time = time.time()
                     batch_end = min(batch_start + bins_parallel, n_bins)
                     batch_bins = list(range(batch_start, batch_end))
                     
                     # Create tasks for all bins in this batch
                     all_tasks = []
+                    batch_modes = 0
                     for i in batch_bins:
-                        km = kmodes[i]
+                        km = np.array(kmodes[i])
                         k1_bin_index = int(i + self.kmin // self.dk)
+                        batch_modes += len(km)
                         
                         # Split modes into chunks (workers_per_bin chunks per bin)
-                        km_array = np.array(km)
-                        chunks = np.array_split(km_array, min(workers_per_bin, len(km_array)))
+                        chunks = np.array_split(km, min(workers_per_bin, len(km)))
                         
-                        for chunk_idx, chunk in enumerate(chunks):
+                        for chunk in chunks:
                             if len(chunk) > 0:
-                                all_tasks.append((i, chunk.tolist(), k1_bin_index, chunk_idx))
+                                all_tasks.append((i, chunk.tolist(), k1_bin_index))
                     
                     # Process all tasks for this batch in parallel
                     # Accumulate results per bin
@@ -571,24 +647,19 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                         'k1_bin_index': int(i + self.kmin // self.dk)
                     } for i in batch_bins}
                     
-                    for result in pool.imap_unordered(_process_modes_chunk, all_tasks):
-                        i, k1_bin_index, cosmic_variance, mixed_term, shotnoise, chunk_idx, profiling = result
+                    for result in pool.imap_unordered(_process_modes, all_tasks):
+                        i, k1_bin_index, cosmic_variance, mixed_term, shotnoise, timers, memory_profile = result
                         bin_results[i]['cosmic_variance'] += cosmic_variance
                         bin_results[i]['mixed_term'] += mixed_term
                         bin_results[i]['shotnoise'] += shotnoise
-
-                        # Print profiling for first chunk of first 4 bins
-                        if profiling:
-                            total = profiling['total']
-                            print(f"\n=== PROFILING k-bin {i} chunk {chunk_idx} ({profiling['n_modes']} modes) ===")
-                            print(f"  k2 computation:    {profiling['t_k2']:6.2f}s ({100*profiling['t_k2']/total:5.1f}%)")
-                            print(f"  Sparse matrix:     {profiling['t_sparse']:6.2f}s ({100*profiling['t_sparse']/total:5.1f}%)")
-                            print(f"  Ylm2 evaluation:   {profiling['t_ylm2']:6.2f}s ({100*profiling['t_ylm2']/total:5.1f}%)")
-                            print(f"  CV weights:        {profiling['t_cv']:6.2f}s ({100*profiling['t_cv']/total:5.1f}%)")
-                            print(f"  MT weights:        {profiling['t_mt']:6.2f}s ({100*profiling['t_mt']/total:5.1f}%)")
-                            print(f"  SN weights:        {profiling['t_sn']:6.2f}s ({100*profiling['t_sn']/total:5.1f}%)")
-                            print(f"  TOTAL:             {total:6.2f}s")
-                            print("=" * 45)
+                        # Aggregate worker timers
+                        for key in worker_timers:
+                            worker_timers[key] += timers[key]
+                        # Aggregate memory stats
+                        for key in memory_stats:
+                            if memory_profile.get(key, 0) > 0:
+                                memory_stats[key].append(memory_profile[key])
+                        n_tasks_profiled += 1
                     
                     # Add batch results to window matrix
                     for i in batch_bins:
@@ -597,8 +668,12 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                         window_matrix['mixed_term'][..., k1_idx, :] += bin_results[i]['mixed_term']
                         window_matrix['shotnoise'][..., k1_idx, :] += bin_results[i]['shotnoise']
 
-                    self.logger.info(f'Completed bins {batch_start+1}-{batch_end}/{n_bins}')
-
+                    modes_processed += batch_modes
+                    batch_elapsed = time.time() - batch_time
+                    modes_per_sec = batch_modes / batch_elapsed if batch_elapsed > 0 else 0
+                    self.logger.info(f'Completed bins {batch_start+1}-{batch_end}/{n_bins} | '
+                                   f'{batch_modes} modes in {batch_elapsed:.1f}s ({modes_per_sec:.1f} modes/s) | '
+                                   f'Progress: {modes_processed}/{total_modes} ({100*modes_processed/total_modes:.1f}%)')
         finally:
             # Stop resource monitor and save results
             if resource_monitor is not None:
@@ -608,9 +683,17 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             
             # Cleanup shared memory
             self.logger.info('Cleaning up shared memory...')
-            base.SparseNDArray.cleanup_shared_memory(all_shm_handles)
+            for shm in all_shm_handles:
+                shm.close()
+                shm.unlink()
 
-        # Apply normalization
+        profiling['mode_integration'] = time.time() - phase_start
+        profiling['worker_timers'] = worker_timers
+        profiling['n_tasks_profiled'] = n_tasks_profiled
+        self.logger.info(f'[PROFILING] Mode integration: {profiling["mode_integration"]:.2f}s')
+
+        # ==================== PHASE 7: NORMALIZATION ====================
+        phase_start = time.time()
         self.logger.info('Applying normalization...')
         norm = (4*np.pi)**2 / self.normalization(2, 2)**2
         for i, Nm in enumerate(Nmodes):
@@ -619,8 +702,70 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             window_matrix['mixed_term'][..., k_bin_index, :] *= norm / Nm
             window_matrix['shotnoise'][..., k_bin_index, :] *= norm / Nm
 
+        profiling['normalization'] = time.time() - phase_start
+        profiling['memory_stats'] = memory_stats
+        self.logger.info(f'[PROFILING] Normalization: {profiling["normalization"]:.2f}s')
+
+        # ==================== PROFILING SUMMARY ====================
+        profiling['total'] = time.time() - profiling['total_start']
+        self.logger.info('=' * 60)
+        self.logger.info('PROFILING SUMMARY')
+        self.logger.info('=' * 60)
+        self.logger.info(f'  K-mode sampling:      {profiling["kmode_sampling"]:8.2f}s ({100*profiling["kmode_sampling"]/profiling["total"]:5.1f}%)')
+        self.logger.info(f'  Mesh computation:     {profiling["mesh_computation"]:8.2f}s ({100*profiling["mesh_computation"]/profiling["total"]:5.1f}%)')
+        self.logger.info(f'  Gaunt loading:        {profiling["gaunt_loading"]:8.2f}s ({100*profiling["gaunt_loading"]/profiling["total"]:5.1f}%)')
+        self.logger.info(f'  Gaunt contraction:    {profiling["gaunt_contraction"]:8.2f}s ({100*profiling["gaunt_contraction"]/profiling["total"]:5.1f}%)')
+        self.logger.info(f'  Shared memory setup:  {profiling["shared_memory_setup"]:8.2f}s ({100*profiling["shared_memory_setup"]/profiling["total"]:5.1f}%)')
+        self.logger.info(f'  Mode integration:     {profiling["mode_integration"]:8.2f}s ({100*profiling["mode_integration"]/profiling["total"]:5.1f}%)')
+        self.logger.info(f'  Normalization:        {profiling["normalization"]:8.2f}s ({100*profiling["normalization"]/profiling["total"]:5.1f}%)')
+        self.logger.info('-' * 60)
+        self.logger.info(f'  TOTAL:                {profiling["total"]:8.2f}s')
+        self.logger.info('=' * 60)
+
+        # Worker timing breakdown (aggregated across all tasks)
+        if profiling.get('n_tasks_profiled', 0) > 0:
+            wt = profiling['worker_timers']
+            wt_total = sum(wt.values())
+            self.logger.info('')
+            self.logger.info('WORKER TIMING BREAKDOWN (aggregated CPU time across all tasks)')
+            self.logger.info('=' * 60)
+            self.logger.info(f'  Ylm1 setup:           {wt["ylm1_setup"]:8.2f}s ({100*wt["ylm1_setup"]/wt_total:5.1f}%)')
+            self.logger.info(f'  k2 computation:       {wt["k2_computation"]:8.2f}s ({100*wt["k2_computation"]/wt_total:5.1f}%)')
+            self.logger.info(f'  Bin matrix build:     {wt["bin_matrix"]:8.2f}s ({100*wt["bin_matrix"]/wt_total:5.1f}%)')
+            self.logger.info(f'  Ylm2 computation:     {wt["ylm2_computation"]:8.2f}s ({100*wt["ylm2_computation"]/wt_total:5.1f}%)')
+            self.logger.info(f'  Cosmic variance:      {wt["cosmic_variance"]:8.2f}s ({100*wt["cosmic_variance"]/wt_total:5.1f}%)')
+            self.logger.info(f'  Mixed term:           {wt["mixed_term"]:8.2f}s ({100*wt["mixed_term"]/wt_total:5.1f}%)')
+            self.logger.info(f'  Shot noise:           {wt["shotnoise"]:8.2f}s ({100*wt["shotnoise"]/wt_total:5.1f}%)')
+            self.logger.info('-' * 60)
+            self.logger.info(f'  Total worker CPU:     {wt_total:8.2f}s')
+            self.logger.info(f'  Tasks profiled:       {profiling["n_tasks_profiled"]}')
+            self.logger.info(f'  Parallelization eff:  {wt_total / profiling["mode_integration"] / n_workers * 100:.1f}%')
+            self.logger.info('=' * 60)
+
+        # Memory profiling breakdown
+        if profiling.get('memory_stats') and any(profiling['memory_stats'].values()):
+            ms = profiling['memory_stats']
+            self.logger.info('')
+            self.logger.info('WORKER MEMORY PROFILING (MB per worker)')
+            self.logger.info('=' * 60)
+            for key in ['baseline', 'after_ylm1', 'after_ik2', 'after_bin_matrix', 'after_ylm2', 
+                        'peak_cosmic_variance', 'peak_mixed_term', 'peak_shotnoise', 'final']:
+                values = ms.get(key, [])
+                if values:
+                    self.logger.info(f'  {key:24s}: min={min(values):7.1f}  max={max(values):7.1f}  avg={sum(values)/len(values):7.1f}')
+            # Calculate memory deltas to identify hotspots
+            self.logger.info('-' * 60)
+            self.logger.info('MEMORY HOTSPOTS (max increase from baseline)')
+            baseline_avg = sum(ms.get('baseline', [0])) / max(len(ms.get('baseline', [0])), 1)
+            for key in ['peak_cosmic_variance', 'peak_mixed_term', 'peak_shotnoise']:
+                values = ms.get(key, [])
+                if values:
+                    delta = max(values) - baseline_avg
+                    self.logger.info(f'  {key:24s}: +{delta:7.1f} MB from baseline')
+            self.logger.info('=' * 60)
+
         self.window_matrix = window_matrix
-        self.logger.info(f'Window matrix computation completed in {time.time() - start_time:.0f} seconds!')
+        self._profiling = profiling  # Store for later analysis
 
         return self.window_matrix
 
@@ -863,6 +1008,259 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         self.window_matrix = None
         self.window_matrix_error = None
 
-    @property
-    def has_mpi(self):
-        return self.mpicomm is not None
+
+# ============================================================================
+# Module-level functions for multiprocessing (must be at module level for pickling)
+# ============================================================================
+
+_worker_data = {}
+
+def _create_shared_ndarray(arr):
+    """Create a shared memory array from a numpy array."""
+    from multiprocessing import shared_memory
+    shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
+    shared_arr = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
+    shared_arr[:] = arr[:]
+    return {'handle': shm, 'name': shm.name}
+
+def _init_worker(args):
+    """Initialize worker with shared memory references."""
+    import os
+    from multiprocessing import shared_memory
+    
+    # Limit NumPy/BLAS threading to 1 per worker to prevent thread contention
+    # This is optimal because _process_kbin uses element-wise ops, not BLAS
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['NUMEXPR_NUM_THREADS'] = '1'
+    
+    global _worker_data
+    _worker_data = args.copy()
+    _worker_data['_shm_refs'] = []
+
+    # Attach to shared memory dense arrays for window_product
+    # Build lookup dict: window_data[key] = {'indices': array, 'values': array, 'index_map': dict}
+    _worker_data['window_data'] = {}
+    
+    for key, info in args['window_shm_info'].items():
+        # Attach to indices shared memory
+        indices_shm = shared_memory.SharedMemory(name=info['indices_name'])
+        indices = np.ndarray(info['indices_shape'], dtype=info['indices_dtype'], buffer=indices_shm.buf)
+        _worker_data['_shm_refs'].append(indices_shm)
+        
+        # Attach to values shared memory
+        values_shm = shared_memory.SharedMemory(name=info['values_name'])
+        values = np.ndarray(info['values_shape'], dtype=info['values_dtype'], buffer=values_shm.buf)
+        _worker_data['_shm_refs'].append(values_shm)
+        
+        # Build index lookup map: tuple(index) -> row number in values array
+        index_map = {tuple(idx): i for i, idx in enumerate(indices)}
+        
+        _worker_data['window_data'][key] = {
+            'indices': indices,
+            'values': values,
+            'index_map': index_map,
+            'shape_out': info['shape_out'],
+        }
+
+    # Attach to delta_ik shared array
+    delta_info = args['delta_ik_info']
+    delta_shm = shared_memory.SharedMemory(name=delta_info['name'])
+    _worker_data['delta_ik'] = np.ndarray(
+        delta_info['shape'], dtype=delta_info['dtype'], buffer=delta_shm.buf
+    )
+    _worker_data['_shm_refs'].append(delta_shm)
+
+def _get_memory_mb():
+    """Get current process memory usage in MB."""
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss / 1024 / 1024
+    except ImportError:
+        return 0.0
+
+def _process_modes(task):
+    from scipy.sparse import csr_matrix
+    import time
+    
+    i, kmodes, k1_bin_index = task
+
+    global _worker_data
+    window_data = _worker_data['window_data']
+    delta_ik = _worker_data['delta_ik']
+    pk_ellmax = _worker_data['pk_ellmax']
+    kfun = _worker_data['kfun']
+    dk = _worker_data['dk']
+    kbins = _worker_data['kbins']
+
+    # Profiling accumulators
+    timers = {
+        'ylm1_setup': 0.0,
+        'k2_computation': 0.0,
+        'bin_matrix': 0.0,
+        'ylm2_computation': 0.0,
+        'cosmic_variance': 0.0,
+        'mixed_term': 0.0,
+        'shotnoise': 0.0,
+    }
+    
+    # Memory profiling - track peak memory at each stage
+    memory_profile = {
+        'baseline': 0.0,
+        'after_ylm1': 0.0,
+        'after_ik2': 0.0,
+        'after_bin_matrix': 0.0,
+        'after_ylm2': 0.0,
+        'peak_cosmic_variance': 0.0,
+        'peak_mixed_term': 0.0,
+        'peak_shotnoise': 0.0,
+        'final': 0.0,
+    }
+    
+    memory_profile['baseline'] = _get_memory_mb()
+
+    # Initialize local accumulators
+    cosmic_variance = np.zeros((pk_ellmax//2+1,) * 4 + (kbins,))
+    mixed_term = np.zeros((pk_ellmax//2+1,) * 3 + (kbins,))
+    shotnoise = np.zeros((pk_ellmax//2+1,) * 2 + (kbins,))
+
+    kmodes = np.array(kmodes)  # shape (n_modes, 4)
+    
+    if kmodes.shape[0] == 0:
+        return i, k1_bin_index, cosmic_variance, mixed_term, shotnoise, timers, memory_profile
+    
+    # Grid size
+    grid_shape = delta_ik.shape[1:]  # (nmesh, nmesh, nmesh)
+    n_grid = int(np.prod(grid_shape))
+    
+    # Extract indices and values for each term (vectorized access)
+    # Cosmic variance: indices shape (n_nonzero, 8) for l1,l2,l3,l4,m1,m2,m3,m4
+    # Values shape (n_nonzero, n_grid)
+    first_cosmic_variance_indices = window_data['first_cosmic_variance']['indices']
+    first_cosmic_variance_values = window_data['first_cosmic_variance']['values']
+    second_cosmic_variance_indices = window_data['second_cosmic_variance']['indices']
+    second_cosmic_variance_values = window_data['second_cosmic_variance']['values']
+    mixed_term_indices = window_data['mixed_term']['indices']
+    mixed_term_values = window_data['mixed_term']['values']
+    shotnoise_indices = window_data['shotnoise']['indices']
+    shotnoise_values = window_data['shotnoise']['values']
+    
+    # Cache Ylm functions to avoid repeated get_real_Ylm calls
+    t0 = time.perf_counter()
+    Ylm_funcs = {(l, m): math.get_real_Ylm(l, m) for l, m in utils.ellmiter(pk_ellmax, 1)}
+    # Ylm1: dict of (l,m) -> array of shape (n_modes,)
+    Yk1 = {lm: np.atleast_1d(np.broadcast_to(Ylm_funcs[lm](kmodes[:, 0], kmodes[:, 1], kmodes[:, 2]), kmodes.shape[0])) for lm in utils.ellmiter(pk_ellmax, 1)}
+    timers['ylm1_setup'] = time.perf_counter() - t0
+    memory_profile['after_ylm1'] = max(memory_profile['after_ylm1'], _get_memory_mb())
+
+    # Process each k-mode
+    for mode_idx in range(kmodes.shape[0]):
+        ik1 = kmodes[mode_idx, :3]
+        
+        # k2 = k1 + delta_k for all grid points
+        t0 = time.perf_counter()
+        ik2 = ik1[:, None, None, None] + delta_ik
+        timers['k2_computation'] += time.perf_counter() - t0
+        memory_profile['after_ik2'] = max(memory_profile['after_ik2'], _get_memory_mb())
+
+        t0 = time.perf_counter()
+        k2_bin_index = (np.sqrt(np.sum(ik2**2, axis=0)) * kfun / dk).astype(int).ravel()
+        
+        # Build sparse binning matrix: shape (kbins, n_grid)
+        # bin_matrix[b, g] = 1 if grid point g maps to bin b
+        # Only include valid bins (0 <= bin < kbins)
+        valid_mask = (k2_bin_index >= 0) & (k2_bin_index < kbins)
+        valid_indices = np.where(valid_mask)[0]
+        valid_bins = k2_bin_index[valid_mask]
+        
+        bin_matrix = csr_matrix(
+            (np.ones(len(valid_bins), dtype=float_dtype), (valid_bins, valid_indices)),
+            shape=(kbins, n_grid)
+        )
+        timers['bin_matrix'] += time.perf_counter() - t0
+        memory_profile['after_bin_matrix'] = max(memory_profile['after_bin_matrix'], _get_memory_mb())
+        
+        # Precompute Ylm values for k2 (flattened) - shape (n_lm, n_grid)
+        t0 = time.perf_counter()
+        Yk2 = {lm: np.broadcast_to(Ylm_funcs[lm](*ik2), grid_shape).ravel() for lm in utils.ellmiter(pk_ellmax, 1)}
+        timers['ylm2_computation'] += time.perf_counter() - t0
+        memory_profile['after_ylm2'] = max(memory_profile['after_ylm2'], _get_memory_mb())
+
+        # ============ COSMIC VARIANCE ============
+        t0 = time.perf_counter()
+        
+        # First cosmic variance term: W * Ylm1[l1,m1] * Ylm1[l2,m2] * Ylm2[l3,m3] * Ylm2[l4,m4]
+        # first_cosmic_variance_indices: (n_nonzero, 8) -> columns are l1/2, l2/2, l3/2, l4/2, m1+l1, m2+l2, m3+l3, m4+l4
+        if len(first_cosmic_variance_indices) > 0:
+            l1,l2,l3,l4 = 2*first_cosmic_variance_indices[:, :4].T
+            m1,m2,m3,m4 = first_cosmic_variance_indices[:, 4:8].T - 2*first_cosmic_variance_indices[:, :4].T
+            
+            Yk1l1m1 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l1, m1)])
+            Yk1l2m2 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l2, m2)])
+            Yk2l3m3 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l3, m3)])  # (n_nonzero, n_grid)
+            Yk2l4m4 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l4, m4)])  # (n_nonzero, n_grid)
+            
+            contribution = first_cosmic_variance_values * (Yk1l1m1 * Yk1l2m2)[:, None] * Yk2l3m3 * Yk2l4m4
+            memory_profile['peak_cosmic_variance'] = max(memory_profile['peak_cosmic_variance'], _get_memory_mb())
+            
+            # Accumulate into cosmic_variance using advanced indexing
+            np.add.at(cosmic_variance, (*first_cosmic_variance_indices[:, :4].T, slice(None)), (bin_matrix @ contribution.T).T )
+        
+        # Second cosmic variance term: W * Ylm1[l1,m1] * Ylm2[l2,m2] * Ylm1[l3,m3] * Ylm2[l4,m4]
+        if len(second_cosmic_variance_indices) > 0:
+            l1,l2,l3,l4 = 2*second_cosmic_variance_indices[:, :4].T
+            m1,m2,m3,m4 = second_cosmic_variance_indices[:, 4:8].T - 2*second_cosmic_variance_indices[:, :4].T
+            
+            Yk1l1m1 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l1, m1)])
+            Yk1l3m3 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l3, m3)])
+            Yk2l2m2 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l2, m2)])
+            Yk2l4m4 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l4, m4)])
+            
+            contribution = second_cosmic_variance_values * (Yk1l1m1 * Yk1l3m3)[:, None] * Yk2l2m2 * Yk2l4m4
+            memory_profile['peak_cosmic_variance'] = max(memory_profile['peak_cosmic_variance'], _get_memory_mb())
+            
+            np.add.at(cosmic_variance, (*second_cosmic_variance_indices[:,:4].T, slice(None)), (bin_matrix @ contribution.T).T)
+        
+        timers['cosmic_variance'] += time.perf_counter() - t0
+
+        # ============ MIXED TERM ============
+        t0 = time.perf_counter()
+        
+        if len(mixed_term_indices) > 0:
+            l1,l2,l3 = 2*mixed_term_indices[:, :3].T
+            m1,m2,m3 = mixed_term_indices[:, 3:6].T - 2*mixed_term_indices[:, :3].T
+            
+            Yk1l1m1 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l1, m1)])
+            Yk2l2m2 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l2, m2)])
+            Yk2l3m3 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l3, m3)])
+            
+            contribution = mixed_term_values * Yk1l1m1[:, None] * Yk2l2m2 * Yk2l3m3
+            memory_profile['peak_mixed_term'] = max(memory_profile['peak_mixed_term'], _get_memory_mb())
+
+            np.add.at(mixed_term, (*mixed_term_indices[:, :3].T, slice(None)), (bin_matrix @ contribution.T).T)
+        
+        timers['mixed_term'] += time.perf_counter() - t0
+
+        # ============ SHOT NOISE ============
+        t0 = time.perf_counter()
+        
+        if len(shotnoise_indices) > 0:
+            l1,l2 = 2*shotnoise_indices[:, :2].T
+            m1,m2 = shotnoise_indices[:, 2:4].T - 2*shotnoise_indices[:, :2].T
+            
+            Yk1l1m1 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l1, m1)])
+            Yk2l2m2 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l2, m2)])
+            
+            contribution = shotnoise_values * Yk1l1m1[:, None] * Yk2l2m2
+            memory_profile['peak_shotnoise'] = max(memory_profile['peak_shotnoise'], _get_memory_mb())
+
+            np.add.at(shotnoise, (*shotnoise_indices[:, :2].T, slice(None)), (bin_matrix @ contribution.T).T)
+        
+        timers['shotnoise'] += time.perf_counter() - t0
+
+    # Final memory measurement
+    memory_profile['final'] = _get_memory_mb()
+    
+    # Return profiling info with results
+    return i, k1_bin_index, cosmic_variance, mixed_term, shotnoise, timers, memory_profile
