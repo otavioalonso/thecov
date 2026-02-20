@@ -13,6 +13,12 @@ SurveyGeometry
 import os, time
 import itertools as itt
 import logging
+import warnings
+from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Suppress JAX fork warning - we're using multiprocessing intentionally
+warnings.filterwarnings("ignore", message="os.fork\\(\\) was called")
 
 import numpy as np
 
@@ -20,6 +26,7 @@ import mockfactory
 from pypower import CatalogMesh
 
 from . import base, utils, math
+from .monitor import ResourceMonitor, HAS_PSUTIL
 
 __all__ = ['BoxGeometry',
            'SurveyGeometry']
@@ -234,7 +241,7 @@ class BoxGeometry(Geometry):
 
 class SurveyGeometry(Geometry, base.LinearBinning):
 
-    def __init__(self, randoms, alpha, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, mpi=True, **kwargs):
+    def __init__(self, randoms, alpha, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, **kwargs):
 
         base.LinearBinning.__init__(self)
 
@@ -248,60 +255,32 @@ class SurveyGeometry(Geometry, base.LinearBinning):
 
         self._resume_file = None
 
-        if mpi:
-            try:
-                from mpi4py import MPI
-                HAS_MPI = True
-            except ImportError:
-                HAS_MPI = False
-                MPI = None
-        else:
-            HAS_MPI = False
+        self._randoms = mockfactory.Catalog(randoms) if not isinstance(randoms, mockfactory.Catalog) else randoms
 
-        # HAS_MPI = False
-        
-        # Set up MPI communicator
-        if HAS_MPI:
-            self.mpicomm = MPI.COMM_WORLD
-            self.mpi_rank = self.mpicomm.Get_rank()
-            self.mpi_size = self.mpicomm.Get_size()
-        else:
-            self.mpicomm = None
-            self.mpi_rank = 0
-            self.mpi_size = 1
-    
-        if self.mpi_rank == 0:
-            self.logger.info(f'Using MPI with {self.mpi_size} ranks.' if self.has_mpi else 'MPI not available, running in serial mode.')
+        # Check if the randoms have weights, otherwise set them to 1
+        if 'WEIGHT' not in self._randoms:
+            self.logger.warning(f'WEIGHT column not found in randoms. Setting it to 1.')
+            self._randoms['WEIGHT'] = np.ones(self._randoms.size, dtype='f8')
 
-            self._randoms = mockfactory.Catalog(randoms, mpicomm=self.mpicomm) if not isinstance(randoms, mockfactory.Catalog) else randoms
+        # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
+        if 'NZ' not in self._randoms:
+            self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
+            import healpy as hp
+            nside = 512
+            distance = np.sqrt(np.sum(self._randoms['POSITION']**2, axis=-1))
+            xyz = self._randoms['POSITION'] / distance[:, None]
+            hpixel = hp.vec2pix(nside, *xyz.T)
+            unique_hpixels = np.unique(hpixel)
+            fsky = len(unique_hpixels) / hp.nside2npix(nside)
+            self.logger.warning(f'fsky = {fsky:.3f}')
+            self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
+            nbar = mockfactory.RedshiftDensityInterpolator(z=distance, fsky=fsky)
+            self._randoms['NZ'] = alpha * nbar(distance)
 
-            # Check if the randoms have weights, otherwise set them to 1
-            if 'WEIGHT' not in self._randoms:
-                self.logger.warning(f'WEIGHT column not found in randoms. Setting it to 1.')
-                self._randoms['WEIGHT'] = np.ones(self._randoms.size, dtype='f8')
-
-            # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
-            if 'NZ' not in self._randoms:
-                self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
-                import healpy as hp
-                nside = 512
-                distance = np.sqrt(np.sum(self._randoms['POSITION']**2, axis=-1))
-                xyz = self._randoms['POSITION'] / distance[:, None]
-                hpixel = hp.vec2pix(nside, *xyz.T)
-                unique_hpixels = np.unique(hpixel)
-                fsky = len(unique_hpixels) / hp.nside2npix(nside)
-                self.logger.warning(f'fsky = {fsky:.3f}')
-                self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
-                nbar = mockfactory.RedshiftDensityInterpolator(z=distance, fsky=fsky)
-                self._randoms['NZ'] = alpha * nbar(distance)
-
-            # Check if the randoms have nmesh and cellsize, otherwise set them using the kmax parameter
-            if nmesh is None and cellsize is None:
-                # Pick value that will give at least k_mask = kmax_window in the FFTs
-                cellsize = np.pi / kmax / (1. + 1e-9)
-
-        if self.has_mpi:
-            self._randoms = self.mpicomm.bcast(self._randoms)
+        # Check if the randoms have nmesh and cellsize, otherwise set them using the kmax parameter
+        if nmesh is None and cellsize is None:
+            # Pick value that will give at least k_mask = kmax_window in the FFTs
+            cellsize = np.pi / kmax / (1. + 1e-9)
 
         self._mesh = CatalogMesh(data_positions=self._randoms['POSITION'], data_weights=self._randoms['WEIGHT']*alpha,
                                 position_type='pos', nmesh=nmesh, cellsize=cellsize, boxsize=boxsize, boxpad=boxpad,
@@ -310,21 +289,17 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         self.boxsize = self._mesh.boxsize[0]
         self.nmesh = self._mesh.nmesh[0]
 
-        if self.mpi_rank == 0:
-            self.logger.info(f'Using box size {self._mesh.boxsize}, box center {self._mesh.boxcenter} and nmesh {self._mesh.nmesh}.')
-        
+        self.logger.info(f'Using box size {self._mesh.boxsize}, box center {self._mesh.boxcenter} and nmesh {self._mesh.nmesh}.')
+    
 
-            self.logger.info(f'Fundamental wavenumber of window FFTs = {self.kfun}.')
-            self.logger.info(f'Nyquist wavenumber of window FFTs = {self.knyquist}.')
+        self.logger.info(f'Fundamental wavenumber of window FFTs = {self.kfun}.')
+        self.logger.info(f'Nyquist wavenumber of window FFTs = {self.knyquist}.')
 
-            if kmax is not None and self.knyquist < kmax:
-                self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {kmax}.')
+        if kmax is not None and self.knyquist < kmax:
+            self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {kmax}.')
 
-            self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
+        self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
-
-
-    @base.cache
     def compute_mesh(self, nbar_power, weight_power, ell, m):
         """Compute the Fourier transform of nbar**nbar_power * weight**weight_power * Ylm
 
@@ -351,12 +326,12 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         assert ell >= 0, "ell must be non-negative"
         assert abs(m) <= ell, "m must be less than or equal to ell"
 
-        # can probably be made faster by properly vectorizing it
-        Ylm = np.vectorize(math.get_real_Ylm(ell, m))
+        # get_real_Ylm returns a vectorized function (scipy.lpmv or numexpr)
+        # that releases the GIL - no need for np.vectorize!
+        Ylm = math.get_real_Ylm(ell, m)
 
-        if self.mpi_rank == 0:
-            self.logger.info(f'Computing mesh nbar^{nbar_power} * weight^{weight_power} (ell={ell}, m={m})')
-            start = time.time()
+        self.logger.info(f'Computing mesh nbar^{nbar_power} * weight^{weight_power} (ell={ell}, m={m})')
+        start = time.time()
 
         result = self._mesh.copy(
             data_positions=self._randoms['POSITION'],
@@ -369,14 +344,29 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         #     result[np.abs(result) < threshold] = 0
         #     result = base.SparseNDArray.from_dense(result, shape_in=(self.nmesh,self.nmesh), shape_out=self.nmesh)
 
-        if self.mpi_rank == 0:
-            self.logger.info(f'Done in {time.time() - start:.0f} seconds.')
+        self.logger.info(f'Mesh computed in {time.time() - start:.0f} seconds.')
 
         return result
 
     @base.cache
-    def compute_window_matrix(self, pk_ellmax = PK_ELL_MAX, mask_ellmax = MASK_ELL_MAX, kmodes_sampled=2000):
-        '''Computes the window matrix to be used in the calculation of the covariance.
+    def compute_window_matrix(self, pk_ellmax=PK_ELL_MAX, mask_ellmax=MASK_ELL_MAX, kmodes_sampled=2000, n_workers=None, monitor=False, monitor_interval=5.0):
+        '''Computes the window matrix using multiprocessing with shared memory.
+
+        Parameters
+        ----------
+        pk_ellmax : int, optional
+            Maximum ell for the power spectrum multipoles. Default is PK_ELL_MAX.
+        mask_ellmax : int, optional
+            Maximum ell for the mask multipoles. Default is MASK_ELL_MAX.
+        kmodes_sampled : int, optional
+            Number of k-modes to sample per bin. Default is 2000.
+        n_workers : int, optional
+            Number of worker processes. Default is cpu_count().
+        monitor : bool, optional
+            Whether to monitor resource usage during computation. Default is False.
+            Requires psutil to be installed.
+        monitor_interval : float, optional
+            Resource monitoring interval in seconds. Default is 5.0.
 
         Notes
         -----
@@ -387,23 +377,23 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         .. [1] https://arxiv.org/abs/1910.02914
         '''
 
+        if n_workers is None:
+            n_workers = min(cpu_count(), 32)
 
-        if self.mpi_rank == 0:
-            self.logger.info('='*60)
-            self.logger.info('Computing window matrices')
+        self.logger.info('=' * 60)
+        self.logger.info(f'Computing window matrices with {n_workers} workers')
+        self.logger.info(f'pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax}')
             self.logger.info(f'pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax}')
-            self.logger.info('='*60)
+        self.logger.info('=' * 60)
 
-        # sample kmodes from each k1 bin
-
-        # SAMPLE FROM SHELL
-        # kfun = 2 * np.pi / self.boxsize
-        # kmodes = np.array([[math.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
-        #                    kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
-        # Nmodes = math.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
-
-        # SAMPLE FROM CUBE
-        # kmodes, Nmodes = math.sample_from_cube(self.kmax/kfun, self.dk/kfun, kmodes_sampled)
+        # Start resource monitor if requested
+        resource_monitor = None
+        if monitor:
+            if HAS_PSUTIL:
+                resource_monitor = ResourceMonitor(interval=monitor_interval)
+                resource_monitor.start()
+            else:
+                self.logger.warning("psutil not installed, resource monitoring disabled. Install with: pip install psutil")
 
         # HYBRID SAMPLING
         self.logger.info('Sampling k-modes for binning...')
@@ -416,138 +406,223 @@ class SurveyGeometry(Geometry, base.LinearBinning):
 
         delta_ik = np.array(np.meshgrid(*self.ikgrid, indexing='ij'))
 
-        if self.mpi_rank == 0:
-            self.logger.info(f'Sampled k-modes for {self.kbins} bins')
+        self.logger.info(f'Sampled k-modes for {self.kbins} bins')
+        assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, \
+            f'Error in sample_kmodes: results should have length {self.kbins}, but had {len(kmodes)}.'
 
-            assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, \
-                f'Error in thecov.utils.sample_kmodes: results should have length {self.kbins}, but had {len(kmodes)}. Parameters were kmin={self.kmin},kmax={self.kmax},dk={self.dk},boxsize={self.boxsize},max_modes={kmodes_sampled},k_shell_approx={0.1}).'
-
-            self.logger.info('Computing window function multipoles...')        
-
-        # Compute the shape of the slab
-        shape_slab = self.compute_mesh(2,2,0,0).shape
-
-        window_product = {}
-        window_product['cosmic_variance'] = base.SparseNDArray(shape_out=2*[mask_ellmax//2+1] + 2*[2*mask_ellmax+1], shape_in=shape_slab, dtype=np.complex128)
-        window_product['mixed_term']      = base.SparseNDArray(shape_out=2*[mask_ellmax//2+1] + 2*[2*mask_ellmax+1], shape_in=shape_slab, dtype=np.complex128)
-        window_product['shotnoise']       = base.SparseNDArray(shape_out=2*[mask_ellmax//2+1] + 2*[2*mask_ellmax+1], shape_in=shape_slab, dtype=np.complex128)
-
+        # Compute window products
+        self.logger.info('Beginning of window multipole computation')
+        
+        # Collect all unique (nbar_power, weight_power, ell, m) combinations
+        unique_mesh_params = set()
         for la, lb, ma, mb in utils.ellmiter(mask_ellmax, 2):
-            window_product['cosmic_variance'][la//2,lb//2,ma+la,mb+lb] = self.compute_mesh(2,2,la,ma) * self.compute_mesh(2,2,lb,mb)
-            window_product['mixed_term'][la//2,lb//2,ma+la,mb+lb]      = self.compute_mesh(2,2,la,ma) * self.compute_mesh(1,2,lb,mb)
-            window_product['shotnoise'][la//2,lb//2,ma+la,mb+lb]       = self.compute_mesh(1,2,la,ma) * self.compute_mesh(1,2,lb,mb)
+            unique_mesh_params.add((2, 2, la, ma))  # cosmic variance
+            unique_mesh_params.add((2, 2, lb, mb))  # cosmic variance
+            unique_mesh_params.add((1, 2, la, ma))  # mixed/shotnoise
+            unique_mesh_params.add((1, 2, lb, mb))  # mixed/shotnoise
+        
+        self.logger.info(f'Computing {len(unique_mesh_params)} window meshes with {n_workers} threads')
+        mesh_start = time.time()
+        
+        # Compute all meshes in parallel using threads (FFT releases GIL)
+        def compute_mesh_wrapper(params):
+            return params, self.compute_mesh(*params)
+        
+        mesh_cache = {}
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(compute_mesh_wrapper, p): p for p in unique_mesh_params}
+            for i, future in enumerate(as_completed(futures)):
+                params, result = future.result()
+                mesh_cache[params] = result
+        
+        self.logger.info(f'All meshes computed in {time.time() - mesh_start:.0f} seconds')
+        
+        # Get shape from any cached mesh
+        shape_slab = next(iter(mesh_cache.values())).shape
 
-        self.logger.info('Contracting Gaunt coefficients with window meshes...')
-
-        # Read Gaunt coefficients only on rank 0 to avoid IO
-        if self.mpi_rank == 0:
-            coefficients = {
-                'first_cosmic_variance':  self.get_first_cosmic_variance_gaunt_coefficients(mask_ellmax, pk_ellmax),
-                'second_cosmic_variance': self.get_second_cosmic_variance_gaunt_coefficients(mask_ellmax, pk_ellmax),
-                'mixed_term':             self.get_mixed_gaunt_coefficients(mask_ellmax, pk_ellmax),
-                'shotnoise':              self.get_shotnoise_gaunt_coefficients(mask_ellmax, pk_ellmax),
-            }
-
-        if self.has_mpi:
-            coefficients = self.mpicomm.bcast(coefficients)
-
-        window_product = {
-            'first_cosmic_variance':  coefficients['first_cosmic_variance'] @ window_product['cosmic_variance'],
-            'second_cosmic_variance': coefficients['second_cosmic_variance'] @ window_product['cosmic_variance'],
-            'mixed_term':             coefficients['mixed_term'] @ window_product['mixed_term'],
-            'shotnoise':              coefficients['shotnoise'] @ window_product['shotnoise'],
+        # Load Gaunt coefficients
+        self.logger.info('Loading Gaunt coefficients...')
+        coefficients = {
+            'first_cosmic_variance': self.get_first_cosmic_variance_gaunt_coefficients(mask_ellmax, pk_ellmax),
+            'second_cosmic_variance': self.get_second_cosmic_variance_gaunt_coefficients(mask_ellmax, pk_ellmax),
+            'mixed_term': self.get_mixed_gaunt_coefficients(mask_ellmax, pk_ellmax),
+            'shotnoise': self.get_shotnoise_gaunt_coefficients(mask_ellmax, pk_ellmax),
         }
 
-        # Gather full mesh on all nodes because now we are going to split the calculation by kmodes
-        if self.has_mpi:
-            window_product = window_product.allgather(self.mpicomm)
+        # window_product will be populated in the loop below
+        window_product = {}
 
-        if self.window_matrix is None:
-            window_matrix = {}
+        self.logger.info('Contracting Gaunt coefficients with window mesh products...')
+        start = time.time()
+
+        nbar_weight_indices = {
+            'first_cosmic_variance': ((2, 2), (2, 2)),
+            'second_cosmic_variance': ((2, 2), (2, 2)),
+            'mixed_term': ((2, 2), (1, 2)),
+            'shotnoise': ((1, 2), (1, 2)),
+        }
+
+        # Process each term separately to limit memory
+        for term_name, coeff in coefficients.items():
+            self.logger.info(f'Computing {term_name} term')
+
+            nw1, nw2 = nbar_weight_indices[term_name]
             
-            window_matrix['cosmic_variance'] = np.zeros(4*[pk_ellmax//2+1] + 2*[self.kbins])
-            window_matrix['mixed_term']      = np.zeros(3*[pk_ellmax//2+1] + 2*[self.kbins])
-            window_matrix['shotnoise']       = np.zeros(2*[pk_ellmax//2+1] + 2*[self.kbins])
-
-        if self.mpi_rank == 0:
-            self.logger.info(f'Starting mode integration with {self.mpi_size} MPI ranks...')
+            product = base.SparseNDArray(
+                shape_out=coeff.shape_in,  # (la, lb, ma, mb) indices
+                shape_in=shape_slab,
+                dtype=np.complex128
+            )
             
-        for i, km in enumerate(kmodes):
-            if self.mpi_rank == 0:
-                self.logger.info(f'Computing window matrix for bin {i+1}/{self.kbins} with {len(km)} modes.')
-
-            k1_bin_index = int(i + self.kmin // self.dk)
-
-            # Split kmodes in chunks
-            chunks = np.array_split(km, self.mpi_size)
-
-            for ik1x, ik1y, ik1z, ik1r in chunks[self.mpi_rank]:
-                ik1 = np.array([ik1x, ik1y, ik1z])
-                ik2 = ik1[:,None,None,None] + delta_ik
-
-                k2_bin_index = (np.sqrt(np.sum(ik2**2, axis=0)) * self.kfun / self.dk).astype(int)
-
-                Ylm = {}
-                for l, m in utils.ellmiter(pk_ellmax, 1):
-                    Ylm[l,m,1] = np.vectorize(math.get_real_Ylm(l, m))(*ik1)
-                    Ylm[l,m,2] = np.vectorize(math.get_real_Ylm(l, m))(*ik2)
-
-                for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
-                    # ======================================================
-                    # This part hangs
-                    mesh = window_product['first_cosmic_variance']\
-                        [l1//2,l2//2,l3//2,l4//2,m1+l1,m2+l2,m3+l3,m4+l4].real * \
-                        Ylm[l1,m1,1]*Ylm[l2,m2,1]*Ylm[l3,m3,2]*Ylm[l4,m4,2]
-                    
-                    window_matrix['cosmic_variance'][l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
-                        np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.kbins)[:self.kbins]
-                        
-                    
-                    mesh = window_product['second_cosmic_variance']\
-                        [l1//2,l2//2,l3//2,l4//2,m1+l1,m2+l2,m3+l3,m4+l4].real * \
-                        Ylm[l1,m1,1]*Ylm[l2,m2,2]*Ylm[l3,m3,1]*Ylm[l4,m4,2]
-
-                    window_matrix['cosmic_variance'][l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
-                        np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.kbins)[:self.kbins]
-
-                for l1, l2, l3, m1, m2, m3 in utils.ellmiter(pk_ellmax, 3):
-
-                    mesh = window_product['mixed_term']\
-                        [l1//2,l2//2,l3//2,m1+l1,m2+l2,m3+l3].real * \
-                        Ylm[l1,m1,1]*Ylm[l2,m2,2]*Ylm[l3,m3,2]
-                    
-                    window_matrix['mixed_term'][l1//2,l2//2,l3//2,k1_bin_index,:] += \
-                        np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.kbins)[:self.kbins]
-                        
-                for l1, l2, m1, m2 in utils.ellmiter(pk_ellmax, 2):
-                    mesh = window_product['shotnoise'][l1//2,l2//2,m1+l1,m2+l2].real * \
-                        Ylm[l1,m1,1]*Ylm[l2,m2,2]
-
-                    window_matrix['shotnoise'][l1//2,l2//2,k1_bin_index,:] += \
-                        np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.kbins)[:self.kbins]
-
-        # Sum contributions from all ranks
-        if self.has_mpi:
-            self.window_matrix = {}
-            for key in window_matrix.keys():
-                self.window_matrix[key] = np.zeros_like(window_matrix[key])
-                self.mpicomm.reduce(window_matrix[key], self.window_matrix[key], op=MPI.SUM)
-        else:
-            self.window_matrix = window_matrix
-
-        # Apply normalization on rank 0
-        if self.mpi_rank == 0:
-            self.window_matrix['cosmic_variance'][:,:,:,:,i,:] *= \
-                (4*np.pi)**2 / self.normalization(2,2)**2 / Nmodes[None,None,None,None,:]
-
-            self.window_matrix['mixed_term'][:,:,:,i,:] *= \
-                (4*np.pi)**2 / self.normalization(2,2)**2 / Nmodes[None,None,None,:]
-            
-            self.window_matrix['shotnoise'][:,:,i,:] *= \
-                (4*np.pi)**2 / self.normalization(2,2)**2 / Nmodes[None,None,:]
-            
+            # Only compute products for non-zero Gaunt indices
+            for index in coeff.T.nonzero_indices_out():
+                la, lb = 2*index[0], 2*index[1]
+                ma, mb = index[2] - la, index[3] - lb
                 
-        self.logger.info('Window matrix computation completed successfully!')
+                product[index] = mesh_cache[(*nw1, la, ma)] * mesh_cache[(*nw2, lb, mb)]
+                
+            window_product[term_name] = coeff @ product
+
+            del product
+            
+        del mesh_cache
+
+        self.logger.info(f'Gaunt contraction completed in {time.time() - start:.0f} seconds')
+
+        # Create shared memory for sparse arrays
+        self.logger.info('Setting up shared memory for parallel processing')
+        shm_metadata = {}
+        all_shm_handles = []
+        for key, sparse_arr in window_product.items():
+            metadata, handles = sparse_arr.to_shared_memory()
+            shm_metadata[key] = metadata
+            all_shm_handles.extend(handles)
+        
+        # Now we can delete window_product to free memory
+        del window_product
+
+        # Also share delta_ik
+        delta_ik_shm = _create_shared_ndarray(delta_ik)
+        all_shm_handles.append(delta_ik_shm['handle'])
+
+        # Prepare worker arguments (only small data, no large arrays)
+        worker_args = {
+            'shm_metadata': shm_metadata,
+            'delta_ik_info': {
+                'name': delta_ik_shm['name'],
+                'shape': delta_ik.shape,
+                'dtype': delta_ik.dtype,
+            },
+            'pk_ellmax': pk_ellmax,
+            'kfun': self.kfun,
+            'dk': self.dk,
+            'kbins': self.kbins,
+            'kmin': self.kmin,
+        }
+
+        # Initialize output arrays
+        window_matrix = {
+            'cosmic_variance': np.zeros(4*[pk_ellmax//2+1] + 2*[self.kbins]),
+            'mixed_term': np.zeros(3*[pk_ellmax//2+1] + 2*[self.kbins]),
+            'shotnoise': np.zeros(2*[pk_ellmax//2+1] + 2*[self.kbins]),
+        }
+        
+        # Target ~32-64 modes per worker for good efficiency
+        avg_modes = np.mean([len(km) for km in kmodes[2:]])
+        target_modes_per_worker = 32
+        workers_per_bin = max(1, min(n_workers, int(avg_modes / target_modes_per_worker)))
+        bins_parallel = max(1, n_workers // workers_per_bin)
+        
+        self.logger.info(f'Starting HYBRID integration with {n_workers} workers')
+        self.logger.info(f'  - {bins_parallel} bins in parallel')
+        self.logger.info(f'  - {workers_per_bin} workers per bin')
+        self.logger.info(f'  - ~{avg_modes / workers_per_bin:.0f} modes per worker')
+        start_time = time.time()
+
+        try:
+            with Pool(n_workers, initializer=_init_worker, initargs=(worker_args,)) as pool:
+                
+                # Process bins in batches
+                n_bins = len(kmodes)
+                for batch_start in range(0, n_bins, bins_parallel):
+                    batch_end = min(batch_start + bins_parallel, n_bins)
+                    batch_bins = list(range(batch_start, batch_end))
+                    
+                    # Create tasks for all bins in this batch
+                    all_tasks = []
+                    for i in batch_bins:
+                        km = kmodes[i]
+                        k1_bin_index = int(i + self.kmin // self.dk)
+                        
+                        # Split modes into chunks (workers_per_bin chunks per bin)
+                        km_array = np.array(km)
+                        chunks = np.array_split(km_array, min(workers_per_bin, len(km_array)))
+                        
+                        for chunk_idx, chunk in enumerate(chunks):
+                            if len(chunk) > 0:
+                                all_tasks.append((i, chunk.tolist(), k1_bin_index, chunk_idx))
+                    
+                    # Process all tasks for this batch in parallel
+                    # Accumulate results per bin
+                    bin_results = {i: {
+                        'cosmic_variance': np.zeros((pk_ellmax//2+1,) * 4 + (self.kbins,)),
+                        'mixed_term': np.zeros((pk_ellmax//2+1,) * 3 + (self.kbins,)),
+                        'shotnoise': np.zeros((pk_ellmax//2+1,) * 2 + (self.kbins,)),
+                        'k1_bin_index': int(i + self.kmin // self.dk)
+                    } for i in batch_bins}
+                    
+                    for result in pool.imap_unordered(_process_modes_chunk, all_tasks):
+                        i, k1_bin_index, cosmic_variance, mixed_term, shotnoise, chunk_idx, profiling = result
+                        bin_results[i]['cosmic_variance'] += cosmic_variance
+                        bin_results[i]['mixed_term'] += mixed_term
+                        bin_results[i]['shotnoise'] += shotnoise
+
+                        # Print profiling for first chunk of first 4 bins
+                        if profiling:
+                            total = profiling['total']
+                            print(f"\n=== PROFILING k-bin {i} chunk {chunk_idx} ({profiling['n_modes']} modes) ===")
+                            print(f"  k2 computation:    {profiling['t_k2']:6.2f}s ({100*profiling['t_k2']/total:5.1f}%)")
+                            print(f"  Sparse matrix:     {profiling['t_sparse']:6.2f}s ({100*profiling['t_sparse']/total:5.1f}%)")
+                            print(f"  Ylm2 evaluation:   {profiling['t_ylm2']:6.2f}s ({100*profiling['t_ylm2']/total:5.1f}%)")
+                            print(f"  CV weights:        {profiling['t_cv']:6.2f}s ({100*profiling['t_cv']/total:5.1f}%)")
+                            print(f"  MT weights:        {profiling['t_mt']:6.2f}s ({100*profiling['t_mt']/total:5.1f}%)")
+                            print(f"  SN weights:        {profiling['t_sn']:6.2f}s ({100*profiling['t_sn']/total:5.1f}%)")
+                            print(f"  TOTAL:             {total:6.2f}s")
+                            print("=" * 45)
+                    
+                    # Add batch results to window matrix
+                    for i in batch_bins:
+                        k1_idx = bin_results[i]['k1_bin_index']
+                        window_matrix['cosmic_variance'][..., k1_idx, :] += bin_results[i]['cosmic_variance']
+                        window_matrix['mixed_term'][..., k1_idx, :] += bin_results[i]['mixed_term']
+                        window_matrix['shotnoise'][..., k1_idx, :] += bin_results[i]['shotnoise']
+
+                    self.logger.info(f'Completed bins {batch_start+1}-{batch_end}/{n_bins}')
+
+        finally:
+            # Stop resource monitor and save results
+            if resource_monitor is not None:
+                resource_monitor.stop()
+                resource_monitor.summary()
+                resource_monitor.plot('window_matrix_resources.png')
+            
+            # Cleanup shared memory
+            self.logger.info('Cleaning up shared memory...')
+            base.SparseNDArray.cleanup_shared_memory(all_shm_handles)
+
+        # Apply normalization
+        self.logger.info('Applying normalization...')
+        norm = (4*np.pi)**2 / self.normalization(2, 2)**2
+        for i, Nm in enumerate(Nmodes):
+            k_bin_index = int(i + self.kmin // self.dk)
+            window_matrix['cosmic_variance'][..., k_bin_index, :] *= norm / Nm
+            window_matrix['mixed_term'][..., k_bin_index, :] *= norm / Nm
+            window_matrix['shotnoise'][..., k_bin_index, :] *= norm / Nm
+
+        self.window_matrix = window_matrix
+        self.logger.info(f'Window matrix computation completed in {time.time() - start_time:.0f} seconds!')
+
+        return self.window_matrix
 
     @staticmethod
     def get_first_cosmic_variance_gaunt_coefficients(mask_ellmax=MASK_ELL_MAX, pk_ellmax=PK_ELL_MAX, cache_dir=None):
@@ -639,7 +714,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
 
     @staticmethod
     def get_mixed_gaunt_coefficients(mask_ellmax=MASK_ELL_MAX, pk_ellmax=PK_ELL_MAX, cache_dir=None):
-        """Calculates all relavent Gaunt coefficients for the shotnoise term, or loads them from file"""
+        """Calculates all relavent Gaunt coefficients for the mixed term, or loads them from file"""
         
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
@@ -656,8 +731,6 @@ class SurveyGeometry(Geometry, base.LinearBinning):
 
             # shape_out = l1, l2, l3, m1, m2, l3
             # shape_in =  la, ma, lb, mb
-            # Only including positive m values, as -m is equivalent to m
-            # when Ylm is real and m is even
             shape_out = 3*[pk_ellmax//2 + 1] + 3*[2*pk_ellmax + 1]
             shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
             gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
@@ -703,7 +776,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             logger.info(f'Saving mixed Gaunt coefficients to: {filename}')
             gaunt_coefficients.save(filename)
             return gaunt_coefficients
-        
+
     @staticmethod
     def get_shotnoise_gaunt_coefficients(mask_ellmax=MASK_ELL_MAX, pk_ellmax=PK_ELL_MAX, cache_dir=None):
         """Calculates all relavent Gaunt coefficients for the shotnoise term, or loads them from file"""
