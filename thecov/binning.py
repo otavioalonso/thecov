@@ -9,7 +9,7 @@ class FourierBinning:
         self.dk = None
         self._nmodes = None
 
-    def set_kbins(self, kmin:float, kmax:float, dk:float, nmodes=None):
+    def set_kbins(self, kmin:float, kmax:float, dk:float, kbins:int=None, nmodes=None):
         '''This function defines the k-bins.
 
         Parameters
@@ -20,27 +20,18 @@ class FourierBinning:
             The maximum value of the wavenumber k.
         dk: float
             The (log) spacing between k-bins.
+        kbins: int, optional
+            The number of k-bins.
         nmodes: numpy.ndarray, optional
             The number of modes to be used in the calculation. It is an optional parameter.
             If omitted, it is calculated from the volume of spherical shells.
         '''
 
-        self.dk = dk
         self.kmax = kmax
         self.kmin = kmin
+        self.dk = dk
+        self._kbins = kbins
         self._nmodes = nmodes
-
-    @property
-    def kbins(self):
-        '''Returns the total number of k-bins.
-
-        Returns
-        -------
-        int
-            The total number of k-bins.
-        '''
-
-        return len(self.kmid)
     
     @property
     def is_kbins_set(self):
@@ -51,7 +42,7 @@ class FourierBinning:
             bool, True if k-bins were defined, False otherwise.
         '''
         return None not in (self.dk, self.kmin, self.kmax)
-    
+
     @property
     def kavg(self):
         '''
@@ -111,11 +102,22 @@ class LinearBinning(FourierBinning):
         The spacing between k-bins.
     '''
 
-    def __init__(self, kmin:float=None, kmax:float=None, dk:float=None, num_kbins:int=None) -> None:
+    def __init__(self, kmin:float=None, kmax:float=None, dk:float=None, kbins:int=None) -> None:
         super().__init__()
-        if dk == None and num_kbins is not None:
-            dk = (kmax - kmin) / num_kbins
-        self.set_kbins(kmin, kmax, dk)
+        if dk is None and kbins is not None:
+            dk = (kmax - kmin) / kbins
+        self.set_kbins(kmin, kmax, dk, kbins)
+
+    @property
+    def kbins(self):
+        '''The number of k-bins. If not set, it is calculated from kmin, kmax and dk.
+
+        Returns
+        -------
+        int
+            The number of k-bins.
+        '''
+        return round((self.kmax - self.kmin) / self.dk)
 
     @property
     def kmid(self):
@@ -127,7 +129,7 @@ class LinearBinning(FourierBinning):
         numpy.ndarray
             The midpoints of the k-bins.
         '''
-        return np.arange(self.kmin + self.dk/2, self.kmax + self.dk/2, self.dk)
+        return np.linspace(self.kmin + self.dk/2, self.kmax - self.dk/2, self.kbins)
 
     @property
     def kedges(self):
@@ -139,8 +141,9 @@ class LinearBinning(FourierBinning):
         numpy.ndarray
             The edges of the k-bins.
         '''
-
-        return np.arange(self.kmin, self.kmax + self.dk/2, self.dk)
+        if self.kbins is None:
+            self.kbins = int((self.kmax - self.kmin) / self.dk)
+        return np.linspace(self.kmin, self.kmax, self.kbins + 1)
 
     @property
     def nmodes(self):
@@ -172,11 +175,22 @@ class LogBinning(FourierBinning):
         The logarithmic spacing between k-bins.
     '''
 
-    def __init__(self, kmin:float=None, kmax:float=None, dk:float=None, num_kbins:int=None) -> None:
+    def __init__(self, kmin:float=None, kmax:float=None, dk:float=None, kbins:int=None) -> None:
         super().__init__()
-        if dk == None and num_kbins is not None:
-            dk = (np.log(kmax) - np.log(kmin)) / num_kbins
-        self.set_kbins(kmin, kmax, dk)
+        if kbins is not None and dk is None:
+            dk = np.log(kmax/kmin) / kbins
+        self.set_kbins(kmin, kmax, dk, kbins)
+
+    @property
+    def kbins(self):
+        '''The number of k-bins. If not set, it is calculated from kmin, kmax and dk.
+
+        Returns
+        -------
+        int
+            The number of k-bins.
+        '''
+        return int(np.floor(np.log(self.kmax/self.kmin)/self.dk))
 
     @property
     def kmid(self):
@@ -188,7 +202,8 @@ class LogBinning(FourierBinning):
         numpy.ndarray
             The midpoints of the k-bins.
         '''
-        return np.sqrt(self.kedges[:-1]*self.kedges[1:])
+        return np.exp(np.linspace(np.log(self.kmin) + self.dk/2, np.log(self.kmax) - self.dk/2, self.kbins))
+        #return np.sqrt(self.kedges[:-1]*self.kedges[1:])
 
     @property
     def kedges(self):
@@ -200,8 +215,7 @@ class LogBinning(FourierBinning):
         numpy.ndarray
             The edges of the k-bins.
         '''
-        nbins = int(np.floor(np.log(self.kmax/self.kmin)/self.dk))
-        return np.geomspace(self.kmin, self.kmax, nbins + 1)
+        return np.geomspace(self.kmin, self.kmax, self.kbins + 1)
 
     @property
     def nmodes(self):

@@ -759,7 +759,7 @@ class MultipoleFourierCovariance(MultipoleMultiTracerCovariance):
 
         return self
     
-    def set_kbins(self, kmin:float, kmax:float, dk:float, nmodes=None):
+    def set_kbins(self, kmin:float, kmax:float, dk:float, kbins:float=None, nmodes=None):
         """Set's the covariance matrix k-bins, which are evenly spaced in either
         linear or logarithmic space depending on the binning_type specified at
         initialization.
@@ -769,9 +769,10 @@ class MultipoleFourierCovariance(MultipoleMultiTracerCovariance):
             kmax (float): maximum k-mode (the edge of the last bin) in h/Mpc
             dk (float): width of each k-bin. In linear binning this is the absolute width,
                         while in logarithmic binning this is dlogk = log10(kmax/kmin)/nbins
+            kbins (int, optional): number of k-bins. Only used if dk is not provided. Defaults to None.
             nmodes (int, optional): number of modes per bin. Defaults to None.
         """
-        self.k_binning.set_kbins(kmin, kmax, dk, nmodes)
+        self.k_binning.set_kbins(kmin, kmax, dk, kbins, nmodes)
 
     @property
     def kbins(self):

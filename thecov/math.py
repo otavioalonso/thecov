@@ -169,7 +169,8 @@ def sample_kmodes(k_binning:binning.FourierBinning, boxsize:float, max_modes=100
             cube_weights = np.ones(len(cube_modes)) / len(cube_modes)
 
             # Uses spherical shell approximation from k = k_shell to kmax
-            kedges_shell = np.arange(k_shell, k_binning.kmax + k_binning.dk/2, k_binning.dk)
+            num_shell_bins = int(np.ceil((k_binning.kmax - k_shell) / k_binning.dk))
+            kedges_shell = np.linspace(k_shell, k_binning.kmax, num_shell_bins + 1)
             shell_nmodes = nmodes(boxsize**3, kedges_shell[:-1], kedges_shell[1:])
 
             shell_modes = [np.array([sample_from_shell(kmin / kfun, kmax / kfun) for _ in range(

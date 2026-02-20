@@ -509,8 +509,8 @@ class GaussianCovariance(PowerSpectrumCovariance):
         P_AC = P_AC.reshape(1, 1, 1, l4, 1, nk2)   # align with W's l and y axes
 
         # cov has shape [n_ells, n_ells, nk, nk]
-        cov = (4*np.pi)**4 * ((WinKernel_1 * P_AD * P_BC).sum(axis=(2, 3)) + \
-                              (WinKernel_2 * P_BD * P_AC).sum(axis=(2, 3)))
+        cov = (WinKernel_1 * P_AD * P_BC).sum(axis=(2, 3)) + \
+              (WinKernel_2 * P_BD * P_AC).sum(axis=(2, 3))
         # cov = (P_AD * P_BC).sum(axis=(2, 3)) + \
         #       (P_BD * P_AC).sum(axis=(2, 3))
         
