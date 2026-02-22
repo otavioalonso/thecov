@@ -17,12 +17,14 @@ from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
+import numba
 
 import mockfactory
 from pypower import CatalogMesh
 
 from . import base, utils, math
 from .monitor import ResourceMonitor, HAS_PSUTIL
+
 
 __all__ = ['BoxGeometry',
            'SurveyGeometry']
@@ -1081,7 +1083,6 @@ def _get_memory_mb():
         return 0.0
 
 def _process_modes(task):
-    from scipy.sparse import csr_matrix
     import time
     
     i, kmodes, k1_bin_index = task
@@ -1133,10 +1134,9 @@ def _process_modes(task):
     # Grid size
     grid_shape = delta_ik.shape[1:]  # (nmesh, nmesh, nmesh)
     n_grid = int(np.prod(grid_shape))
+    lmax = pk_ellmax
     
-    # Extract indices and values for each term (vectorized access)
-    # Cosmic variance: indices shape (n_nonzero, 8) for l1,l2,l3,l4,m1,m2,m3,m4
-    # Values shape (n_nonzero, n_grid)
+    # Extract indices and values for each term
     first_cosmic_variance_indices = window_data['first_cosmic_variance']['indices']
     first_cosmic_variance_values = window_data['first_cosmic_variance']['values']
     second_cosmic_variance_indices = window_data['second_cosmic_variance']['indices']
@@ -1146,81 +1146,69 @@ def _process_modes(task):
     shotnoise_indices = window_data['shotnoise']['indices']
     shotnoise_values = window_data['shotnoise']['values']
     
-    # Cache Ylm functions to avoid repeated get_real_Ylm calls
+    # Cache Ylm functions
     t0 = time.perf_counter()
     Ylm_funcs = {(l, m): math.get_real_Ylm(l, m) for l, m in utils.ellmiter(pk_ellmax, 1)}
-    # Ylm1: dict of (l,m) -> array of shape (n_modes,)
-    Yk1 = {lm: np.atleast_1d(np.broadcast_to(Ylm_funcs[lm](kmodes[:, 0], kmodes[:, 1], kmodes[:, 2]), kmodes.shape[0])) for lm in utils.ellmiter(pk_ellmax, 1)}
+    
+    # Precompute Yk1 for all modes: dict -> flat array for Numba
+    # Layout: Yk1_all[mode_idx, l*(2*lmax+1) + m+lmax]
+    n_modes = kmodes.shape[0]
+    n_lm = (lmax + 1) * (2 * lmax + 1)
+    Yk1_all = np.zeros((n_modes, n_lm), dtype=np.float64)
+    for l, m in utils.ellmiter(pk_ellmax, 1):
+        Yk1_all[:, l*(2*lmax + 1) + m + lmax] = Ylm_funcs[l, m](kmodes[:, 0], kmodes[:, 1], kmodes[:, 2])
+    
     timers['ylm1_setup'] = time.perf_counter() - t0
     memory_profile['after_ylm1'] = max(memory_profile['after_ylm1'], _get_memory_mb())
 
     # Process each k-mode
-    for mode_idx in range(kmodes.shape[0]):
+    for mode_idx in range(n_modes):
         ik1 = kmodes[mode_idx, :3]
         
         # k2 = k1 + delta_k for all grid points
         t0 = time.perf_counter()
-        ik2 = ik1[:, None, None, None] + delta_ik
+        ik2 = ik1[:, None, None, None] + delta_ik  # (3, nmesh, nmesh, nmesh)
         timers['k2_computation'] += time.perf_counter() - t0
         memory_profile['after_ik2'] = max(memory_profile['after_ik2'], _get_memory_mb())
 
+        # Compute k2 bin indices
         t0 = time.perf_counter()
-        k2_bin_index = (np.sqrt(np.sum(ik2**2, axis=0)) * kfun / dk).astype(int).ravel()
-        
-        # Build sparse binning matrix: shape (kbins, n_grid)
-        # bin_matrix[b, g] = 1 if grid point g maps to bin b
-        # Only include valid bins (0 <= bin < kbins)
+        k2_bin_index = (np.sqrt(np.sum(ik2**2, axis=0)) * kfun / dk).astype(np.int32).ravel()
         valid_mask = (k2_bin_index >= 0) & (k2_bin_index < kbins)
-        valid_indices = np.where(valid_mask)[0]
-        valid_bins = k2_bin_index[valid_mask]
-        
-        bin_matrix = csr_matrix(
-            (np.ones(len(valid_bins), dtype=float_dtype), (valid_bins, valid_indices)),
-            shape=(kbins, n_grid)
-        )
         timers['bin_matrix'] += time.perf_counter() - t0
         memory_profile['after_bin_matrix'] = max(memory_profile['after_bin_matrix'], _get_memory_mb())
         
-        # Precompute Ylm values for k2 (flattened) - shape (n_lm, n_grid)
+        # Precompute Yk2 as 3D array for Numba: (lmax+1, 2*lmax+1, n_grid)
         t0 = time.perf_counter()
-        Yk2 = {lm: np.broadcast_to(Ylm_funcs[lm](*ik2), grid_shape).ravel() for lm in utils.ellmiter(pk_ellmax, 1)}
+        Yk2_3d = np.zeros((lmax + 1, 2 * lmax + 1, n_grid), dtype=np.float64)
+        for l, m in utils.ellmiter(pk_ellmax, 1):
+            Yk2_3d[l, m + lmax, :] = np.broadcast_to(Ylm_funcs[l, m](*ik2), grid_shape).ravel()
         timers['ylm2_computation'] += time.perf_counter() - t0
         memory_profile['after_ylm2'] = max(memory_profile['after_ylm2'], _get_memory_mb())
 
-        # ============ COSMIC VARIANCE ============
+        # Get Yk1 values for this mode as flat array
+        Yk1_flat = Yk1_all[mode_idx, :]
+
+        # ============ COSMIC VARIANCE (using Numba kernels) ============
         t0 = time.perf_counter()
         
-        # First cosmic variance term: W * Ylm1[l1,m1] * Ylm1[l2,m2] * Ylm2[l3,m3] * Ylm2[l4,m4]
-        # first_cosmic_variance_indices: (n_nonzero, 8) -> columns are l1/2, l2/2, l3/2, l4/2, m1+l1, m2+l2, m3+l3, m4+l4
+        # First cosmic variance term: Yk1[l1,m1] * Yk1[l2,m2] * Yk2[l3,m3] * Yk2[l4,m4]
         if len(first_cosmic_variance_indices) > 0:
-            l1,l2,l3,l4 = 2*first_cosmic_variance_indices[:, :4].T
-            m1,m2,m3,m4 = first_cosmic_variance_indices[:, 4:8].T - 2*first_cosmic_variance_indices[:, :4].T
-            
-            Yk1l1m1 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l1, m1)])
-            Yk1l2m2 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l2, m2)])
-            Yk2l3m3 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l3, m3)])  # (n_nonzero, n_grid)
-            Yk2l4m4 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l4, m4)])  # (n_nonzero, n_grid)
-            
-            contribution = first_cosmic_variance_values * (Yk1l1m1 * Yk1l2m2)[:, None] * Yk2l3m3 * Yk2l4m4
+            first_cosmic_variance_contribution = _compute_cosmic_variance_first(
+                k2_bin_index, valid_mask, first_cosmic_variance_values, first_cosmic_variance_indices,
+                Yk1_flat, Yk2_3d, pk_ellmax, kbins
+            )
+            cosmic_variance += first_cosmic_variance_contribution
             memory_profile['peak_cosmic_variance'] = max(memory_profile['peak_cosmic_variance'], _get_memory_mb())
-            
-            # Accumulate into cosmic_variance using advanced indexing
-            np.add.at(cosmic_variance, (*first_cosmic_variance_indices[:, :4].T, slice(None)), (bin_matrix @ contribution.T).T )
         
-        # Second cosmic variance term: W * Ylm1[l1,m1] * Ylm2[l2,m2] * Ylm1[l3,m3] * Ylm2[l4,m4]
+        # Second cosmic variance term: Yk1[l1,m1] * Yk1[l3,m3] * Yk2[l2,m2] * Yk2[l4,m4]
         if len(second_cosmic_variance_indices) > 0:
-            l1,l2,l3,l4 = 2*second_cosmic_variance_indices[:, :4].T
-            m1,m2,m3,m4 = second_cosmic_variance_indices[:, 4:8].T - 2*second_cosmic_variance_indices[:, :4].T
-            
-            Yk1l1m1 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l1, m1)])
-            Yk1l3m3 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l3, m3)])
-            Yk2l2m2 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l2, m2)])
-            Yk2l4m4 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l4, m4)])
-            
-            contribution = second_cosmic_variance_values * (Yk1l1m1 * Yk1l3m3)[:, None] * Yk2l2m2 * Yk2l4m4
+            second_cosmic_variance_contribution = _compute_cosmic_variance_second(
+                k2_bin_index, valid_mask, second_cosmic_variance_values, second_cosmic_variance_indices,
+                Yk1_flat, Yk2_3d, pk_ellmax, kbins
+            )
+            cosmic_variance += second_cosmic_variance_contribution
             memory_profile['peak_cosmic_variance'] = max(memory_profile['peak_cosmic_variance'], _get_memory_mb())
-            
-            np.add.at(cosmic_variance, (*second_cosmic_variance_indices[:,:4].T, slice(None)), (bin_matrix @ contribution.T).T)
         
         timers['cosmic_variance'] += time.perf_counter() - t0
 
@@ -1228,17 +1216,12 @@ def _process_modes(task):
         t0 = time.perf_counter()
         
         if len(mixed_term_indices) > 0:
-            l1,l2,l3 = 2*mixed_term_indices[:, :3].T
-            m1,m2,m3 = mixed_term_indices[:, 3:6].T - 2*mixed_term_indices[:, :3].T
-            
-            Yk1l1m1 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l1, m1)])
-            Yk2l2m2 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l2, m2)])
-            Yk2l3m3 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l3, m3)])
-            
-            contribution = mixed_term_values * Yk1l1m1[:, None] * Yk2l2m2 * Yk2l3m3
+            mixed_term_contribution = _compute_mixed_term_contribution(
+                k2_bin_index, valid_mask, mixed_term_values, mixed_term_indices,
+                Yk1_flat, Yk2_3d, pk_ellmax, kbins
+            )
+            mixed_term += mixed_term_contribution
             memory_profile['peak_mixed_term'] = max(memory_profile['peak_mixed_term'], _get_memory_mb())
-
-            np.add.at(mixed_term, (*mixed_term_indices[:, :3].T, slice(None)), (bin_matrix @ contribution.T).T)
         
         timers['mixed_term'] += time.perf_counter() - t0
 
@@ -1246,16 +1229,12 @@ def _process_modes(task):
         t0 = time.perf_counter()
         
         if len(shotnoise_indices) > 0:
-            l1,l2 = 2*shotnoise_indices[:, :2].T
-            m1,m2 = shotnoise_indices[:, 2:4].T - 2*shotnoise_indices[:, :2].T
-            
-            Yk1l1m1 = np.array([Yk1[int(l), int(m)][mode_idx] for l, m in zip(l1, m1)])
-            Yk2l2m2 = np.stack([Yk2[int(l), int(m)] for l, m in zip(l2, m2)])
-            
-            contribution = shotnoise_values * Yk1l1m1[:, None] * Yk2l2m2
+            shotnoise_contribution = _compute_shotnoise_contribution(
+                k2_bin_index, valid_mask, shotnoise_values, shotnoise_indices,
+                Yk1_flat, Yk2_3d, pk_ellmax, kbins
+            )
+            shotnoise += shotnoise_contribution
             memory_profile['peak_shotnoise'] = max(memory_profile['peak_shotnoise'], _get_memory_mb())
-
-            np.add.at(shotnoise, (*shotnoise_indices[:, :2].T, slice(None)), (bin_matrix @ contribution.T).T)
         
         timers['shotnoise'] += time.perf_counter() - t0
 
@@ -1264,3 +1243,193 @@ def _process_modes(task):
     
     # Return profiling info with results
     return i, k1_bin_index, cosmic_variance, mixed_term, shotnoise, timers, memory_profile
+
+
+
+# ============================================================================
+# Numba-optimized kernels for window matrix computation
+# ============================================================================
+
+@numba.njit(fastmath=True, cache=True)
+def _compute_cosmic_variance_first(
+    bin_indices,        # (n_grid,) - which k-bin each grid point belongs to
+    valid_mask,         # (n_grid,) - boolean mask for valid grid points
+    window_product,     # (n_nonzero, n_grid) - window product values
+    coeff_indices,      # (n_nonzero, 8) - l1/2, l2/2, l3/2, l4/2, m1+l1, m2+l2, m3+l3, m4+l4
+    Yk1_flat,           # (n_lm,) - Ylm values for k1 at this mode, indexed as l*(2*lmax+1) + m+lmax
+    Yk2_3d,             # (lmax+1, 2*lmax+1, n_grid) - Ylm values for all k2 grid points
+    pk_ellmax,          # Maximum ell
+    kbins               # Number of k-bins
+):
+    """Compute FIRST cosmic variance contribution: Yk1[l1,m1] * Yk1[l2,m2] * Yk2[l3,m3] * Yk2[l4,m4]
+    
+    Returns array of shape (pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, pk_ellmax//2+1, kbins)
+    
+    Note: Uses sequential loop to avoid race conditions when multiple coefficients
+    share the same (l1,l2,l3,l4) output indices.
+    """
+    n_nonzero = coeff_indices.shape[0]
+    n_grid = len(bin_indices)
+    n_ell = pk_ellmax // 2 + 1
+    lmax = pk_ellmax
+    
+    # Output accumulator
+    result = np.zeros((n_ell, n_ell, n_ell, n_ell, kbins), dtype=np.float64)
+    
+    # Process each nonzero coefficient sequentially to avoid race conditions
+    for i in range(n_nonzero):
+        l1_half = coeff_indices[i, 0]
+        l2_half = coeff_indices[i, 1]
+        l3_half = coeff_indices[i, 2]
+        l4_half = coeff_indices[i, 3]
+        l1, l2, l3, l4 = 2*l1_half, 2*l2_half, 2*l3_half, 2*l4_half
+        m1 = coeff_indices[i, 4] - l1
+        m2 = coeff_indices[i, 5] - l2
+        m3 = coeff_indices[i, 6] - l3
+        m4 = coeff_indices[i, 7] - l4
+        
+        # First term: Yk1[l1,m1] * Yk1[l2,m2] for k1
+        Yk1_l1m1 = Yk1_flat[l1 * (2*lmax + 1) + m1 + lmax]
+        Yk1_l2m2 = Yk1_flat[l2 * (2*lmax + 1) + m2 + lmax]
+        Yk1_term = Yk1_l1m1 * Yk1_l2m2
+        
+        # Accumulate over grid points into k-bins
+        for j in range(n_grid):
+            if valid_mask[j]:
+                k2_bin = bin_indices[j]
+                # Yk2[l3,m3] * Yk2[l4,m4] for k2
+                Yk2_l3m3 = Yk2_3d[l3, m3 + lmax, j]
+                Yk2_l4m4 = Yk2_3d[l4, m4 + lmax, j]
+                contrib = window_product[i, j] * Yk1_term * Yk2_l3m3 * Yk2_l4m4
+                result[l1_half, l2_half, l3_half, l4_half, k2_bin] += contrib
+    
+    return result
+
+
+@numba.njit(fastmath=True, cache=True)
+def _compute_cosmic_variance_second(
+    bin_indices,        # (n_grid,)
+    valid_mask,         # (n_grid,)
+    window_values,      # (n_nonzero, n_grid)
+    coeff_indices,      # (n_nonzero, 8) - l1/2, l2/2, l3/2, l4/2, m1+l1, m2+l2, m3+l3, m4+l4
+    Yk1_flat,           # (n_lm,)
+    Yk2_3d,             # (lmax+1, 2*lmax+1, n_grid)
+    pk_ellmax,
+    kbins
+):
+    """Compute SECOND cosmic variance contribution: Yk1[l1,m1] * Yk1[l3,m3] * Yk2[l2,m2] * Yk2[l4,m4]
+    
+    Note: This uses l1,l3 from Yk1 and l2,l4 from Yk2 (different from first term).
+    """
+    n_nonzero = coeff_indices.shape[0]
+    n_grid = len(bin_indices)
+    n_ell = pk_ellmax // 2 + 1
+    lmax = pk_ellmax
+    
+    result = np.zeros((n_ell, n_ell, n_ell, n_ell, kbins), dtype=np.float64)
+    
+    for idx in range(n_nonzero):
+        l1_half = coeff_indices[idx, 0]
+        l2_half = coeff_indices[idx, 1]
+        l3_half = coeff_indices[idx, 2]
+        l4_half = coeff_indices[idx, 3]
+        l1, l2, l3, l4 = 2*l1_half, 2*l2_half, 2*l3_half, 2*l4_half
+        m1 = coeff_indices[idx, 4] - l1
+        m2 = coeff_indices[idx, 5] - l2
+        m3 = coeff_indices[idx, 6] - l3
+        m4 = coeff_indices[idx, 7] - l4
+        
+        # Second term: Yk1[l1,m1] * Yk1[l3,m3] for k1
+        Yk1_l1m1 = Yk1_flat[l1 * (2*lmax + 1) + m1 + lmax]
+        Yk1_l3m3 = Yk1_flat[l3 * (2*lmax + 1) + m3 + lmax]
+        Yk1_term = Yk1_l1m1 * Yk1_l3m3
+        
+        for i in range(n_grid):
+            if valid_mask[i]:
+                k2_bin = bin_indices[i]
+                # Yk2[l2,m2] * Yk2[l4,m4] for k2
+                Yk2_l2m2 = Yk2_3d[l2, m2 + lmax, i]
+                Yk2_l4m4 = Yk2_3d[l4, m4 + lmax, i]
+                contrib = window_values[idx, i] * Yk1_term * Yk2_l2m2 * Yk2_l4m4
+                result[l1_half, l2_half, l3_half, l4_half, k2_bin] += contrib
+    
+    return result
+
+
+@numba.njit(fastmath=True, cache=True)
+def _compute_mixed_term_contribution(
+    bin_indices,        # (n_grid,)
+    valid_mask,         # (n_grid,)
+    window_values,      # (n_nonzero, n_grid)
+    coeff_indices,      # (n_nonzero, 6) - l1/2, l2/2, l3/2, m1+l1, m2+l2, m3+l3
+    Yk1_flat,           # (n_lm,)
+    Yk2_3d,             # (lmax+1, 2*lmax+1, n_grid)
+    pk_ellmax,
+    kbins
+):
+    """Compute mixed term contribution with fused operations."""
+    n_nonzero = coeff_indices.shape[0]
+    n_grid = len(bin_indices)
+    n_ell = pk_ellmax // 2 + 1
+    lmax = pk_ellmax
+    
+    result = np.zeros((n_ell, n_ell, n_ell, kbins), dtype=np.float64)
+    
+    for idx in range(n_nonzero):
+        l1_half = coeff_indices[idx, 0]
+        l2_half = coeff_indices[idx, 1]
+        l3_half = coeff_indices[idx, 2]
+        l1, l2, l3 = 2*l1_half, 2*l2_half, 2*l3_half
+        m1 = coeff_indices[idx, 3] - l1
+        m2 = coeff_indices[idx, 4] - l2
+        m3 = coeff_indices[idx, 5] - l3
+        
+        Yk1_l1m1 = Yk1_flat[l1 * (2*lmax + 1) + m1 + lmax]
+        
+        for i in range(n_grid):
+            if valid_mask[i]:
+                k2_bin = bin_indices[i]
+                Yk2_l2m2 = Yk2_3d[l2, m2 + lmax, i]
+                Yk2_l3m3 = Yk2_3d[l3, m3 + lmax, i]
+                contrib = window_values[idx, i] * Yk1_l1m1 * Yk2_l2m2 * Yk2_l3m3
+                result[l1_half, l2_half, l3_half, k2_bin] += contrib
+    
+    return result
+
+
+@numba.njit(fastmath=True, cache=True)
+def _compute_shotnoise_contribution(
+    bin_indices,        # (n_grid,)
+    valid_mask,         # (n_grid,)
+    window_values,      # (n_nonzero, n_grid)
+    coeff_indices,      # (n_nonzero, 4) - l1/2, l2/2, m1+l1, m2+l2
+    Yk1_flat,           # (n_lm,)
+    Yk2_3d,             # (lmax+1, 2*lmax+1, n_grid)
+    pk_ellmax,
+    kbins
+):
+    """Compute shotnoise contribution with fused operations."""
+    n_nonzero = coeff_indices.shape[0]
+    n_grid = len(bin_indices)
+    n_ell = pk_ellmax // 2 + 1
+    lmax = pk_ellmax
+    
+    result = np.zeros((n_ell, n_ell, kbins), dtype=np.float64)
+    
+    for idx in range(n_nonzero):
+        l1_half = coeff_indices[idx, 0]
+        l2_half = coeff_indices[idx, 1]
+        l1, l2 = 2*l1_half, 2*l2_half
+        m1 = coeff_indices[idx, 2] - l1
+        m2 = coeff_indices[idx, 3] - l2
+        
+        Yk1_l1m1 = Yk1_flat[l1 * (2*lmax + 1) + m1 + lmax]
+        
+        for i in range(n_grid):
+            if valid_mask[i]:
+                k2_bin = bin_indices[i]
+                Yk2_l2m2 = Yk2_3d[l2, m2 + lmax, i]
+                contrib = window_values[idx, i] * Yk1_l1m1 * Yk2_l2m2
+                result[l1_half, l2_half, k2_bin] += contrib
+    
+    return result
