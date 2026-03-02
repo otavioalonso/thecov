@@ -113,7 +113,7 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
         if self.k_binning.is_kbins_set and not self.geometry.is_kbins_set:
             self.geometry.set_kbins(self.k_binning)
 
-        # has shape [tracer, tracer, k, k, ell]
+        # has shape [tracer, tracer, ell, ell, k, k]
         cov = np.zeros((self.num_tracers, self.num_tracers, 3, 3, self.k_binning.kbins, self.k_binning.kbins))
         n_AB = 0
         for idx_A, idx_B in itt.product(range(self.num_tracers), repeat=2):
@@ -121,7 +121,7 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
             n_CD = 0
             for idx_C, idx_D in itt.product(range(self.num_tracers), repeat=2):
                 if idx_D < idx_C: continue
-                cov[n_AB, n_CD, :, :, :] += func(idx_A, idx_B, idx_C, idx_D)
+                cov[n_AB, n_CD, :, :, :, :] += func(idx_A, idx_B, idx_C, idx_D)
                 n_CD += 1
             n_AB += 1
 
@@ -148,9 +148,9 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
         
         shotnoise = []
         if isinstance(self.geometry, geometry.SurveyGeometry):
-            alphas = np.array(list(self.alpha.values()))
+            alphas = np.array(self.alpha)
             for t in range(self.num_tracers):
-                shotnoise.append(self.pk_renorm * (1 + alphas[t]) * self.geometry.I(TRACER_LABELS[t], 1, 2)/self.geometry.I(TRACER_LABELS[t], 2, 2))
+                shotnoise.append(self.pk_renorm * (1 + alphas[t]) * self.geometry.I(t, 1, 2)/self.geometry.I(t, 2, 2))
             return np.array(shotnoise)
         elif isinstance(self.geometry, geometry.BoxGeometry):
             return self.pk_renorm * self.geometry.shotnoise
@@ -291,12 +291,12 @@ class GaussianCovariance(PowerSpectrumCovariance):
         # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
         def func(A, B, C, D): 
             
-            I_AB = (self.geometry.I(TRACER_LABELS[A], 2, 2) * self.geometry.I(TRACER_LABELS[B], 2, 2))
-            I_CD = (self.geometry.I(TRACER_LABELS[C], 2, 2) * self.geometry.I(TRACER_LABELS[D], 2, 2)) 
+            I_AB = (self.geometry.I(A, 2, 2) * self.geometry.I(B, 2, 2))
+            I_CD = (self.geometry.I(C, 2, 2) * self.geometry.I(D, 2, 2)) 
             return (1 / (I_AB * I_CD)) * \
-            (self._get_cosmic_variance_term(A, B, C, D) + \
-             self._get_mixed_term(A, B, C, D) + \
-             self._get_shotnoise_term(A, B))
+            (self._get_cosmic_variance_term(A, B, C, D))# + \
+             #self._get_mixed_term(A, B, C, D) + \
+             #self._get_shotnoise_term(A, B))
 
         self._set_survey_covariance(self._build_covariance_survey(func))
         eigvals = self.eigvals
@@ -481,10 +481,10 @@ class GaussianCovariance(PowerSpectrumCovariance):
             C (int): Third tracer index
             D (int): Fourth tracer index
         Returns:
-            np.ndarray: Flattened covariance matrix elements for the cosmic variance term.
+            np.ndarray: Cosmic variance contribution with shape [n_ells, n_ells, nk, nk]
         """
-        WinKernel_1 = self.geometry.cosmic_variance_kernel[0]
-        WinKernel_2 = self.geometry.cosmic_variance_kernel[1]
+        WinKernel_1 = self.geometry.cosmic_variance_kernel(A,B,C,D)[0]
+        WinKernel_2 = self.geometry.cosmic_variance_kernel(A,B,C,D)[1]
 
         P_AD = np.array([1. / (2*ell + 1) * \
                          self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
@@ -498,21 +498,9 @@ class GaussianCovariance(PowerSpectrumCovariance):
         P_AC = np.array([1. / (2*ell + 1) * \
                          self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
 
-        # NOTE for Otavio: This should be the same as your np.einsum function
-        # but I used the explicit version for now for my understanding
-        l1, l2, l3, l4, nk1, nk2 = WinKernel_1.shape
 
-        P_AD = P_AD.reshape(1, 1, l3, 1, nk1, 1)   # align with W's k and x axes
-        P_BC = P_BC.reshape(1, 1, 1, l4, 1, nk2)   # align with W's l and y axes
-
-        P_BD = P_BD.reshape(1, 1, l3, 1, nk1, 1)   # align with W's k and x axes
-        P_AC = P_AC.reshape(1, 1, 1, l4, 1, nk2)   # align with W's l and y axes
-
-        # cov has shape [n_ells, n_ells, nk, nk]
-        cov = (WinKernel_1 * P_AD * P_BC).sum(axis=(2, 3)) + \
-              (WinKernel_2 * P_BD * P_AC).sum(axis=(2, 3))
-        # cov = (P_AD * P_BC).sum(axis=(2, 3)) + \
-        #       (P_BD * P_AC).sum(axis=(2, 3))
+        cov = np.einsum('ijklxy,kx,ly->ijxy', WinKernel_1, P_AD, P_BC) + \
+              np.einsum('ijklxy,kx,ly->ijxy', WinKernel_2, P_BD, P_AC)
         
         return cov
 
@@ -526,35 +514,41 @@ class GaussianCovariance(PowerSpectrumCovariance):
             D (int): Fourth tracer index
 
         Returns:
-            np.ndarray: Flattened covariance matrix elements for the mixed term.
+            np.ndarray: mixed term contribution with shape [n_ells, n_ells, nk, nk]
         """
-        WinKernel = self.geometry.mixed_kernel
+        W_mixed = self.geometry.mixed_kernel(A,B,C,D)
 
-        P_AC = np.array([4 * np.pi / (2*ell + 1) * \
-                         self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
+        P_AC = np.array([1 / (2*ell + 1) *
+                         self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
 
-        P_AD = np.array([4 * np.pi / (2*ell + 1) * \
-                         self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
+        P_AD = np.array([1 / (2*ell + 1) *
+                         self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
 
-        P_BC = np.array([4 * np.pi / (2*ell + 1) * \
-                         self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
-        
-        P_BD = np.array([4 * np.pi / (2*ell + 1) * \
-                         self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])  
-        
-        return 0
-        cov = np.zeros((3,3))
-        # for ell1, ell2, ell3 in itt.product(range(3), repeat=3):
-        #     if A == D:
-        #         cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BC[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
-        #     if B == C:
-        #         cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AD[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
-        #     if A == C:
-        #         cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[A]]) * P_BD[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
-        #     if B == D:
-        #         cov[ell1, ell2] += (1 + self.alpha[TRACER_LABELS[B]]) * P_AC[ell3, jk] * WinKernel[ell1, ell2, ell3, ik, jk]
+        P_BC = np.array([1 / (2*ell + 1) *
+                         self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
 
-        return cov.flatten()
+        P_BD = np.array([1 / (2*ell + 1) *
+                         self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
+
+        cov = np.zeros((3, 3, self.k_binning.kbins, self.k_binning.kbins))
+        if A == D:
+            cov += (1 + self.alpha[TRACER_LABELS[A]]) / 2 * \
+            (np.einsum('ijkxy,kx->ijxy', W_mixed[0], P_BC) + \
+             np.einsum('ijkxy,ky->ijxy', W_mixed[0], P_BC))
+        if B == C:
+            cov += (1 + self.alpha[TRACER_LABELS[B]]) / 2 * \
+                (np.einsum('ijkxy,kx->ijxy', W_mixed[1], P_AD) + \
+                 np.einsum('ijkxy,ky->ijxy', W_mixed[1], P_AD))
+        if A == C:
+            cov += (1 + self.alpha[TRACER_LABELS[A]]) / 2 * \
+                (np.einsum('ijkxy,kx->ijxy', W_mixed[2], P_BD) + \
+                 np.einsum('ijkxy,ky->ijxy', W_mixed[2], P_BD))
+        if B == D:
+            cov += (1 + self.alpha[TRACER_LABELS[B]]) / 2 * \
+                (np.einsum('ijkxy,kx->ijxy', W_mixed[3], P_AC) + \
+                 np.einsum('ijkxy,ky->ijxy', W_mixed[3], P_AC))
+
+        return cov
 
     def _get_shotnoise_term(self, A:int, B:int):
         """Calculates elements of the shotnoise Gaussian term
@@ -564,9 +558,9 @@ class GaussianCovariance(PowerSpectrumCovariance):
             B (int): Second tracer index
 
         Returns:
-            np.ndarray: Flattened covariance matrix elements for the shotnoise term.
+            np.ndarray: shotnoise term contribution with shape [n_ells, n_ells, nk, nk]
         """
-        WinKernel = self.geometry.shotnoise_kernel
+        WinKernel = self.geometry.shotnoise_kernel(A,B)
         return (1 + self.alpha[TRACER_LABELS[A]]) * (1 + self.alpha[TRACER_LABELS[B]]) * WinKernel
 
 

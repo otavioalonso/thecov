@@ -316,10 +316,7 @@ class BoxGeometry(base.BaseClass):
 class SurveyGeometry(base.BaseClass):
 
     def __init__(self,
-                 randoms_a,      alpha_a,
-                 randoms_b=None, alpha_b=None,
-                 randoms_c=None, alpha_c=None,
-                 randoms_d=None, alpha_d=None,
+                 randoms:list=None, alphas:list=None,
                  nmesh=None, boxsize=None, boxpad=2.,
                  kmin=0, kmax=0.2, dk=None, binning_type="linear", mask_ellmax=12, pk_ellmax=4,
                  sample_mode="monte-carlo", lebedev_degree=25, resume_file=None, comm=MPI.COMM_WORLD):
@@ -339,14 +336,14 @@ class SurveyGeometry(base.BaseClass):
         self.pk_ellmax = pk_ellmax
         self.sample_mode = sample_mode
         self.lebedev_degree = lebedev_degree
-        self.window_matrix = None
+        self.window_matrix = {}
 
         if resume_file is not None:
             self.set_resume_file(resume_file)
         else:
             self.set_resume_file(os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache/WinKernel.npy"))
 
-        self._init_randoms(randoms_a, alpha_a, randoms_b, alpha_b, randoms_c, alpha_c, randoms_d, alpha_d)
+        self._init_randoms(randoms, alphas)
         self._init_I_factors()
         self.comm.Barrier()
         self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk)
@@ -403,32 +400,16 @@ class SurveyGeometry(base.BaseClass):
         
         self.k_binning = binning_obj
 
-    def _init_randoms(self, randoms_a, alpha_a,
-                            randoms_b, alpha_b,
-                            randoms_c, alpha_c,
-                            randoms_d, alpha_d):
+    def _init_randoms(self, randoms_list, alphas_list):
         
-        self.randoms = {'A' : None, 'B' : None, 'C' : None, 'D': None}
-        self.alphas  = {'A' : None, 'B' : None, 'C' : None, 'D': None}
+        self.randoms = []
+        self.alphas  = []
+        self.num_tracers = len(randoms_list)
 
-        self.randoms['A'] = self._parse_randoms(randoms_a, alpha_a)
-        self.alphas['A'] = alpha_a
-        self._num_tracers = 1
-
-        if randoms_b is not None and alpha_b is not None:
-            self.randoms['B'] = self._parse_randoms(randoms_b, alpha_b)
-            self.alphas['B'] = alpha_b
-            self._num_tracers+=1
-        
-        if randoms_c is not None and alpha_c is not None:
-            self.randoms['C'] = self._parse_randoms(randoms_c, alpha_c)
-            self.alphas['C'] = alpha_c
-            self._num_tracers+=1
-
-        if randoms_d is not None and alpha_d is not None:
-            self.randoms['D'] = self._parse_randoms(randoms_d, alpha_d)
-            self.alphas['D'] = alpha_d
-            self._num_tracers+=1
+        for i, (randoms, alpha) in enumerate(zip(randoms_list, alphas_list)):
+            self.randoms.append(self._parse_randoms(randoms, alpha))
+            self.alphas.append(alpha)
+            if self.rank == 0: self.logger.info(f"Randoms for tracer {i} initialized with {self.randoms[-1].size} objects and alpha = {alpha}.")
 
     def _parse_randoms(self, randoms, alpha):
         """Parse the randoms into a catalog, filling in missing information as needed."""
@@ -466,36 +447,40 @@ class SurveyGeometry(base.BaseClass):
 
     def _init_survey_windows(self, **kwargs):
         
-        # 'A' will always have an associated random / alpha
-        # TODO: When num_tracer = 1, this code runs thru the same calculation 3 times. Find a way to optimize it.
-        self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['B'], self.alphas['B'], shotnoise=True, **kwargs)
-        self.window_AC = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['C'], self.alphas['C'], **kwargs)
-        self.window_AD = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['D'], self.alphas['D'], **kwargs)
+        self.windows = {}
+        for (t1, t2) in itt.product(range(self.num_tracers), repeat=2):
+            if t2 > t1: continue
 
-        if self.randoms['B'] != None and self.randoms['C'] != None:
-            self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
-            self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], shotnoise=True, **kwargs)
-            self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
-        elif self.randoms['B'] != None and self.randoms['C'] == None:
-            self.window_CD = self.window_AB.copy()
-            self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], shotnoise=True, **kwargs)
-            self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
-        elif self.randoms['B'] == None and self.randoms['C'] != None:
-            self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
-            self.window_BC = self.window_AB.copy()
-            self.window_BD = self.window_AB.copy()
-        else:
-            self.window_CD = self.window_AB.copy()
-            self.window_BC = self.window_AB.copy()
-            self.window_BD = self.window_AB.copy()
+            self.windows[(t1, t2)] = SurveyWindow(self.randoms[t1], self.alphas[t1], 
+                                                  self.randoms[t2], self.alphas[t2], shotnoise=True, **kwargs)
+
+        # self.window_AB = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['B'], self.alphas['B'], shotnoise=True, **kwargs)
+        # self.window_AC = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['C'], self.alphas['C'], **kwargs)
+        # self.window_AD = SurveyWindow(self.randoms['A'], self.alphas['A'], self.randoms['D'], self.alphas['D'], **kwargs)
+
+        # if self.randoms['B'] != None and self.randoms['C'] != None:
+        #     self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
+        #     self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], shotnoise=True, **kwargs)
+        #     self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
+        # elif self.randoms['B'] != None and self.randoms['C'] == None:
+        #     self.window_CD = self.window_AB.copy()
+        #     self.window_BC = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['C'], self.alphas['C'], shotnoise=True, **kwargs)
+        #     self.window_BD = SurveyWindow(self.randoms['B'], self.alphas['B'], self.randoms['D'], self.alphas['D'], **kwargs)
+        # elif self.randoms['B'] == None and self.randoms['C'] != None:
+        #     self.window_CD = SurveyWindow(self.randoms['C'], self.alphas['C'], self.randoms['D'], self.alphas['D'], **kwargs)
+        #     self.window_BC = self.window_AB.copy()
+        #     self.window_BD = self.window_AB.copy()
+        # else:
+        #     self.window_CD = self.window_AB.copy()
+        #     self.window_BC = self.window_AB.copy()
+        #     self.window_BD = self.window_AB.copy()
 
     def _init_I_factors(self):
         """initializes all relavent I factors from the input randoms"""
 
         self.I_LABELS = ['12', '22', '10', '24', '14', '34', '44', '32']
-        self.TRACER_LABELS = ['A', 'B', 'C', 'D']
-        self._I = np.full((len(self.I_LABELS), len(self.TRACER_LABELS)), 1.0)
-        for tracer in self.TRACER_LABELS:
+        self._I = np.full((len(self.I_LABELS), self.num_tracers), 1.0)
+        for tracer in range(self.num_tracers):
 
             if self.randoms[tracer] is not None:
                 if self.rank == 0: 
@@ -509,18 +494,18 @@ class SurveyGeometry(base.BaseClass):
                             self.randoms[tracer]['WEIGHT']**fkp_power).sum().item()
                     I = self.comm.allreduce(I_sub, op=MPI.SUM)
 
-                    self._I[i, self.TRACER_LABELS.index(tracer)] = I
+                    self._I[i, tracer] = I
                     if self.rank == 0: pbar.update(1)
 
                 if self.rank == 0: pbar.close()
 
-    def I(self, tracer:str, nbar_power:int, fkp_power:int, apply_alpha=False):
+    def I(self, tracer:int, nbar_power:int, fkp_power:int, apply_alpha=False):
         """Retrieve the I normalization factor for the given tracer.
 
         Args:
-        tracer (str, optional): Tracer label. Must be one of 'A', 'B', 'C', 'D'.
-        nbar_power (int, optional): Power of nbar in the I factor.
-        fkp_power (int, optional): Power of FKP weight in the I factor.
+        tracer (int): Tracer label.
+        nbar_power (int): Power of nbar in the I factor.
+        fkp_power (int): Power of FKP weight in the I factor.
         apply_alpha (bool, optional): Whether to apply alpha(tracer) Default is False.
 
         Returns
@@ -528,29 +513,28 @@ class SurveyGeometry(base.BaseClass):
         I factor
         """
 
-        if tracer not in ['A', 'B', 'C', 'D']:
-            raise ValueError("tracer must be one of 'A', 'B', 'C', 'D'")
+        if tracer > self.num_tracers - 1:
+            raise ValueError(f"tracer must be between 0 and {self.num_tracers - 1}")
         if f"{nbar_power}{fkp_power}" not in self.I_LABELS:
             raise ValueError(f"Invalid combination of nbar_power ({nbar_power}) and fkp_power ({fkp_power}). Must be one of {self.I_LABELS}")
 
         label_idx = self.I_LABELS.index(f"{nbar_power}{fkp_power}")
-        tracer_idx = self.TRACER_LABELS.index(tracer)
         if apply_alpha:
-            return self._I[label_idx, tracer_idx] * self.alphas[tracer_idx]
+            return self._I[label_idx, tracer] * self.alphas[tracer]
         else:
-            return self._I[label_idx, tracer_idx]
+            return self._I[label_idx, tracer]
 
     @functools.cache
-    def get_cosmic_variance_window(self, cache_dir=None, term="first"):
+    def get_cosmic_variance_window(self, cache_dir=None, A=0, B=0, C=0, D=0, term="first"):
 
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
-        filename = os.path.join(cache_dir, f"W_ABCD_{term}.npz")
+        filename = os.path.join(cache_dir, f"W_{A}{B}{C}{D}_{term}.npz")
 
         if os.path.exists(filename):
             return base.SparseNDArray.load(filename)
         else:
-            window_ABCD = base.SparseNDArray(shape_out=2*[self.mask_ellmax//2+1] + 2*[2*self.mask_ellmax+1],
+            window_cv = base.SparseNDArray(shape_out=2*[self.mask_ellmax//2+1] + 2*[2*self.mask_ellmax+1],
                                              shape_in=(self.nmesh,self.nmesh,self.nmesh))
 
             total_iterations = 0
@@ -562,16 +546,16 @@ class SurveyGeometry(base.BaseClass):
 
             for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
                 if term == "first":
-                    window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AB.compute_mesh(la, ma, "W", "W") * \
-                                                           self.window_CD.compute_mesh(lb, mb, "W", "W")
+                    window_cv[la//2,lb//2,ma+la,mb+lb] = np.conj(self.windows[A, D].compute_mesh(la, ma, "W", "W")) * \
+                                                           self.windows[B, C].compute_mesh(lb, mb, "W", "W")
                 elif term == "second":
-                    window_ABCD[la//2,lb//2,ma+la,mb+lb] = self.window_AC.compute_mesh(la, ma, "W", "W") * \
-                                                           self.window_BD.compute_mesh(lb, mb, "W", "W")
+                    window_cv[la//2,lb//2,ma+la,mb+lb] = np.conj(self.windows[A, C].compute_mesh(la, ma, "W", "W")) * \
+                                                           self.windows[B, D].compute_mesh(lb, mb, "W", "W")
                 if self.rank == 0: pbar.update(1)
 
             if self.rank == 0: pbar.close()
-            window_ABCD.save(filename)
-            return window_ABCD
+            window_cv.save(filename)
+            return window_cv
 
     @functools.cache
     def get_mixed_window(self, cache_dir:str=None, term="first"):
@@ -612,11 +596,11 @@ class SurveyGeometry(base.BaseClass):
             return window
 
     @functools.cache
-    def get_shotnoise_window(self, cache_dir:str=None):
+    def get_shotnoise_window(self, cache_dir:str=None, A=0, B=0):
 
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
-        filename = os.path.join(cache_dir, "S_AB.npz")
+        filename = os.path.join(cache_dir, f"S_{A}{B}.npz")
         if os.path.exists(filename):
             return base.SparseNDArray.load(filename)
         else:
@@ -630,8 +614,9 @@ class SurveyGeometry(base.BaseClass):
             self.comm.Barrier()
             if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc="Shotnoise mesh calculation")
             for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
-                window[la//2,lb//2,ma+la,mb+lb] = self.window_AB.compute_mesh(la, ma, "S", None) * \
-                                                  self.window_BC.compute_mesh(lb, mb, "S", None)
+                window[la//2,lb//2,ma+la,mb+lb] = self.windows[A, B].compute_mesh(la, ma, "S", None) * \
+                                                  self.windows[B, A].compute_mesh(lb, mb, "S", None)
+                
                 if self.rank == 0: pbar.update(1)
 
             if self.rank == 0: pbar.close()
@@ -643,54 +628,50 @@ class SurveyGeometry(base.BaseClass):
         # TODO: This will usually give much larger values than we probably need. Would be good to test that
         return self.nmesh // 2 - 1
 
-    @property
-    def cosmic_variance_kernel(self):
+    def cosmic_variance_kernel(self, A, B, C, D):
         """
-        The survey window kernel corresponding to the cosmic variance Gaussian term.
+        The survey window kernel corresponding to the cosmic variance Gaussian term with the specific tracer combination.
         Upon first calling this property, the window kernels are computed and cached.
         Subsequent calls return the cached value.
         """
-        if self.window_matrix is None or np.any(np.isnan(self.window_matrix["cosmic_variance"])):
-            self.compute_window_matrix()
-        return self.window_matrix["cosmic_variance"]
+        key = f"cosmic_variance_{A}{B}{C}{D}"
+        if key not in self.window_matrix or np.any(np.isnan(self.window_matrix[key])):
+            self.compute_window_matrix(None, A, B, C, D)
+        return self.window_matrix[key]
     
-    @property
-    def mixed_kernel(self):
+    def mixed_kernel(self, A, B, C, D):
         """
         The survey window kernel corresponding to the mixed Gaussian term.
         Upon first calling this property, the window kernels are computed and cached.
         Subsequent calls return the cached value.
         """
-        if self.window_matrix is None or np.any(np.isnan(self.window_matrix["mixed_term"])):
-            self.compute_window_matrix()
-        return self.window_matrix["mixed_term"]
+        key = f"mixed_term_{A}{B}{C}{D}"
+        if key not in self.window_matrix or np.any(np.isnan(self.window_matrix[key])):
+            self.compute_window_matrix(None, A, B, C, D)
+        return self.window_matrix[key]
 
-    @property
-    def shotnoise_kernel(self):
+    def shotnoise_kernel(self, A, B, C=0, D=0):
         """
         The survey window kernel corresponding to the shotnoise Gaussian term.
         Upon first calling this property, the window kernels are computed and cached.
         Subsequent calls return the cached value.
         """
-        if self.window_matrix is None or np.any(np.isnan(self.window_matrix["shotnoise"])):
-            self.compute_window_matrix()
-        return self.window_matrix["shotnoise"]
+        key = f"shotnoise_{A}{B}"
+        if key not in self.window_matrix or np.any(np.isnan(self.window_matrix[key])):
+            self.compute_window_matrix(None, A, B, C, D)
+        return self.window_matrix[key]
 
     @property
     def nmesh(self):
-        return self.window_AB.knmesh
+        return self.windows[0,0].knmesh
     
     @property
     def boxsize(self):
-        return self.window_AB.kboxsize
+        return self.windows[0,0].kboxsize
     
     @property
     def kfun(self):
         return 2 * np.pi / self.boxsize
-
-    @property
-    def num_tracers(self):
-        return self._num_tracers
 
     @property
     def ikgrid(self):
@@ -804,7 +785,7 @@ class SurveyGeometry(base.BaseClass):
             logger.info(f'Loading mixed Gaunt coefficients from cache: {filename}')
             return base.SparseNDArray.load(filename)
         else:
-            logger.info(f'Computing mixed Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
+            logger.info(f'Computing mixed Gaunt coefficients (term= {term}, pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
             import sympy.physics.wigner
 
             # shape_out = l1, l2, l3, m1, m2, m3
@@ -905,7 +886,7 @@ class SurveyGeometry(base.BaseClass):
         self._I = {}
 
     @base.cache
-    def compute_window_matrix(self, cache_dir:str=None, kmodes_sampled=1000):
+    def compute_window_matrix(self, cache_dir:str=None, A:int=0, B:int=0, C:int=0, D:int=0, kmodes_sampled=50):
         '''Computes the window matrix to be used in the calculation of the covariance.
 
         Notes
@@ -920,7 +901,7 @@ class SurveyGeometry(base.BaseClass):
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
 
-        window_matrix_file = os.path.join(cache_dir, f'window_matrix.npz')
+        window_matrix_file = os.path.join(cache_dir, f'window_matrix_{A}{B}{C}{D}.npz')
         if os.path.exists(window_matrix_file):
             self.window_matrix = {}
             if self.rank == 0: self.logger.info(f'Loading window matrices from cache: {window_matrix_file}')
@@ -928,9 +909,9 @@ class SurveyGeometry(base.BaseClass):
                 self.comm.Barrier()
                 if self.rank == r:
                     data = np.load(window_matrix_file, allow_pickle=True)
-                    self.window_matrix['cosmic_variance'] = data['cosmic_variance']
-                    self.window_matrix['mixed_term'] = data['mixed_term']
-                    self.window_matrix['shotnoise'] = data['shotnoise']
+                    self.window_matrix[f'cosmic_variance_{A}{B}{C}{D}'] = data['cosmic_variance']
+                    self.window_matrix[f'mixed_term_{A}{B}{C}{D}']      = data['mixed_term']
+                    self.window_matrix[f'shotnoise_{A}{B}']             = data['shotnoise']
 
             return self.window_matrix
 
@@ -978,21 +959,13 @@ class SurveyGeometry(base.BaseClass):
         #shape_slab = self.compute_mesh(2,2,0,0).shape
 
         survey_window = {}
-        survey_window['first_cosmic_variance']  = self.get_cosmic_variance_window(cache_dir=cache_dir, term="first")
-        survey_window['second_cosmic_variance'] = self.get_cosmic_variance_window(cache_dir=cache_dir, term="second")
-        survey_window['first_mixed_term']       = self.get_mixed_window(cache_dir=cache_dir, term="first")
-        survey_window['second_mixed_term']      = self.get_mixed_window(cache_dir=cache_dir, term="second")
-        survey_window['third_mixed_term']       = self.get_mixed_window(cache_dir=cache_dir, term="third")
-        survey_window['fourth_mixed_term']      = self.get_mixed_window(cache_dir=cache_dir, term="fourth")
-        survey_window['shotnoise']              = self.get_shotnoise_window(cache_dir=cache_dir)
-
-
-        # S_A_temp = self.get_shotnoise_window("A", cache_dir)
-        # S_B_temp = self.get_shotnoise_window("B", cache_dir)
-        # self.comm.Barrier()
-    
-        # S_A = S_A_temp.to_shared_memory()
-        # S_B = S_B_temp.to_shared_memory()
+        survey_window['first_cosmic_variance']  = self.get_cosmic_variance_window(cache_dir, A, B, C, D, term="first")
+        survey_window['second_cosmic_variance'] = self.get_cosmic_variance_window(cache_dir, A, B, C, D, term="second")
+        # survey_window['first_mixed_term']       = self.get_mixed_window(cache_dir=cache_dir, term="first")
+        # survey_window['second_mixed_term']      = self.get_mixed_window(cache_dir=cache_dir, term="second")
+        # survey_window['third_mixed_term']       = self.get_mixed_window(cache_dir=cache_dir, term="third")
+        # survey_window['fourth_mixed_term']      = self.get_mixed_window(cache_dir=cache_dir, term="fourth")
+        survey_window['shotnoise']              = self.get_shotnoise_window(cache_dir, A, B)
 
         # Move survey_window to shared memory
         for key in survey_window:
@@ -1004,36 +977,34 @@ class SurveyGeometry(base.BaseClass):
             coefficients = {
                 'first_cosmic_variance':  self.get_first_cosmic_variance_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax),
                 'second_cosmic_variance': self.get_second_cosmic_variance_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax),
-                'first_mixed_term':       self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, "first"),
-                'second_mixed_term':      self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, "second"),
-                'third_mixed_term':       self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, "third"),
-                'fourth_mixed_term':      self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, "fourth"),
+                'first_mixed_term':       self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, term="first"),
+                'second_mixed_term':      self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, term="second"),
+                'third_mixed_term':       self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, term="third"),
+                'fourth_mixed_term':      self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, term="fourth"),
                 'shotnoise':              self.get_shotnoise_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax),
             }
         else:
             coefficients = None
 
         coefficients = self.comm.bcast(coefficients)
-
+        
         window_product = {
             'first_cosmic_variance':  coefficients['first_cosmic_variance'] @ survey_window['first_cosmic_variance'],
             'second_cosmic_variance': coefficients['second_cosmic_variance'] @ survey_window['second_cosmic_variance'],
-            'first_mixed_term':       coefficients['mixed_term'] @ survey_window['first_mixed_term'],
-            'second_mixed_term':      coefficients['mixed_term'] @ survey_window['second_mixed_term'],
-            'third_mixed_term':       coefficients['mixed_term'] @ survey_window['third_mixed_term'],
-            'fourth_mixed_term':      coefficients['mixed_term'] @ survey_window['fourth_mixed_term'],
+            # 'first_mixed_term':       coefficients['first_mixed_term'] @ survey_window['first_mixed_term'],
+            # 'second_mixed_term':      coefficients['second_mixed_term'] @ survey_window['second_mixed_term'],
+            # 'third_mixed_term':       coefficients['third_mixed_term'] @ survey_window['third_mixed_term'],
+            # 'fourth_mixed_term':      coefficients['fourth_mixed_term'] @ survey_window['fourth_mixed_term'],
             'shotnoise':              coefficients['shotnoise'] @ survey_window['shotnoise'],
         }
 
         # load in ylm callables
         Ylm_table = math.build_Ylm_table(self.pk_ellmax)
 
-        if self.window_matrix is None:
-            window_matrix = {}
-            
-            window_matrix['cosmic_variance'] = np.zeros([2] + 4*[self.pk_ellmax//2+1] + 2*[self.k_binning.kbins])
-            window_matrix['mixed_term']      = np.zeros([4] + 3*[self.pk_ellmax//2+1] + 2*[self.k_binning.kbins])
-            window_matrix['shotnoise']       = np.zeros(2*[self.pk_ellmax//2+1] + 2*[self.k_binning.kbins])
+        window_matrix = {}
+        window_matrix['cosmic_variance'] = np.zeros([2] + 4*[self.pk_ellmax//2+1] + 2*[self.k_binning.kbins])
+        window_matrix['mixed_term']      = np.zeros([4] + 3*[self.pk_ellmax//2+1] + 2*[self.k_binning.kbins])
+        window_matrix['shotnoise']       = np.zeros(2*[self.pk_ellmax//2+1] + 2*[self.k_binning.kbins])
 
         if self.rank == 0:
             self.logger.info(f'Starting mode integration with {self.size} MPI ranks...')
@@ -1073,32 +1044,41 @@ class SurveyGeometry(base.BaseClass):
                 # Cosmic Variance Term
                 for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(self.pk_ellmax, 4):
 
-                    mesh = window_product['first_cosmic_variance']\
+                    # mesh is shape [nmesh, nmesh, nmesh]
+                    mesh1 = window_product['first_cosmic_variance']\
                         [l1//2,l2//2,l3//2,l4//2,m1+l1,m2+l2,m3+l3,m4+l4].real
-                    mesh = mesh.toarray().reshape(window_product['first_cosmic_variance'].shape_in) # <- [nmesh, nmesh, nmesh]
-                    mesh *= Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k1[l2//2][(m2+l2)//2]*Ylm_k2[l3//2][(m3+l3)//2]*Ylm_k2[l4//2][(m4+l4)//2]
+                    mesh1 = mesh1.toarray().reshape(window_product['first_cosmic_variance'].shape_in) # <- [nmesh, nmesh, nmesh]
+                    mesh1 *= Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k1[l2//2][(m2+l2)//2]*Ylm_k2[l3//2][(m3+l3)//2]*Ylm_k2[l4//2][(m4+l4)//2]
                     
-                    window_matrix['cosmic_variance'][0, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
-                       (np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.k_binning.kbins)[:self.k_binning.kbins])
-                    
-                    mesh = window_product['second_cosmic_variance']\
+                    mesh2 = window_product['second_cosmic_variance']\
                         [l1//2,l2//2,l3//2,l4//2,m1+l1,m2+l2,m3+l3,m4+l4].real
-                    mesh = mesh.toarray().reshape(window_product['second_cosmic_variance'].shape_in)
-                    mesh *= Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k2[l2//2][(m2+l2)//2]*Ylm_k2[l3//2][(m3+l3)//2]*Ylm_k1[l4//2][(m4+l4)//2]
+                    mesh2 = mesh2.toarray().reshape(window_product['second_cosmic_variance'].shape_in)
+                    mesh2 *= Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k2[l2//2][(m2+l2)//2]*Ylm_k2[l3//2][(m3+l3)//2]*Ylm_k1[l4//2][(m4+l4)//2]
 
-                    window_matrix['cosmic_variance'][1, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
-                        (np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.k_binning.kbins)[:self.k_binning.kbins])
+                    idx = k2_bin_index.ravel()
+                    valid = (idx >= 0) & (idx < self.k_binning.kbins)
+                    if valid.any():
+                        window_matrix['cosmic_variance'][0, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
+                            np.bincount(k2_bin_index.ravel()[valid], weights=mesh1.ravel()[valid], minlength=self.k_binning.kbins)[:self.k_binning.kbins]
+                        window_matrix['cosmic_variance'][1, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
+                            np.bincount(k2_bin_index.ravel()[valid], weights=mesh2.ravel()[valid], minlength=self.k_binning.kbins)[:self.k_binning.kbins]
+
+                    # window_matrix['cosmic_variance'][0, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
+                    #    (np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.k_binning.kbins)[:self.k_binning.kbins])
+                    
+                    # window_matrix['cosmic_variance'][1, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
+                    #     (np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.k_binning.kbins)[:self.k_binning.kbins])
 
                 # Mixed Term
-                for l1, l2, l3, m1, m2, m3 in utils.ellmiter(self.pk_ellmax, 3):
-                    for term in ["first_mixed_term", "second_mixed_term", "third_mixed_term", "fourth_mixed_term"]:
-                        mesh = window_product[term]\
-                            [l1//2,l2//2,l3//2,m1+l1,m2+l2,m3+l3].real
-                        mesh = mesh.toarray().reshape(window_product[term].shape_in)
-                        mesh *= Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k2[l2//2][(m2+l2)//2]*Ylm_k2[l3//2][(m3+l3)//2]
+                # for l1, l2, l3, m1, m2, m3 in utils.ellmiter(self.pk_ellmax, 3):
+                #     for (i, term) in enumerate(["first_mixed_term", "second_mixed_term", "third_mixed_term", "fourth_mixed_term"]):
+                #         mesh = window_product[term]\
+                #             [l1//2,l2//2,l3//2,m1+l1,m2+l2,m3+l3].real
+                #         mesh = mesh.toarray().reshape(window_product[term].shape_in)
+                #         mesh *= Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k2[l2//2][(m2+l2)//2]*Ylm_k2[l3//2][(m3+l3)//2]
 
-                        window_matrix[term][0, l1//2,l2//2,l3//2,k1_bin_index,:] += \
-                            (np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.k_binning.kbins)[:self.k_binning.kbins])
+                #         window_matrix["mixed_term"][i, l1//2,l2//2,l3//2,k1_bin_index,:] += \
+                #             (np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.k_binning.kbins)[:self.k_binning.kbins])      
                 
                 # Shotnoise Term
                 for l1, l2, m1, m2 in utils.ellmiter(self.pk_ellmax, 2):
@@ -1116,24 +1096,28 @@ class SurveyGeometry(base.BaseClass):
         self.comm.Barrier()
         # Sum contributions from all ranks
         #if self.with_mpi:
-        self.window_matrix = {}
+        window_matrix_combined = {}
         for key in window_matrix.keys():
-            self.window_matrix[key] = np.zeros_like(window_matrix[key])
-            self.comm.Allreduce(window_matrix[key], self.window_matrix[key], op=MPI.SUM)
+            window_matrix_combined[key] = np.zeros_like(window_matrix[key])
+            self.comm.Allreduce(window_matrix[key], window_matrix_combined[key], op=MPI.SUM)
         #else:
         #    self.window_matrix = window_matrix
 
         # alpha and I22 factors are handled in covariance.py
         for k1 in range(self.k_binning.kbins):
-            self.window_matrix['cosmic_variance'][:,:,:,:,:,k1,:] *= \
+            window_matrix_combined['cosmic_variance'][:,:,:,:,:,k1,:] *= \
                 (4*np.pi)**4 / (len(kmodes[k1]) * Nmodes[None,None,None,None,None,k1])
 
-            self.window_matrix['mixed_term'][:,:,:,:,k1,:] *= \
+            window_matrix_combined['mixed_term'][:,:,:,:,k1,:] *= \
                 (4*np.pi)**2 / (len(kmodes[k1]) * Nmodes[None,None,None,k1])
             
-            self.window_matrix['shotnoise'][:,:,k1,:] *= \
+            window_matrix_combined['shotnoise'][:,:,k1,:] *= \
                 (4*np.pi)**2 / (len(kmodes[k1]) * Nmodes[None,None,k1])
         
+        self.window_matrix[f"cosmic_variance_{A}{B}{C}{D}"] = window_matrix_combined['cosmic_variance']
+        self.window_matrix[f"mixed_term_{A}{B}{C}{D}"]      = window_matrix_combined['mixed_term']
+        self.window_matrix[f"shotnoise_{A}{B}"]             = window_matrix_combined['shotnoise']
+
         if self.rank == 0:
             self.logger.info('Window matrix computation completed successfully!')
-            np.savez(window_matrix_file, **self.window_matrix)
+            np.savez(window_matrix_file, **window_matrix_combined)
