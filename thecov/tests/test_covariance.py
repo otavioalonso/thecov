@@ -3,7 +3,7 @@ import pytest
 import os
 
 from mockfactory.make_survey import RandomBoxCatalog
-from thecov import covariance, geometry, binning
+from thecov import covariance, geometry
 
 def create_basic_randoms(num_tracers):
 
@@ -11,12 +11,9 @@ def create_basic_randoms(num_tracers):
 	boxsize = 1000.0
 
 	randoms = []
-	for t in range(4):
-		if t+1 <= num_tracers:
-			randoms.append(RandomBoxCatalog(nbar=nbar[t], boxsize=boxsize))
-			randoms[t]["POSITION"] = randoms[t]["Position"]
-		else:
-			randoms.append(None)
+	for t in range(num_tracers):
+		randoms.append(RandomBoxCatalog(nbar=nbar[t], boxsize=boxsize))
+		randoms[t]["POSITION"] = randoms[t]["Position"]
 	return randoms
 
 def test_set_galaxy_pk_multipole_stores_symmetric_keys():
@@ -24,10 +21,7 @@ def test_set_galaxy_pk_multipole_stores_symmetric_keys():
 	randoms = create_basic_randoms(num_tracers=3)
 	alpha = [0.1, 0.1, 0.1]
 	kmax = 0.05
-	g = geometry.SurveyGeometry(randoms[0], alpha[0],
-							    randoms[1], alpha[1],
-							    randoms[2], alpha[2],
-							    None, None,
+	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
 							    kmin=0.001, kmax=kmax, dk=0.005,
 								resume_file="test.npy")
@@ -60,10 +54,7 @@ def test_get_tracer_cov_labels(num_tracers, tracer1, tracer2, expected):
 	randoms = create_basic_randoms(num_tracers)
 	alpha = [0.1, 0.1, 0.1, 0.1]
 	kmax = 0.05
-	g = geometry.SurveyGeometry(randoms[0], alpha[0],
-							    randoms[1], alpha[1],
-							    randoms[2], alpha[2],
-							    randoms[3], alpha[3],
+	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
 							    kmin=0.001, kmax=kmax, dk=0.005,
 								resume_file="test.npy")
@@ -90,10 +81,7 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 	randoms = create_basic_randoms(num_tracers=2)
 	alpha = [0.1, 0.1]
 	kmax = 0.05
-	g = geometry.SurveyGeometry(randoms[0], alpha[0],
-							    randoms[1], alpha[1],
-								None, None,
-							    None, None,
+	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
 							    kmin=0.001, kmax=kmax, dk=0.005,
 								resume_file="test.npy")
@@ -101,10 +89,10 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 	cov = covariance.PowerSpectrumCovariance(geometry=g)
 
 	# compute expected shotnoise per tracer
-	alphas_array = np.array(list(g.alphas.values()))
+	alphas_array = np.array(g.alphas)
 	expected = []
 	for t in range(g.num_tracers):
-		expected.append(cov.pk_renorm * (1 + alphas_array[t]) * g.I(TRACER_LABELS[t], 1, 2) / g.I(TRACER_LABELS[t], 2, 2))
+		expected.append(cov.pk_renorm * (1 + alphas_array[t]) * g.I(t, t, 1, 2) / g.I(t, t, 2, 2))
 	expected = np.array(expected)
 
 	sn = cov.shotnoise
@@ -116,10 +104,7 @@ def test_load_npy_file_raises_on_wrong_dimensions(tmp_path):
 	randoms = create_basic_randoms(num_tracers=2)
 	alpha = [0.1, 0.1, 0.1]
 	kmax = 0.05
-	g = geometry.SurveyGeometry(randoms[0], alpha[0],
-							    randoms[1], alpha[1],
-							    randoms[2], alpha[2],
-							    None, None,
+	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
 							    kmin=0.001, kmax=kmax, dk=0.005,
 								resume_file="test.npy")
