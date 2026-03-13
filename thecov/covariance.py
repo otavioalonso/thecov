@@ -125,6 +125,10 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
                 n_CD += 1
             n_AB += 1
 
+        # enforce symmetry
+        # axes 2,3 = ell1,ell2 ; axes 4,5 = k1,k2
+        cov = (cov + cov.transpose(0, 1, 3, 2, 5, 4)) / 2
+
         cov *= (self.pk_renorm)
         return cov
 
@@ -288,7 +292,7 @@ class GaussianCovariance(PowerSpectrumCovariance):
             self : GaussianCovariance Covariance matrix object.
         '''
 
-        # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
+        # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm 
         def func(A, B, C, D): 
             
             return self._get_cosmic_variance_term(A, B, C, D) + \

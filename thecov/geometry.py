@@ -7,6 +7,8 @@ SurveyGeometry
 """
 
 import logging
+
+import pmesh
 #logging.basicConfig(level = logging.INFO)
 logging.basicConfig(level = logging.INFO)
 
@@ -81,7 +83,7 @@ class SurveyWindow(base.BaseClass):
                 boxsize=boxsize,
                 boxpad=boxpad,
                 kmax=kmax,
-                shotnoise=shotnoise
+                shotnoise=shotnoise,
             )
 
             self.boxsize = max(self.mesh1.boxsize[0], self.mesh2.boxsize[0])
@@ -110,7 +112,7 @@ class SurveyWindow(base.BaseClass):
         """Parse the randoms into a mesh, filling in missing information as needed."""        
 
         start_time = time.time()
-        # Check if the randoms have nmesh and cellsize, otherwise set them using the kmax parameter
+        # Check if the randoms have nmesh or cellsize, otherwise set them using the kmax parameter
         if nmesh is None and cellsize is None:
             # Pick value that will give at least k_mask = kmax_window in the FFTs
             self.cellsize = np.pi / kmax / (1. + 1e-9)
@@ -120,7 +122,8 @@ class SurveyWindow(base.BaseClass):
             boxsize = self.comm.allreduce(boxsize_rank, op=MPI.MAX) * 1.05
 
         if self.rank == 0: self.logger.info("Creating survey mesh W...")
-        # W_AB = nbar * fkp (implicit factor of nbar comes later)
+        
+        # W_AB = nbar * fkp (implicit factor of nbar comes when painting to mesh)
         mesh = CatalogMesh(
             data_positions=randoms['POSITION'],
             data_weights=randoms['WEIGHT'] * alpha,
@@ -206,16 +209,6 @@ class SurveyWindow(base.BaseClass):
 
         return trim_to_nmesh, rebin_factor
 
-    # @staticmethod
-    # def _shotnoise_mesh(mesh, randoms, alpha):
-    #     """Compute the shotnoise mesh S_AB = nbar * fkp^2."""
-
-    #     return mesh.clone(
-    #         data_positions=randoms['POSITION'],
-    #         data_weights=randoms['WEIGHT_FKP']**2 * randoms[f'WEIGHT'] * alpha,
-    #         position_type='pos',
-    #     ).to_mesh(compensate=True)
-
     @functools.cache
     def compute_mesh(self, ell:int, m:int, mesh_1:str, mesh_2:str=None, threshold=None):
         """Compute the product of meshes and multiply by real Ylm evaluated at the same coordinates.
@@ -247,6 +240,7 @@ class SurveyWindow(base.BaseClass):
 
         self.comm.Barrier()
         # W_A or S_A
+
         result = mesh_to_clone.clone(
                 data_positions=mesh_to_clone.data_positions,
                 data_weights=mesh_to_clone.data_weights*self.alpha1*Ylm(*unit_positions.T),
@@ -266,14 +260,18 @@ class SurveyWindow(base.BaseClass):
                 mesh_to_clone = self.mesh1
 
         # W_B or S_B
-        result *= mesh_to_clone.clone(data_positions=mesh_to_clone.data_positions,
-                                      data_weights=mesh_to_clone.data_weights*self.alpha2, 
-                                      position_type='pos', 
-                                      mpicomm=self.comm, 
-                                      mpiroot = 0).to_mesh(compensate=True)
+        if mesh_2 is not None:
+            result *= (mesh_to_clone.clone(data_positions=mesh_to_clone.data_positions,
+                                        data_weights=mesh_to_clone.data_weights*self.alpha2, 
+                                        position_type='pos', 
+                                        mpicomm=self.comm, 
+                                        mpiroot = 0).to_mesh(compensate=True))
         
-        # pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
-        result = result.r2c() * self.knmesh**3 if hasattr(self, 'knmesh') else result.r2c() * self.nmesh**3
+        #cell_vol = (self.boxsize / self.nmesh)**3
+        results_test = utils.gather_field_to_root(result, root=0)
+
+        #pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
+        result = result.r2c() * self.nmesh**3
 
         if self.rank == 0: self.logger.info(f"Mesh computation with Ylm ({ell}, {m}) done in {time.time() - time_start:.2f} seconds")
 
@@ -287,6 +285,10 @@ class SurveyWindow(base.BaseClass):
 
         # trim mesh to desired size and rebin if needed
         if self.rank == 0:
+
+            # preform FFT
+            #result_combined = np.fft.fftn(result_combined, axes=(0, 1, 2), norm='backward')
+
             if self.dk is not None and self.kmax is not None:
                 trim_to_nmesh, rebin_factor = self._rebin_parameters(self.dk, self.kmax)
 
@@ -315,7 +317,6 @@ class SurveyWindow(base.BaseClass):
             if threshold is not None:
                 result_combined[np.abs(result_combined) < threshold] = 0
 
-        self.comm.Barrier()    
         return result_combined
 
     
@@ -456,6 +457,8 @@ class SurveyGeometry(base.BaseClass):
             if self.rank == 0: self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
             nbar = mockfactory.RedshiftDensityInterpolator(z=distance, weights=randoms['WEIGHT'], fsky=fsky)
             randoms['NZ'] = nbar(distance)
+        else:
+            if self.rank == 0: self.logger.info(f"Avg n(z) in randoms: {np.mean(randoms['NZ']):.3e}")
 
         return randoms
 
@@ -531,12 +534,13 @@ class SurveyGeometry(base.BaseClass):
 
         label_idx = self.I_LABELS.index(f"{nbar_power}{fkp_power}")
         if apply_alpha:
+            # We only sum over random A, so we only apply alpha for tracer1
             return self._I[label_idx, tracer1, tracer2] * self.alphas[tracer1] * self.alphas[tracer2]
         else:
             return self._I[label_idx, tracer1, tracer2]
 
     @functools.cache
-    def get_cosmic_variance_window(self, cache_dir=None, A=0, B=0, C=0, D=0, term="first"):
+    def get_cosmic_variance_window(self, cache_dir=None, A=0, B=0, C=0, D=0, coeffs=None, term="first"):
 
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
@@ -548,20 +552,24 @@ class SurveyGeometry(base.BaseClass):
             window_cv = base.SparseNDArray(shape_out=2*[self.mask_ellmax//2+1] + 2*[2*self.mask_ellmax+1],
                                            shape_in=(self.nmesh,self.nmesh,self.nmesh))
 
-            total_iterations = 0
-            for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
-                total_iterations+=1
+            idx_nonzero, _ = coeffs.T.get_nonzero_rows_dense()
+            total_iterations = len(idx_nonzero)
+
+            if self.rank == 0: 
+                pbar = self.tqdm(total=total_iterations, desc=f"{term} Cosmic variance mesh calculation")
 
             self.comm.Barrier()
-            if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc=f"{term} Cosmic variance mesh calculation")
-
-            for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
+            for (la_idx, lb_idx, ma_idx, mb_idx) in idx_nonzero:
+                la = la_idx * 2
+                lb = lb_idx * 2
+                ma = ma_idx - la
+                mb = mb_idx - lb
                 if term == "first":
-                    window_cv[la//2,lb//2,ma+la,mb+lb] = np.conj(self.windows[A, D].compute_mesh(la, ma, "W", "W")) * \
-                                                           self.windows[B, C].compute_mesh(lb, mb, "W", "W")
+                    window_cv[la_idx,lb_idx,ma_idx,mb_idx] = (np.conj(self.windows[A, D].compute_mesh(la, ma, "W", "W")) * \
+                                                                      self.windows[B, C].compute_mesh(lb, mb, "W", "W")).real.ravel()
                 elif term == "second":
-                    window_cv[la//2,lb//2,ma+la,mb+lb] = np.conj(self.windows[A, C].compute_mesh(la, ma, "W", "W")) * \
-                                                           self.windows[B, D].compute_mesh(lb, mb, "W", "W")
+                    window_cv[la_idx,lb_idx,ma_idx,mb_idx] = (np.conj(self.windows[A, C].compute_mesh(la, ma, "W", "W")) * \
+                                                                      self.windows[B, D].compute_mesh(lb, mb, "W", "W")).real.ravel()
                 if self.rank == 0: pbar.update(1)
 
             if self.rank == 0: pbar.close()
@@ -569,7 +577,7 @@ class SurveyGeometry(base.BaseClass):
             return window_cv
 
     @functools.cache
-    def get_mixed_window(self, cache_dir:str=None, A=0, B=0, C=0, D=0, term="first"):
+    def get_mixed_window(self, cache_dir:str=None, A=0, B=0, C=0, D=0, coeffs=None, term="first"):
 
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
@@ -581,25 +589,32 @@ class SurveyGeometry(base.BaseClass):
             window = base.SparseNDArray(shape_out=2*[self.mask_ellmax//2+1] + 2*[2*self.mask_ellmax+1],
                                         shape_in=(self.nmesh,self.nmesh,self.nmesh))
             
-            total_iterations = 0
-            for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
-                total_iterations+=1
+            idx_nonzero, _ = coeffs.T.get_nonzero_rows_dense()
+            total_iterations = len(idx_nonzero)
 
             self.comm.Barrier()
             if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc=f"Mixed mesh calculation ({term})")
-            for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
+            for (la_idx, lb_idx, ma_idx, mb_idx) in idx_nonzero:
+                la = la_idx * 2
+                lb = lb_idx * 2
+                ma = ma_idx - la
+                mb = mb_idx - lb
                 if term == "first":
-                    window[la//2,lb//2,ma+la,mb+lb] = self.windows[A, B].compute_mesh(la, ma, "S", None) * \
-                                              np.conj(self.windows[B, C].compute_mesh(lb, mb, "W", "W"))
+                    window[la_idx,lb_idx,ma_idx,mb_idx] = \
+                                (self.windows[A, B].compute_mesh(la, ma, "S", None) * \
+                         np.conj(self.windows[B, C].compute_mesh(lb, mb, "W", "W"))).real.ravel()
                 elif term == "second":
-                    window[la//2,lb//2,ma+la,mb+lb] = self.windows[A, D].compute_mesh(la, ma, "W", "W") * \
-                                              np.conj(self.windows[B, C].compute_mesh(lb, mb, "S", None))
+                    window[la_idx,lb_idx,ma_idx,mb_idx] = \
+                                (self.windows[A, D].compute_mesh(la, ma, "W", "W") * \
+                         np.conj(self.windows[B, C].compute_mesh(lb, mb, "S", None))).real.ravel()
                 elif term == "third":
-                    window[la//2,lb//2,ma+la,mb+lb] = self.windows[A, B].compute_mesh(la, ma, "S", None) * \
-                                              np.conj(self.windows[B, D].compute_mesh(lb, mb, "W", "W"))
+                    window[la_idx,lb_idx,ma_idx,mb_idx] = \
+                                (self.windows[A, B].compute_mesh(la, ma, "S", None) * \
+                         np.conj(self.windows[B, D].compute_mesh(lb, mb, "W", "W"))).real.ravel()
                 elif term == "fourth":
-                    window[la//2,lb//2,ma+la,mb+lb] = self.windows[A, C].compute_mesh(la, ma, "W", "W") * \
-                                              np.conj(self.windows[B, C].compute_mesh(lb, mb, "S", None))
+                    window[la_idx,lb_idx,ma_idx,mb_idx] = \
+                                (self.windows[A, C].compute_mesh(la, ma, "W", "W") * \
+                         np.conj(self.windows[B, C].compute_mesh(lb, mb, "S", None))).real.ravel()
                 if self.rank == 0: pbar.update(1)
 
             if self.rank == 0: pbar.close()                 
@@ -607,7 +622,7 @@ class SurveyGeometry(base.BaseClass):
             return window
 
     @functools.cache
-    def get_shotnoise_window(self, cache_dir:str=None, A=0, B=0):
+    def get_shotnoise_window(self, cache_dir:str=None, A=0, B=0, coeffs=None):
 
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
@@ -618,15 +633,18 @@ class SurveyGeometry(base.BaseClass):
             window = base.SparseNDArray(shape_out=2*[self.mask_ellmax//2+1] + 2*[2*self.mask_ellmax+1],
                                         shape_in=(self.nmesh,self.nmesh,self.nmesh))
 
-            total_iterations = 0
-            for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
-                total_iterations+=1
+            idx_nonzero, _ = coeffs.T.get_nonzero_rows_dense()
+            total_iterations = len(idx_nonzero)
 
             self.comm.Barrier()
             if self.rank == 0: pbar = self.tqdm(total=total_iterations, desc="Shotnoise mesh calculation")
-            for la, lb, ma, mb in utils.ellmiter(self.mask_ellmax, 2):
-                window[la//2,lb//2,ma+la,mb+lb] = self.windows[A, B].compute_mesh(la, ma, "S", None) * \
-                                          np.conj(self.windows[B, A].compute_mesh(lb, mb, "S", None))
+            for (la_idx, lb_idx, ma_idx, mb_idx) in idx_nonzero:
+                la = la_idx * 2
+                lb = lb_idx * 2
+                ma = ma_idx - la
+                mb = mb_idx - lb
+                window[la_idx,lb_idx,ma_idx,mb_idx] = (self.windows[A, B].compute_mesh(la, ma, "S", None) * \
+                                               np.conj(self.windows[B, A].compute_mesh(lb, mb, "S", None))).real.ravel()
                 
                 if self.rank == 0: pbar.update(1)
 
@@ -678,6 +696,10 @@ class SurveyGeometry(base.BaseClass):
     
     @property
     def boxsize(self):
+        return self.windows[0,0].boxsize
+
+    @property
+    def kboxsize(self):
         return self.windows[0,0].kboxsize
     
     @property
@@ -894,7 +916,7 @@ class SurveyGeometry(base.BaseClass):
         self.WinKernel = None
         self.WinKernel_error = None
         self._window_power = None
-        self._window_matrix = {}
+        self.window_matrix = {}
         self._I = {}
 
     @base.cache
@@ -952,7 +974,7 @@ class SurveyGeometry(base.BaseClass):
                                         max_modes=kmodes_sampled, k_shell_approx=0.05, sample_mode="monte-carlo")
         else:
             kmodes, Nmodes, weights = None, None, None
-        
+
         kmodes = self.comm.bcast(kmodes, root=0)
         Nmodes = self.comm.bcast(Nmodes, root=0)
         weights = self.comm.bcast(weights, root=0)
@@ -966,27 +988,6 @@ class SurveyGeometry(base.BaseClass):
                 f'Error in thecov.utils.sample_kmodes: results should have length {self.k_binning.kbins}, but had {len(kmodes)}. Parameters were kmin={self.k_binning.kmin},kmax={self.k_binning.kmax},dk={self.k_binning.dk},boxsize={self.boxsize},max_modes={kmodes_sampled},k_shell_approx={0.1}).'
 
             self.logger.info('Computing window function multipoles...')        
-
-        # Compute the shape of the slab
-        #shape_slab = self.compute_mesh(2,2,0,0).shape
-
-        survey_window = {}
-        survey_window['first_cosmic_variance']  = self.get_cosmic_variance_window(cache_dir, A, B, C, D, term="first")
-        survey_window['second_cosmic_variance'] = self.get_cosmic_variance_window(cache_dir, A, B, C, D, term="second")
-        survey_window['first_mixed_term']       = self.get_mixed_window(cache_dir, A, B, C, D, term="first")
-        survey_window['second_mixed_term']      = self.get_mixed_window(cache_dir, A, B, C, D, term="second")
-        survey_window['third_mixed_term']       = self.get_mixed_window(cache_dir, A, B, C, D, term="third")
-        survey_window['fourth_mixed_term']      = self.get_mixed_window(cache_dir, A, B, C, D, term="fourth")
-        survey_window['shotnoise']              = self.get_shotnoise_window(cache_dir, A, B)
-
-        # clear survey_window cache to save memory
-        # self.windows[A, B].compute_mesh.clear_cache()
-        # self.windows[A, C].compute_mesh.clear_cache()
-        # self.windows[A, D].compute_mesh.clear_cache()
-
-        # Move survey_window to shared memory
-        for key in survey_window:
-            survey_window[key] = survey_window[key].to_shared_memory()
 
         # Read Gaunt coefficients only on rank 0 to avoid IO race conditions
         if self.rank == 0:
@@ -1004,16 +1005,29 @@ class SurveyGeometry(base.BaseClass):
             coefficients = None
 
         coefficients = self.comm.bcast(coefficients)
+
+        survey_window = {}
+        survey_window['first_cosmic_variance']  = self.get_cosmic_variance_window(cache_dir, A, B, C, D, coefficients['first_cosmic_variance'], term="first")
+        survey_window['second_cosmic_variance'] = self.get_cosmic_variance_window(cache_dir, A, B, C, D, coefficients['second_cosmic_variance'], term="second")
+        survey_window['first_mixed_term']       = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['first_mixed_term'], term="first")
+        survey_window['second_mixed_term']      = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['second_mixed_term'], term="second")
+        survey_window['third_mixed_term']       = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['third_mixed_term'], term="third")
+        survey_window['fourth_mixed_term']      = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['fourth_mixed_term'], term="fourth")
+        survey_window['shotnoise']              = self.get_shotnoise_window(cache_dir, A, B, coefficients["shotnoise"])
+
+        # clear survey_window cache to save memory
+        # self.windows[A, B].compute_mesh.clear_cache()
+        # self.windows[A, C].compute_mesh.clear_cache()
+        # self.windows[A, D].compute_mesh.clear_cache()
+
+        # Move survey_window to shared memory
+        for key in survey_window:
+            survey_window[key] = survey_window[key].to_shared_memory()
         
-        window_product = {
-            'first_cosmic_variance':  coefficients['first_cosmic_variance'] @ survey_window['first_cosmic_variance'],
-            'second_cosmic_variance': coefficients['second_cosmic_variance'] @ survey_window['second_cosmic_variance'],
-            'first_mixed_term':       coefficients['first_mixed_term'] @ survey_window['first_mixed_term'],
-            'second_mixed_term':      coefficients['second_mixed_term'] @ survey_window['second_mixed_term'],
-            'third_mixed_term':       coefficients['third_mixed_term'] @ survey_window['third_mixed_term'],
-            'fourth_mixed_term':      coefficients['fourth_mixed_term'] @ survey_window['fourth_mixed_term'],
-            'shotnoise':              coefficients['shotnoise'] @ survey_window['shotnoise'],
-        }
+        window_product = {}
+        for key in list(survey_window.keys()):
+            window_product[key] = coefficients[key] @ survey_window[key]
+            del survey_window[key]  # free memory
 
         # load in ylm callables
         Ylm_table = math.build_Ylm_table(self.pk_ellmax)
@@ -1030,18 +1044,17 @@ class SurveyGeometry(base.BaseClass):
             if self.rank == 0:
                 self.logger.info(f'Computing window matrix for bin {i+1}/{self.k_binning.kbins} with {len(km)} modes.')
 
-            #k1_bin_index = int(i + self.k_binning.kmin // self.k_binning.dk)
-            k1_bin_index = i
+            k1_bin_index = int(i + self.k_binning.kmin // self.k_binning.dk)
+            #k1_bin_index = i
 
             # Split kmodes in chunks
             chunks = np.array_split(km, self.size)
 
             for ik1x, ik1y, ik1z, ik1r in chunks[self.rank]:
+
                 ik1 = np.array([ik1x, ik1y, ik1z])
-                ik1_norm = np.sqrt(np.sum(ik1**2))
-                if ik1_norm == 0:
-                    ik1_norm = 1.0
-                ik1_hat = ik1 / ik1_norm
+                if ik1r == 0: ik1_hat = ik1
+                else:         ik1_hat = ik1 / ik1r
 
                 # Compute and normalize ik2 = ik1 + delta_ik
                 ik2 = ik1[:, None, None, None] + delta_ik
@@ -1080,12 +1093,6 @@ class SurveyGeometry(base.BaseClass):
                         window_matrix['cosmic_variance'][1, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
                             np.bincount(k2_bin_index.ravel()[valid_mask], weights=mesh2.ravel()[valid_mask], minlength=self.k_binning.kbins)[:self.k_binning.kbins]
 
-                    # window_matrix['cosmic_variance'][0, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
-                    #    (np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.k_binning.kbins)[:self.k_binning.kbins])
-                    
-                    # window_matrix['cosmic_variance'][1, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
-                    #     (np.bincount(k2_bin_index.ravel(), weights=mesh.ravel(), minlength=self.k_binning.kbins)[:self.k_binning.kbins])
-
                 # Mixed Term
                 for l1, l2, l3, m1, m2, m3 in utils.ellmiter(self.pk_ellmax, 3):
                     for (i, term) in enumerate(["first_mixed_term", "second_mixed_term", "third_mixed_term", "fourth_mixed_term"]):
@@ -1110,8 +1117,6 @@ class SurveyGeometry(base.BaseClass):
                         window_matrix['shotnoise'][l1//2,l2//2,k1_bin_index,:] += \
                             (np.bincount(k2_bin_index.ravel()[valid_mask], weights=mesh.ravel()[valid_mask], minlength=self.k_binning.kbins)[:self.k_binning.kbins])
 
-            # for key in window_matrix.keys():
-            #     window_matrix[key] /= len(km)
 
         self.comm.Barrier()
         # Sum contributions from all ranks

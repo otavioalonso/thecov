@@ -46,6 +46,8 @@ class BaseClass:
             self.comm = MPI.COMM_WORLD
             self.rank = self.comm.Get_rank()
             self.size = self.comm.Get_size()
+        if self.__dict__.get("window_matrix") is None:
+            self.window_matrix = {}
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -56,8 +58,10 @@ class BaseClass:
         state = self.__dict__.copy()
         # Drop MPI communicators or other non-pickleable attributes
         for key, _ in state.items():
-            if "comm" in key or "rank" in key or "size" in key or "window_matrix" in key:
+            if "comm" in key or "rank" in key or "size" in key:
                 state[key] = None
+            elif "window_matrix" in key: # <- TODO: Find a better way to do this
+                state[key] = {}
 
         return state
 
@@ -995,7 +999,51 @@ class SparseNDArray:
         """
         return self.transpose()
     
-    
+    def nonzero_indices_out(self):
+        """
+        Yield shape_out indices (as tuples) that have at least one non-zero element.
+        
+        This is useful for iterating only over the populated rows of the sparse array.
+        
+        Yields
+        ------
+        tuple
+            ND indices into shape_out that have non-zero entries.
+        """
+        nonzero_rows = np.unique(self._matrix.nonzero()[0])
+        for row in nonzero_rows:
+            yield tuple(np.unravel_index(row, self.shape_out))
+
+    def get_nonzero_rows_dense(self):
+        """
+        Get all nonzero rows as dense arrays in a single operation.
+        
+        Much more efficient than iterating with __getitem__ when you need
+        all nonzero rows, as it avoids repeated sparse-to-dense conversions.
+        
+        Returns
+        -------
+        indices : numpy.ndarray
+            Shape (n_nonzero, len(shape_out)) array of ND indices into shape_out.
+        values : numpy.ndarray
+            Shape (n_nonzero, prod(shape_in)) array of row values.
+            Each row corresponds to the flattened shape_in data.
+        """
+        # Get unique nonzero row indices
+        nonzero_rows = np.unique(self._matrix.nonzero()[0])
+        
+        if len(nonzero_rows) == 0:
+            return np.empty((0, len(self.shape_out)), dtype=int), \
+                   np.empty((0, int(np.prod(self.shape_in))), dtype=self._matrix.dtype)
+        
+        # Convert flat row indices to ND indices
+        indices = np.array(np.unravel_index(nonzero_rows, self.shape_out)).T
+        
+        # Extract all nonzero rows at once (much faster than repeated getrow)
+        values = self._matrix[nonzero_rows].toarray()
+        
+        return indices, values
+
     def to_shared_memory(self):
         """Moves the given object into mpi4py shared memory
         
