@@ -8,12 +8,10 @@ SurveyGeometry
 
 import logging
 
-import pmesh
-#logging.basicConfig(level = logging.INFO)
 logging.basicConfig(level = logging.INFO)
 
 import numpy as np
-import os, time, sys
+import os, time
 import itertools as itt
 
 from tqdm import tqdm as shell_tqdm
@@ -35,7 +33,7 @@ class SurveyWindow(base.BaseClass):
 
     def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, mpi_comm=MPI.COMM_WORLD,
                  nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmin=0.0, kmax=0.02, 
-                 dk=None, binning_type="linear", shotnoise=False, **kwargs):
+                 dk=None, binning_type="linear", shotnoise=False):
 
         super().__init__()
 
@@ -54,19 +52,16 @@ class SurveyWindow(base.BaseClass):
         self.logger.setLevel(logging.INFO)
         self.tqdm = shell_tqdm
 
-        self._is_shotnoise = shotnoise
-        self.kmax = kmax
         self.dk = dk
+        self.nmesh = nmesh
+        self.cellsize = cellsize
+        self.boxsize = boxsize
+        self.boxpad = boxpad
         self.alpha1, self.alpha2 = alpha1, alpha2
 
         self.mesh1, self.shotnoise_mesh1 = self._create_mesh(
             randoms=randoms1,
             alpha=alpha1,
-            nmesh=nmesh,
-            cellsize=cellsize,
-            boxsize=boxsize,
-            boxpad=boxpad,
-            kmax=kmax,
             shotnoise=shotnoise
         )
         self.boxsize = self.mesh1.boxsize[0]
@@ -78,11 +73,6 @@ class SurveyWindow(base.BaseClass):
             self.mesh2, self.shotnoise_mesh2 = self._create_mesh(
                 randoms=randoms2,
                 alpha=alpha2,
-                nmesh=nmesh,
-                cellsize=cellsize,
-                boxsize=boxsize,
-                boxpad=boxpad,
-                kmax=kmax,
                 shotnoise=shotnoise,
             )
 
@@ -108,18 +98,18 @@ class SurveyWindow(base.BaseClass):
         # Initialize rebin parameters
         self._rebin_parameters(dk, kmax)
 
-    def _create_mesh(self, randoms, alpha, nmesh, cellsize, boxsize, boxpad, kmax, shotnoise):
+    def _create_mesh(self, randoms, alpha, shotnoise):
         """Parse the randoms into a mesh, filling in missing information as needed."""        
 
         start_time = time.time()
         # Check if the randoms have nmesh or cellsize, otherwise set them using the kmax parameter
-        if nmesh is None and cellsize is None:
+        if self.nmesh is None and self.cellsize is None:
             # Pick value that will give at least k_mask = kmax_window in the FFTs
-            self.cellsize = np.pi / kmax / (1. + 1e-9)
-        if boxsize is None:
+            self.cellsize = np.pi / self.k_binning.kmax / (1. + 1e-9)
+        if self.boxsize is None:
             self.logger.debug("boxsize not provided, estimating from randoms' positions.")
             boxsize_rank = max(np.amax(randoms['POSITION'], axis=0) - np.amin(randoms['POSITION'], axis=0))
-            boxsize = self.comm.allreduce(boxsize_rank, op=MPI.MAX) * 1.05
+            self.boxsize = self.comm.allreduce(boxsize_rank, op=MPI.MAX) * 1.05
 
         if self.rank == 0: self.logger.info("Creating survey mesh W...")
         
@@ -128,10 +118,10 @@ class SurveyWindow(base.BaseClass):
             data_positions=randoms['POSITION'],
             data_weights=randoms['WEIGHT'] * alpha,
             position_type='pos',
-            nmesh=nmesh,
-            cellsize=cellsize,
-            boxsize=boxsize,
-            boxpad=boxpad,
+            nmesh=self.nmesh,
+            cellsize=self.cellsize,
+            boxsize=self.boxsize,
+            boxpad=self.boxpad,
             dtype='c16',
             mpicomm=self.comm,
             **{'interlacing': 3, 'resampler': 'tsc'}
@@ -144,10 +134,10 @@ class SurveyWindow(base.BaseClass):
                 data_positions=randoms['POSITION'],
                 data_weights=randoms['WEIGHT']**2 * alpha,
                 position_type='pos',
-                nmesh=nmesh,
-                cellsize=cellsize,
-                boxsize=boxsize,
-                boxpad=boxpad,
+                nmesh=self.nmesh,
+                cellsize=self.cellsize,
+                boxsize=self.boxsize,
+                boxpad=self.boxpad,
                 dtype='c16',
                 mpicomm=self.comm,
                 **{'interlacing': 3, 'resampler': 'tsc'}
@@ -237,10 +227,13 @@ class SurveyWindow(base.BaseClass):
 
         Ylm = math.get_real_Ylm(ell, m)
         unit_positions = mesh_to_clone.data_positions / np.sqrt(np.sum(mesh_to_clone.data_positions**2, axis=-1))[:, None]
-
         self.comm.Barrier()
-        # W_A or S_A
 
+        # W_A or S_A
+        # NOTE: factor of alpha is needed here because, even if the randoms are
+        # corrected to match the data n(z), they are still oversampled by a factor of 1/alpha.
+        # Since the mesh is painted with the randoms weights, it is effectively painted with nbar*alpha 
+        # instead of nbar, so we need to multiply by alpha here to get the correct normalization.
         result = mesh_to_clone.clone(
                 data_positions=mesh_to_clone.data_positions,
                 data_weights=mesh_to_clone.data_weights*self.alpha1*Ylm(*unit_positions.T),
@@ -267,8 +260,12 @@ class SurveyWindow(base.BaseClass):
                                         mpicomm=self.comm, 
                                         mpiroot = 0).to_mesh(compensate=True))
         
-        #cell_vol = (self.boxsize / self.nmesh)**3
-        results_test = utils.gather_field_to_root(result, root=0)
+        # HACK - periodic box window for testing
+        # grid_pos = result.pm.generate_uniform_particle_grid(shift=self.boxsize/2.)
+        # unit_grid_pos = grid_pos / np.sqrt(np.sum(grid_pos**2, axis=-1))[:, None]
+        # result.value = Ylm(*unit_grid_pos.T)
+        #print(ell, m, result.pm.Nmesh, unit_grid_pos.shape, flush=True)
+        #print(f"Mean of result: {np.mean(result.value):.3e} +- {np.std(result.value):.3e}", flush=True)
 
         #pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
         result = result.r2c() * self.nmesh**3
@@ -285,12 +282,8 @@ class SurveyWindow(base.BaseClass):
 
         # trim mesh to desired size and rebin if needed
         if self.rank == 0:
-
-            # preform FFT
-            #result_combined = np.fft.fftn(result_combined, axes=(0, 1, 2), norm='backward')
-
-            if self.dk is not None and self.kmax is not None:
-                trim_to_nmesh, rebin_factor = self._rebin_parameters(self.dk, self.kmax)
+            if self.dk is not None and self.k_binning.kmax is not None:
+                trim_to_nmesh, rebin_factor = self._rebin_parameters(self.dk, self.k_binning.kmax)
 
                 if trim_to_nmesh <= self.nmesh and self.kboxsize <= self.boxsize:
                     result_combined = result_combined[:trim_to_nmesh, :trim_to_nmesh, :trim_to_nmesh]
@@ -299,21 +292,9 @@ class SurveyWindow(base.BaseClass):
                     # Sum mesh values in the new mesh
                     if rebin_factor > 1:
                         result_combined = result_combined.reshape((self.knmesh, rebin_factor, self.knmesh, rebin_factor, self.knmesh, rebin_factor)).sum(axis=(1, 3, 5))
+                        #result_combined = result_combined[::rebin_factor, ::rebin_factor, ::rebin_factor] <- old rebinning method
+                        self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result_combined.shape[0]} with factor {rebin_factor}.")
 
-                    self.logger.info(f"Rebinned mesh from {trim_to_nmesh} to {result_combined.shape[0]} with factor {rebin_factor}.")
-
-            # if hasattr(self, "knmesh"):
-            #     result_combined *= self.knmesh**3
-            # else:
-            #     result_combined *= self.nmesh**3
-            # pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
-            # if fourier:
-                #result_combined *= self.knmesh**3
-            # time_start = time.time()
-            # result_combined = np.fft.fftn(result_combined, axes=(0, 1, 2), norm='backward')
-            # self.logger.info(f"Mesh Fourier transform done in {time.time() - time_start:.2f} seconds")
-
-            # result = result.value if not fourier else result.r2c().value
             if threshold is not None:
                 result_combined[np.abs(result_combined) < threshold] = 0
 
@@ -401,7 +382,7 @@ class SurveyGeometry(base.BaseClass):
 
     @property
     def is_kbins_set(self):
-        return getattr(self, 'k_binning.is_kbins_set', False)
+        return getattr(getattr(self, 'k_binning', None), 'is_kbins_set', False)
 
     def set_kbins(self, binning_obj:binning.FourierBinning):
         '''Set the k-bins for the window kernels.
@@ -433,7 +414,6 @@ class SurveyGeometry(base.BaseClass):
             randoms = mockfactory.Catalog(randoms)
 
         # Check if the randoms have weights, otherwise set them to 1
-        #for name in ['WEIGHT', 'WEIGHT_FKP']:
         if 'WEIGHT' not in randoms:
             if 'WEIGHT_FKP' in randoms:
                 if self.rank == 0: self.logger.info('Setting WEIGHT column in randoms to WEIGHT_FKP values.')
@@ -502,9 +482,11 @@ class SurveyGeometry(base.BaseClass):
                                             (self.randoms[t2]["NZ"] * self.randoms[t2]["WEIGHT"])[sort_t2])
                         I_sub = (W_A * W_B).sum().item()
 
-                    elif t1 == t2: # <- PLACEHOLDER, we haven't defined non-Gauusian I factors for multi-tracer yet!
+                    elif t1 == t2: # <- PLACEHOLDER, we haven't fully thought through non-Gaussian I factors for multi-tracer yet!
                         I_sub = (self.randoms[t1]['NZ']**(nbar_power-1) * \
                                 self.randoms[t2]['WEIGHT']**fkp_power).sum().item()
+                    else:
+                        I_sub = 0.
                     I = self.comm.allreduce(I_sub, op=MPI.SUM)
 
                     self._I[i, t1, t2] = I
@@ -534,8 +516,8 @@ class SurveyGeometry(base.BaseClass):
 
         label_idx = self.I_LABELS.index(f"{nbar_power}{fkp_power}")
         if apply_alpha:
-            # We only sum over random A, so we only apply alpha for tracer1
-            return self._I[label_idx, tracer1, tracer2] * self.alphas[tracer1] * self.alphas[tracer2]
+            # We only sum over random A, so we only need to apply alpha for tracer1
+            return self._I[label_idx, tracer1, tracer2] * self.alphas[tracer1]
         else:
             return self._I[label_idx, tracer1, tracer2]
 
@@ -746,7 +728,8 @@ class SurveyGeometry(base.BaseClass):
                         for ma, mb in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lb)]):
 
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
-                                                sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
+                                               sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb)) / \
+                                                (np.sqrt(2*la+1) * np.sqrt(2*lb+1))
                             if value != 0.:
                                 gaunt_coefficients[l1//2,l2//2,
                                                     l3//2,l4//2,
@@ -790,7 +773,8 @@ class SurveyGeometry(base.BaseClass):
                     for la in np.arange(np.abs(lc-l4), min(lc+l4, mask_ellmax)+1, 2):
                         for ma, mc in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lc)]):
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                sympy.physics.wigner.gaunt(lc,l4,la,mc,m4,ma))
+                                               sympy.physics.wigner.gaunt(lc,l4,la,mc,m4,ma) / \
+                                                (np.sqrt(2*lc+1) * np.sqrt(2*la+1)))
                             lb, mb = l3, m3
                             if value != 0.:
                                 gaunt_coefficients[l1//2,l2//2,
@@ -835,7 +819,7 @@ class SurveyGeometry(base.BaseClass):
                 if lb <= mask_ellmax and term == "first":
                     for la in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
                         for ma in np.arange(-la, la+1, 2):
-                            value = np.float64(sympy.physics.wigner.gaunt(l2,l3,la,m2,m3,ma))
+                            value = np.float64(sympy.physics.wigner.gaunt(l2,l3,la,m2,m3,ma))# / np.sqrt(2*la+1)
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
 
@@ -843,7 +827,7 @@ class SurveyGeometry(base.BaseClass):
                 if lb <= mask_ellmax and term == "second":
                     for la in np.arange(np.abs(l1-l3), min(l1+l3, mask_ellmax)+1, 2):
                         for ma in np.arange(-la, la+1, 2):
-                            value = np.float64(sympy.physics.wigner.gaunt(l1,l3,la,m1,m3,ma))
+                            value = np.float64(sympy.physics.wigner.gaunt(l1,l3,la,m1,m3,ma))# / np.sqrt(2*la+1)
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
 
@@ -852,7 +836,7 @@ class SurveyGeometry(base.BaseClass):
                     for lb in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
                         for mb in np.arange(-lb, lb+1, 2):
                             
-                            value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lb,m1,m2,mb))
+                            value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lb,m1,m2,mb))# / np.sqrt(2*lb+1)
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
                                 
@@ -863,7 +847,8 @@ class SurveyGeometry(base.BaseClass):
                             for ma in np.arange(-la, la+1, 2):
                                 for mc in range(-lc, lc+1, 2):
                                     value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                    sympy.physics.wigner.gaunt(lc,l3,la,mc,m3,ma))
+                                                       sympy.physics.wigner.gaunt(lc,l3,la,mc,m3,ma))# / \
+                                                        #(np.sqrt(2*lc+1) * np.sqrt(2*la+1)))
                                     if value != 0:
                                         gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
                                     
@@ -886,7 +871,7 @@ class SurveyGeometry(base.BaseClass):
             import sympy.physics.wigner
 
             # shape_out = l1, l2, m1, m2
-            # shape_in =  la, lb, ma, lb
+            # shape_in =  la, lb, ma, mb
             # Only including positive m values, as -m is equivalent to m
             # when Ylm is real and m is even
             shape_out = 2*[pk_ellmax//2 + 1] + 2*[2*pk_ellmax + 1]
@@ -902,7 +887,7 @@ class SurveyGeometry(base.BaseClass):
                 lb,mb = 0,0
                 for la in range(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
                     for ma in range(-la, la+1, 2):
-                        value = np.float64(sympy.physics.wigner.gaunt(l1,l2,la,m1,m2,ma))
+                        value = np.float64(sympy.physics.wigner.gaunt(l1,l2,la,m1,m2,ma))# / np.sqrt(2*la+1)
                         if value != 0:
                             gaunt_coefficients[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += value
 
@@ -913,9 +898,6 @@ class SurveyGeometry(base.BaseClass):
 
     def clean(self):
         '''Clean window kernels and power spectra.'''
-        self.WinKernel = None
-        self.WinKernel_error = None
-        self._window_power = None
         self.window_matrix = {}
         self._I = {}
 
@@ -953,25 +935,15 @@ class SurveyGeometry(base.BaseClass):
             self.logger.info('='*60)
             self.logger.info('Computing window matrices')
             self.logger.info(f'pk_ellmax={self.pk_ellmax}, mask_ellmax={self.mask_ellmax}')
-            self.logger.info('='*60)
-
-        # sample kmodes from each k1 bin
-
-        # SAMPLE FROM SHELL
-        # kfun = 2 * np.pi / self.boxsize
-        # kmodes = np.array([[math.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
-        #                    kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
-        # Nmodes = math.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
-
-        # SAMPLE FROM CUBE
-        # kmodes, Nmodes = math.sample_from_cube(self.kmax/kfun, self.dk/kfun, kmodes_sampled)
+            self.logger.info('='*60 + '\n')
 
         # HYBRID SAMPLING
         # Sample k1 modes (in units of k / k_func)
+        k_shell_approx = 0.05 
         if self.rank == 0:
             self.logger.info('Sampling k-modes for binning...')
             kmodes, Nmodes, weights = math.sample_kmodes(self.k_binning, boxsize=self.boxsize,
-                                        max_modes=kmodes_sampled, k_shell_approx=0.05, sample_mode="monte-carlo")
+                                        max_modes=kmodes_sampled, k_shell_approx=k_shell_approx, sample_mode="monte-carlo")
         else:
             kmodes, Nmodes, weights = None, None, None
 
@@ -985,7 +957,7 @@ class SurveyGeometry(base.BaseClass):
             self.logger.info(f'Sampled k-modes for {self.k_binning.kbins} bins')
 
             assert len(kmodes) == self.k_binning.kbins and len(Nmodes) == self.k_binning.kbins, \
-                f'Error in thecov.utils.sample_kmodes: results should have length {self.k_binning.kbins}, but had {len(kmodes)}. Parameters were kmin={self.k_binning.kmin},kmax={self.k_binning.kmax},dk={self.k_binning.dk},boxsize={self.boxsize},max_modes={kmodes_sampled},k_shell_approx={0.1}).'
+                f'Error in thecov.utils.sample_kmodes: results should have length {self.k_binning.kbins}, but had {len(kmodes)}. Parameters were kmin={self.k_binning.kmin},kmax={self.k_binning.kmax},dk={self.k_binning.dk},boxsize={self.boxsize},max_modes={kmodes_sampled},k_shell_approx={k_shell_approx}.'
 
             self.logger.info('Computing window function multipoles...')        
 
@@ -1015,12 +987,10 @@ class SurveyGeometry(base.BaseClass):
         survey_window['fourth_mixed_term']      = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['fourth_mixed_term'], term="fourth")
         survey_window['shotnoise']              = self.get_shotnoise_window(cache_dir, A, B, coefficients["shotnoise"])
 
-        # clear survey_window cache to save memory
-        # self.windows[A, B].compute_mesh.clear_cache()
-        # self.windows[A, C].compute_mesh.clear_cache()
-        # self.windows[A, D].compute_mesh.clear_cache()
+        # TODO: Add clear cache method here to save memory if needed
+        # Let's get the code working first though...
 
-        # Move survey_window to shared memory
+        # Move survey_window to mpi shared memory
         for key in survey_window:
             survey_window[key] = survey_window[key].to_shared_memory()
         
@@ -1045,7 +1015,6 @@ class SurveyGeometry(base.BaseClass):
                 self.logger.info(f'Computing window matrix for bin {i+1}/{self.k_binning.kbins} with {len(km)} modes.')
 
             k1_bin_index = int(i + self.k_binning.kmin // self.k_binning.dk)
-            #k1_bin_index = i
 
             # Split kmodes in chunks
             chunks = np.array_split(km, self.size)
@@ -1064,8 +1033,6 @@ class SurveyGeometry(base.BaseClass):
                 ik2_hat = ik2 / ik2_norm_safe[None, ...]
                 ik2_hat[:, ik2_norm == 0] = np.array([1, 0, 0])[:, None]  # Arbitrary direction for zero vector
 
-                #k2_bin_index = (np.sqrt(np.sum(ik2**2, axis=0)) * self.kfun / self.k_binning.dk).astype(int)
-                #k2_bin_index = (ik2_norm * self.kfun / self.k_binning.dk).astype(int)
                 k2_bin_index = (((ik2_norm * self.kfun) - self.k_binning.kmin) / self.k_binning.dk).astype(int)
                 idx_valid = k2_bin_index.ravel()
                 valid_mask = (idx_valid >= 0) & (idx_valid < self.k_binning.kbins)
@@ -1108,7 +1075,6 @@ class SurveyGeometry(base.BaseClass):
                 # Shotnoise Term
                 for l1, l2, m1, m2 in utils.ellmiter(self.pk_ellmax, 2):
                     
-                    # TODO: talk to Otavio about this part and whether it matches the overleaf equation
                     mesh = window_product['shotnoise'][l1//2,l2//2,m1+l1,m2+l2].real
                     mesh = mesh.toarray().reshape(window_product['shotnoise'].shape_in)
                     mesh *=Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k2[l2//2][(m2+l2)//2]
@@ -1120,13 +1086,10 @@ class SurveyGeometry(base.BaseClass):
 
         self.comm.Barrier()
         # Sum contributions from all ranks
-        #if self.with_mpi:
         window_matrix_combined = {}
         for key in window_matrix.keys():
             window_matrix_combined[key] = np.zeros_like(window_matrix[key])
             self.comm.Allreduce(window_matrix[key], window_matrix_combined[key], op=MPI.SUM)
-        #else:
-        #    self.window_matrix = window_matrix
 
         I_AB = self.I(A, B, 2, 2, True)
         I_CD = self.I(C, D, 2, 2, True)

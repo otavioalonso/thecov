@@ -433,7 +433,7 @@ class GaussianCovariance(PowerSpectrumCovariance):
             if set_shotnoise:
                 self.set_shotnoise(shotnoise=pypower.shotnoise)
             else:
-                self.pk_renorm = self.geometry.I(2,2) / pypower.wnorm * naverage
+                self.pk_renorm = self.geometry.I(tracer1, tracer2, 2,2) / pypower.wnorm * naverage
                 self.logger.info(
                     f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
@@ -487,20 +487,14 @@ class GaussianCovariance(PowerSpectrumCovariance):
         WinKernel_1 = self.geometry.cosmic_variance_kernel(A,B,C,D)[0]
         WinKernel_2 = self.geometry.cosmic_variance_kernel(A,B,C,D)[1]
 
-        P_AD = np.array([1. / (2*ell + 1) * \
-                         self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
+        P_AD = np.array([self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
+        P_BC = np.array([self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
+        P_BD = np.array([self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
+        P_AC = np.array([self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
 
-        P_BC = np.array([1. / (2*ell + 1) * \
-                         self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
-        
-        P_BD = np.array([1. / (2*ell + 1) * \
-                         self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
-        
-        P_AC = np.array([1. / (2*ell + 1) * \
-                         self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
-
-        cov = np.einsum('ijklxy,kx,ly->ijxy', WinKernel_1, P_AD, P_BC) + \
-              np.einsum('ijklxy,kx,ly->ijxy', WinKernel_2, P_BD, P_AC)
+        ell_factor = 1.0 / (2 * np.array([0, 2, 4]) + 1)  # 1/(2ell+1) for ell in [0,2,4]
+        cov = np.einsum('ijklxy,k,l,kx,ly->ijxy', WinKernel_1, ell_factor, ell_factor, P_AD, P_BC) + \
+              np.einsum('ijklxy,k,l,kx,ly->ijxy', WinKernel_2, ell_factor, ell_factor, P_BD, P_AC)
         
         return cov
 
@@ -518,35 +512,29 @@ class GaussianCovariance(PowerSpectrumCovariance):
         """
         W_mixed = self.geometry.mixed_kernel(A,B,C,D)
 
-        P_AC = np.array([1 / (2*ell + 1) *
-                         self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
+        P_AC = np.array([self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
+        P_AD = np.array([self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
+        P_BC = np.array([self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
+        P_BD = np.array([self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
 
-        P_AD = np.array([1 / (2*ell + 1) *
-                         self.get_pk(ell, A, D, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
-
-        P_BC = np.array([1 / (2*ell + 1) *
-                         self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
-
-        P_BD = np.array([1 / (2*ell + 1) *
-                         self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
-
+        ell_factor = 1.0 / (2 * np.array([0, 2, 4]) + 1)
         cov = np.zeros((3, 3, self.k_binning.kbins, self.k_binning.kbins))
         if A == D:
             cov += (1 + self.alpha[A]) / 2 * \
-            (np.einsum('ijkxy,kx->ijxy', W_mixed[0], P_BC) + \
-             np.einsum('ijkxy,ky->ijxy', W_mixed[0], P_BC))
+            (np.einsum('ijkxy,k,kx->ijxy', W_mixed[0], ell_factor, P_BC) + \
+             np.einsum('ijkxy,k,ky->ijxy', W_mixed[0], ell_factor, P_BC))
         if B == C:
             cov += (1 + self.alpha[B]) / 2 * \
-                (np.einsum('ijkxy,kx->ijxy', W_mixed[1], P_AD) + \
-                 np.einsum('ijkxy,ky->ijxy', W_mixed[1], P_AD))
+                (np.einsum('ijkxy,k,kx->ijxy', W_mixed[1], ell_factor, P_AD) + \
+                 np.einsum('ijkxy,k,ky->ijxy', W_mixed[1], ell_factor, P_AD))
         if A == C:
             cov += (1 + self.alpha[A]) / 2 * \
-                (np.einsum('ijkxy,kx->ijxy', W_mixed[2], P_BD) + \
-                 np.einsum('ijkxy,ky->ijxy', W_mixed[2], P_BD))
+                (np.einsum('ijkxy,k,kx->ijxy', W_mixed[2], ell_factor, P_BD) + \
+                 np.einsum('ijkxy,k,ky->ijxy', W_mixed[2], ell_factor, P_BD))
         if B == D:
             cov += (1 + self.alpha[B]) / 2 * \
-                (np.einsum('ijkxy,kx->ijxy', W_mixed[3], P_AC) + \
-                 np.einsum('ijkxy,ky->ijxy', W_mixed[3], P_AC))
+                (np.einsum('ijkxy,k,kx->ijxy', W_mixed[3], ell_factor, P_AC) + \
+                 np.einsum('ijkxy,k,ky->ijxy', W_mixed[3], ell_factor, P_AC))
 
         return cov
 
@@ -564,6 +552,8 @@ class GaussianCovariance(PowerSpectrumCovariance):
         """
         WinKernel = self.geometry.shotnoise_kernel(A,B)
         if A == D and B == C:
+            #ells = np.array([0, 2, 4])
+            #ell_factor = np.outer(2*ells + 1, 2*ells + 1).reshape(3, 3, 1, 1) * np.ones((3, 3, self.k_binning.kbins, self.k_binning.kbins))
             return (1 + self.alpha[A]) * (1 + self.alpha[B]) * WinKernel
         else:
             return np.zeros((3, 3, self.k_binning.kbins, self.k_binning.kbins))

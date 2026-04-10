@@ -14,6 +14,7 @@ def create_basic_randoms(num_tracers):
 	for t in range(num_tracers):
 		randoms.append(RandomBoxCatalog(nbar=nbar[t], boxsize=boxsize))
 		randoms[t]["POSITION"] = randoms[t]["Position"]
+		randoms[t]["NZ"] = np.random.rand(len(randoms[t])) * 1e-5
 	return randoms
 
 def test_set_galaxy_pk_multipole_stores_symmetric_keys():

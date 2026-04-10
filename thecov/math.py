@@ -2,6 +2,7 @@
 """
 import numpy as np
 import scipy
+import sympy
 import os
 from . import binning
 

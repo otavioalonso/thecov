@@ -63,6 +63,25 @@ def test_evaluate_Ylms_matches_get_real_Ylm():
         via_table = evaluated[l_idx][m_idx]
         assert np.allclose(via_table, np.array(direct))
 
+def test_evaluate_Ylms_matches_expected():
+    pk_ellmax = 4
+    Y_table = math.build_Ylm_table(pk_ellmax)
+
+    # sample three directions (unit vectors) as arrays
+    kxh = np.array([1.0, 0.0, 0.0])
+    kyh = np.array([0.0, 1.0, 0.0])
+    kzh = np.array([0.0, 0.0, 1.0])
+
+    evaluated = math.evaluate_Ylms(Y_table, pk_ellmax, kxh, kyh, kzh)
+
+    # For l=0,m=0 the real Ylm should be a constant (1/sqrt(4pi))
+    assert np.allclose(evaluated[0][0], 1/np.sqrt(4*np.pi))
+
+    # For l=2,m=0 the real Ylm should be proportional to (3*cos^2(theta)-1)
+    # where cos(theta) = kzh for our unit vector along z-axis
+    expected_l2m0 = np.sqrt(5/(16*np.pi)) * (3*kzh**2 - 1)
+    assert np.allclose(evaluated[1][1], expected_l2m0)
+
 
 def test_k_binning_properties():
     kmin = 0.1
