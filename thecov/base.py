@@ -1076,6 +1076,10 @@ class SparseNDArray:
             indptr_shape = self._matrix.indptr.shape
             shape_in = self.shape_in
             shape_out = self.shape_out
+
+            data_dtype = self._matrix.data.dtype
+            indices_dtype = self._matrix.indices.dtype
+            indptr_dtype = self._matrix.indptr.dtype
         else:
             data_size = None
             indices_size = None
@@ -1084,6 +1088,10 @@ class SparseNDArray:
             indptr_shape = None
             shape_in = None
             shape_out = None
+
+            data_dtype = None
+            indices_dtype = None
+            indptr_dtype = None
 
         self.comm.Barrier()
 
@@ -1095,10 +1103,9 @@ class SparseNDArray:
         shape_in = self.comm.bcast(shape_in, root=0)
         shape_out = self.comm.bcast(shape_out, root=0)
 
-        # Use native dtypes for the arrays
-        data_dtype = self._matrix.data.dtype
-        indices_dtype = self._matrix.indices.dtype
-        indptr_dtype = self._matrix.indptr.dtype
+        data_dtype = self.comm.bcast(data_dtype, root=0)
+        indices_dtype = self.comm.bcast(indices_dtype, root=0)
+        indptr_dtype = self.comm.bcast(indptr_dtype, root=0)
 
         win_data = MPI.Win.Allocate_shared(data_size, np.dtype(data_dtype).itemsize, comm=self.comm)
         buf, _ = win_data.Shared_query(0)
