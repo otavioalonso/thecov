@@ -169,12 +169,13 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
             shotnoise with same normalization as the power spectrum.
         '''
 
-        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
-        self.logger.info(f'Forcing it to be {shotnoise}.')
+        if self.rank == 0:
+            self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
+            self.logger.info(f'Forcing it to be {shotnoise}.')
+
+            self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')
 
         self.pk_renorm *= shotnoise / self.shotnoise
-        self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')
-    
 
 class GaussianCovariance(PowerSpectrumCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
@@ -300,9 +301,9 @@ class GaussianCovariance(PowerSpectrumCovariance):
                    self._get_shotnoise_term(A, B, C, D)
 
         self._set_survey_covariance(self._build_covariance_survey(func))
-        eigvals = self.eigvals
 
         if self.rank == 0:
+            eigvals = self.eigvals
             if (eigvals < 0).any():
                 self.logger.warning(
                     f'Covariance matrix is not positive definite. Worst of {sum(eigvals < 0)} negative eigenvalues is {eigvals.min():.2e}.')
@@ -492,9 +493,8 @@ class GaussianCovariance(PowerSpectrumCovariance):
         P_BD = np.array([self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
         P_AC = np.array([self.get_pk(ell, A, C, force_return=True, remove_shotnoise=True) for ell in [0,2,4]])
 
-        ell_factor = 1.0 / (2 * np.array([0, 2, 4]) + 1)  # 1/(2ell+1) for ell in [0,2,4]
-        cov = np.einsum('ijklxy,k,l,kx,ly->ijxy', WinKernel_1, ell_factor, ell_factor, P_AD, P_BC) + \
-              np.einsum('ijklxy,k,l,kx,ly->ijxy', WinKernel_2, ell_factor, ell_factor, P_BD, P_AC)
+        cov = np.einsum('ijklxy,kx,ly->ijxy', WinKernel_1, P_AD, P_BC) + \
+              np.einsum('ijklxy,kx,ly->ijxy', WinKernel_2, P_BD, P_AC)
         
         return cov
 
@@ -517,24 +517,23 @@ class GaussianCovariance(PowerSpectrumCovariance):
         P_BC = np.array([self.get_pk(ell, B, C, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
         P_BD = np.array([self.get_pk(ell, B, D, force_return=True, remove_shotnoise=True) for ell in [0, 2, 4]])
 
-        ell_factor = 1.0 / (2 * np.array([0, 2, 4]) + 1)
         cov = np.zeros((3, 3, self.k_binning.kbins, self.k_binning.kbins))
         if A == D:
             cov += (1 + self.alpha[A]) / 2 * \
-            (np.einsum('ijkxy,k,kx->ijxy', W_mixed[0], ell_factor, P_BC) + \
-             np.einsum('ijkxy,k,ky->ijxy', W_mixed[0], ell_factor, P_BC))
+            (np.einsum('ijkxy,kx->ijxy', W_mixed[0], P_BC) + \
+             np.einsum('ijkxy,ky->ijxy', W_mixed[0], P_BC))
         if B == C:
             cov += (1 + self.alpha[B]) / 2 * \
-                (np.einsum('ijkxy,k,kx->ijxy', W_mixed[1], ell_factor, P_AD) + \
-                 np.einsum('ijkxy,k,ky->ijxy', W_mixed[1], ell_factor, P_AD))
+                (np.einsum('ijkxy,kx->ijxy', W_mixed[1], P_AD) + \
+                 np.einsum('ijkxy,ky->ijxy', W_mixed[1], P_AD))
         if A == C:
             cov += (1 + self.alpha[A]) / 2 * \
-                (np.einsum('ijkxy,k,kx->ijxy', W_mixed[2], ell_factor, P_BD) + \
-                 np.einsum('ijkxy,k,ky->ijxy', W_mixed[2], ell_factor, P_BD))
+                (np.einsum('ijkxy,kx->ijxy', W_mixed[2], P_BD) + \
+                 np.einsum('ijkxy,ky->ijxy', W_mixed[2], P_BD))
         if B == D:
             cov += (1 + self.alpha[B]) / 2 * \
-                (np.einsum('ijkxy,k,kx->ijxy', W_mixed[3], ell_factor, P_AC) + \
-                 np.einsum('ijkxy,k,ky->ijxy', W_mixed[3], ell_factor, P_AC))
+                (np.einsum('ijkxy,kx->ijxy', W_mixed[3], P_AC) + \
+                 np.einsum('ijkxy,ky->ijxy', W_mixed[3], P_AC))
 
         return cov
 

@@ -59,7 +59,7 @@ class SurveyWindow(base.BaseClass):
         self.boxpad = boxpad
         self.alpha1, self.alpha2 = alpha1, alpha2
 
-        self.mesh1, self.shotnoise_mesh1 = self._create_mesh(
+        self.mesh1, self.shotnoise_mesh1, self.nz1 = self._create_mesh(
             randoms=randoms1,
             alpha=alpha1,
             shotnoise=shotnoise
@@ -70,7 +70,7 @@ class SurveyWindow(base.BaseClass):
         if randoms2 is not None:
             assert alpha2 is not None, "If randoms2 is provided, alpha2 must also be provided."
 
-            self.mesh2, self.shotnoise_mesh2 = self._create_mesh(
+            self.mesh2, self.shotnoise_mesh2, self.nz2 = self._create_mesh(
                 randoms=randoms2,
                 alpha=alpha2,
                 shotnoise=shotnoise,
@@ -98,7 +98,7 @@ class SurveyWindow(base.BaseClass):
         # Initialize rebin parameters
         self._rebin_parameters(dk, kmax)
 
-    def _create_mesh(self, randoms, alpha, shotnoise):
+    def _create_mesh(self, randoms, alpha, shotnoise=False):
         """Parse the randoms into a mesh, filling in missing information as needed."""        
 
         start_time = time.time()
@@ -119,7 +119,7 @@ class SurveyWindow(base.BaseClass):
         # W_AB = nbar * fkp (implicit factor of nbar comes when painting to mesh)
         mesh = CatalogMesh(
             data_positions=randoms['POSITION'],
-            data_weights=randoms['WEIGHT'] * alpha,
+            data_weights=randoms['WEIGHT'],
             position_type='pos',
             nmesh=self.nmesh,
             cellsize=self.cellsize,
@@ -135,7 +135,7 @@ class SurveyWindow(base.BaseClass):
             if self.rank == 0: self.logger.info("Creating shotnoise mesh S...")
             shotnoise_mesh = CatalogMesh(
                 data_positions=randoms['POSITION'],
-                data_weights=randoms['WEIGHT']**2 * alpha,
+                data_weights=randoms['WEIGHT']**2,
                 position_type='pos',
                 nmesh=self.nmesh,
                 cellsize=self.cellsize,
@@ -153,7 +153,7 @@ class SurveyWindow(base.BaseClass):
         #self.test_mesh_stuff(mesh, randoms)
 
         if self.rank == 0: self.logger.info(f'Created meshes in {time.time() - start_time:.2f} seconds.')
-        return mesh, shotnoise_mesh
+        return mesh, shotnoise_mesh, randoms["NZ"]
         
     # Temporary function for debugging
     def test_mesh_stuff(self, mesh, randoms):
@@ -245,7 +245,7 @@ class SurveyWindow(base.BaseClass):
         return trim_to_nmesh, rebin_factor
 
     @functools.cache
-    def compute_mesh(self, ell:int, m:int, mesh_1:str, mesh_2:str=None, threshold=None):
+    def compute_mesh(self, ell:int, m:int, mesh_1:str, mesh_2:str=None, correct_first_mesh=False, apply_alpha=True, threshold=None):
         """Compute the product of meshes and multiply by real Ylm evaluated at the same coordinates.
 
         Args:
@@ -254,6 +254,8 @@ class SurveyWindow(base.BaseClass):
             mesh_1 (str): Which mesh to use for the first window. Options are "W" for the original mesh and "S" for the shotnoise mesh.
             mesh_2 (str, optional): Which mesh to use for the second window. Options are "W" for the original mesh and "S" for the shotnoise mesh. If none, does not
              multiply by a second mesh. Default is None.
+            correct_first_mesh (bool, optional): Whether to apply the n(z) correction to the first mesh. Default is False.
+            apply_alpha (bool, optional): Whether to apply the alpha correction to the first mesh. Default is True.
             threshold (float, optional): If provided, values in the resulting mesh below this threshold are set to zero to save memory. Default is None.
 
         Returns:
@@ -286,9 +288,17 @@ class SurveyWindow(base.BaseClass):
         # corrected to match the data n(z), they are still oversampled by a factor of 1/alpha.
         # Since the mesh is painted with the randoms weights, it is effectively painted with nbar*alpha 
         # instead of nbar, so we need to multiply by alpha here to get the correct normalization.
+        if correct_first_mesh and apply_alpha:
+            weights = mesh_to_clone.data_weights * self.nz1 * self.alpha1
+        elif correct_first_mesh and not apply_alpha:
+            weights = mesh_to_clone.data_weights * self.nz1
+        elif not correct_first_mesh and apply_alpha:
+            weights = mesh_to_clone.data_weights * self.alpha1
+        else:
+            weights = mesh_to_clone.data_weights
         result = mesh_to_clone.clone(
                 data_positions=mesh_to_clone.data_positions,
-                data_weights=mesh_to_clone.data_weights*Ylm(*unit_positions.T)*self.alpha1,
+                data_weights=weights * Ylm(*unit_positions.T),
                 position_type='pos',
                 mpicomm=self.comm
             ).to_mesh(compensate=True)
@@ -302,8 +312,9 @@ class SurveyWindow(base.BaseClass):
             else:
                 raise ValueError("mesh_2 must be either 'W' or 'S'")
 
+            # Second mesh will always need an extra factor of n(z)
             result *= (mesh_to_clone.clone(data_positions=mesh_to_clone.data_positions,
-                                        data_weights=mesh_to_clone.data_weights*self.alpha2, 
+                                        data_weights=mesh_to_clone.data_weights * self.nz2, 
                                         position_type='pos', 
                                         mpicomm=self.comm).to_mesh(compensate=True))
             
@@ -532,6 +543,9 @@ class SurveyGeometry(base.BaseClass):
                         I_sub = 0.
                     I = self.comm.allreduce(I_sub, op=MPI.SUM)
 
+                    # if self.rank == 0:
+                    #     self.logger.info(f"I_{label} for tracers {t1} and {t2}: {I:.3e}")
+
                     self._I[i, t1, t2] = I
                     if self.rank == 0: pbar.update(1)
 
@@ -560,7 +574,7 @@ class SurveyGeometry(base.BaseClass):
         label_idx = self.I_LABELS.index(f"{nbar_power}{fkp_power}")
         if apply_alpha:
             # We only sum over random A, so we only need to apply alpha for tracer1
-            return self._I[label_idx, tracer1, tracer2] * self.alphas[tracer1]
+            return self._I[label_idx, tracer1, tracer2] * self.alphas[tracer1]# * self.alphas[tracer2]
         else:
             return self._I[label_idx, tracer1, tracer2]
 
@@ -590,11 +604,11 @@ class SurveyGeometry(base.BaseClass):
                 ma = ma_idx - la
                 mb = mb_idx - lb
                 if term == "first":
-                    window_cv[la_idx,lb_idx,ma_idx,mb_idx] = (np.conj(self.windows[A, D].compute_mesh(la, ma, "W", "W")) * \
-                                                                      self.windows[B, C].compute_mesh(lb, mb, "W", "W")).real.ravel()
+                    window_cv[la_idx,lb_idx,ma_idx,mb_idx] = (np.conj(self.windows[A, D].compute_mesh(la, ma, "W", "W", correct_first_mesh=False)) * \
+                                                                      self.windows[B, C].compute_mesh(lb, mb, "W", "W", correct_first_mesh=True)).real.ravel()
                 elif term == "second":
-                    window_cv[la_idx,lb_idx,ma_idx,mb_idx] = (np.conj(self.windows[A, C].compute_mesh(la, ma, "W", "W")) * \
-                                                                      self.windows[B, D].compute_mesh(lb, mb, "W", "W")).real.ravel()
+                    window_cv[la_idx,lb_idx,ma_idx,mb_idx] = (np.conj(self.windows[A, C].compute_mesh(la, ma, "W", "W", correct_first_mesh=False)) * \
+                                                                      self.windows[B, D].compute_mesh(lb, mb, "W", "W", correct_first_mesh=True)).real.ravel()
                 if self.rank == 0: pbar.update(1)
 
             if self.rank == 0: pbar.close()
@@ -668,7 +682,7 @@ class SurveyGeometry(base.BaseClass):
                 ma = ma_idx - la
                 # Do we need to index lb, mb here?
                 window[la_idx,lb_idx,ma_idx,mb_idx] = (self.windows[A, B].compute_mesh(la, ma, "S", None) * \
-                                               np.conj(self.windows[B, A].compute_mesh(0, 0, "S", None)) * np.sqrt(4*np.pi)).real.ravel()
+                                               np.conj(self.windows[B, A].compute_mesh(0, 0, "S", None, apply_alpha=False)) * np.sqrt(4*np.pi)).real.ravel()
                 
                 if self.rank == 0: pbar.update(1)
 
@@ -1032,6 +1046,12 @@ class SurveyGeometry(base.BaseClass):
 
         # TODO: Add clear cache method here to save memory if needed
         # Let's get the code working first though...
+        for (t1, t2) in itt.product(range(self.num_tracers), repeat=2):
+            if t2 > t1: continue
+            if hasattr(self.windows[t1, t2], 'nz1'):
+                self.windows[t1, t1].nz1 = None
+            if hasattr(self.windows[t1, t2], 'nz2'):
+                self.windows[t1, t2].nz2 = None
 
         # Move survey_window to mpi shared memory
         for key in survey_window:
@@ -1138,14 +1158,17 @@ class SurveyGeometry(base.BaseClass):
 
         I_AB = self.I(A, B, 2, 2, True)
         I_CD = self.I(C, D, 2, 2, True)
+        ell_factor = 1.0 / (2 * np.array([0, 2, 4]) + 1)  # 1/(2ell+1) for ell in [0,2,4]
         # Factors of 4pi come from Ylm normalizations
         for k1 in range(self.k_binning.kbins):
             for k2 in range(self.k_binning.kbins):
                 window_matrix_combined['cosmic_variance'][:,:,:,:,:,k1,k2] *= \
-                    (4*np.pi)**4 / (I_AB * I_CD * len(kmodes[k1]) * Nmodes[k2])
+                    (4*np.pi)**4 / (I_AB * I_CD * len(kmodes[k1]) * Nmodes[k2]) * \
+                    ell_factor[None, None, None, :, None] * ell_factor[None, None, None, None, :]
 
                 window_matrix_combined['mixed_term'][:,:,:,:,k1,k2] *= \
-                    (4*np.pi)**3 / (I_AB * I_CD * len(kmodes[k1]) * Nmodes[k2])
+                    (4*np.pi)**3 / (I_AB * I_CD * len(kmodes[k1]) * Nmodes[k2]) * \
+                    ell_factor[None, None, None, :]
                 
                 window_matrix_combined['shotnoise'][:,:,k1,k2] *= \
                     (4*np.pi)**2 / (I_AB * I_CD * len(kmodes[k1]) * Nmodes[k2])
