@@ -154,7 +154,7 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
         if isinstance(self.geometry, geometry.SurveyGeometry):
             alphas = np.array(self.alpha)
             for t1 in range(self.num_tracers):
-                shotnoise.append(self.pk_renorm * (1 + alphas[t1]) * self.geometry.I(t1, t1, 1, 2)/self.geometry.I(t1, t1, 2, 2))
+                shotnoise.append(self.pk_renorm * (1 + alphas[t1]) * self.geometry.I(t1, t1, 1, 1, 0, 0)/self.geometry.I(t1, t1, 1, 1, 1, 1))
             return np.array(shotnoise)
         elif isinstance(self.geometry, geometry.BoxGeometry):
             return self.pk_renorm * self.geometry.shotnoise
@@ -196,12 +196,12 @@ class GaussianCovariance(PowerSpectrumCovariance):
 
         Args:
             pk (np.ndarray): Power spectrum input as a 1D numpy array.
-        ell (int): Multipole of the power spectrum.
-        tracer1 (int): Index of the first tracer the power spectrum corresponds to
-            If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-        tracer2 (int): Index of the second tracer the power spectrum corresponds to. 
-            If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
-        has_shotnoise (bool, optional): Whether the power spectrum has shotnoise included or not.
+            ell (int): Multipole of the power spectrum.
+            tracer1 (int): Index of the first tracer the power spectrum corresponds to
+                If equal to tracer2, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+            tracer2 (int): Index of the second tracer the power spectrum corresponds to. 
+                If equal to tracer1, then p(k) is an auto-spectrum. if different, then p(k) is a cross-spectrum
+            has_shotnoise (bool, optional): Whether the power spectrum has shotnoise included or not.
         
         Raises:
             ValueError: If the length of the power spectrum does not match the number of k-bins., or if the tracer indices are invalid.
