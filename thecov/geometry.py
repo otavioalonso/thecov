@@ -293,27 +293,8 @@ class SurveyWindow(base.BaseClass):
         unit_positions = self.mesh1.data_positions / np.sqrt(np.sum(self.mesh1.data_positions**2, axis=-1))[:, None]
         self.comm.Barrier()
 
-        # FRIDAY 04/17 NOTE
-        # If you compare mesh vs random quantities, they will differ by a factor of 
-        # random = mesh * n(z). This approach clearly worked in the past with single-tracer,
-        # but now I am multiplying 2 meshes together, so maybe that's not correct anymore?
-
         # W_A or S_A
-        # NOTE: factor of alpha is needed here because, even if the randoms are
-        # corrected to match the data n(z), they are still oversampled by a factor of 1/alpha.
-        # Since the mesh is painted with the randoms weights, it is effectively painted with nbar*alpha 
-        # instead of nbar, so we need to multiply by alpha here to get the correct normalization.
-        # if apply_nz and apply_alpha:
-        #     weights = mesh_to_clone.data_weights * self.nz1 * self.alpha1
-        # elif apply_nz and not apply_alpha:
-        #     weights = mesh_to_clone.data_weights * self.nz1
-        # elif not apply_nz and apply_alpha:
-        #     weights = mesh_to_clone.data_weights * self.alpha1
-        # else:
-        #     weights = mesh_to_clone.data_weights
         cell_vol = ((self.mesh1.boxsize[0] / self.mesh1.nmesh[0])**3)
-        #print(cell_vol)
-
         weights = self.nz1 ** (nbar_power_1 - 1) * (self.mesh1.data_weights ** fkp_power_1)
         result = self.mesh1.clone(
                 data_positions=self.mesh1.data_positions,
@@ -528,7 +509,7 @@ class SurveyGeometry(base.BaseClass):
         This distinction is to ensure any mesh
         """
         #self.I_LABELS = ['12', '22', '10', '24', '14', '34', '44', '32']
-        self.I_LABELS = ["1100", "1111"]
+        self.I_LABELS = ["1200", "1111"]
         self._I = np.full((len(self.I_LABELS), self.num_tracers, self.num_tracers), 1.0)
 
         for t1, t2 in itt.product(range(self.num_tracers), repeat=2):
@@ -1142,7 +1123,7 @@ class SurveyGeometry(base.BaseClass):
             for ik1x, ik1y, ik1z, ik1r in chunks[self.rank]:
 
                 ik1 = np.array([ik1x, ik1y, ik1z])
-                if ik1r == 0: ik1_hat = ik1
+                if ik1r == 0: ik1_hat = np.array([1, 0, 0])
                 else:         ik1_hat = ik1 / ik1r
 
                 # Compute and normalize ik2 = ik1 + delta_ik

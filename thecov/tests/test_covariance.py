@@ -93,7 +93,7 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 	alphas_array = np.array(g.alphas)
 	expected = []
 	for t in range(g.num_tracers):
-		expected.append(cov.pk_renorm * (1 + alphas_array[t]) * g.I(t, t, 1, 2) / g.I(t, t, 2, 2))
+		expected.append(cov.pk_renorm * (1 + alphas_array[t]) * g.I(t, t, 1, 2) / g.I(t, t, 1, 1, 1, 1))
 	expected = np.array(expected)
 
 	sn = cov.shotnoise

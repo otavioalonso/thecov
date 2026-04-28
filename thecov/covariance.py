@@ -154,7 +154,7 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
         if isinstance(self.geometry, geometry.SurveyGeometry):
             alphas = np.array(self.alpha)
             for t1 in range(self.num_tracers):
-                shotnoise.append(self.pk_renorm * (1 + alphas[t1]) * self.geometry.I(t1, t1, 1, 1, 0, 0)/self.geometry.I(t1, t1, 1, 1, 1, 1))
+                shotnoise.append(self.pk_renorm * (1 + alphas[t1]) * self.geometry.I(t1, t1, 1, 2, 0, 0)/self.geometry.I(t1, t1, 1, 1, 1, 1))
             return np.array(shotnoise)
         elif isinstance(self.geometry, geometry.BoxGeometry):
             return self.pk_renorm * self.geometry.shotnoise
@@ -434,7 +434,7 @@ class GaussianCovariance(PowerSpectrumCovariance):
             if set_shotnoise:
                 self.set_shotnoise(shotnoise=pypower.shotnoise)
             else:
-                self.pk_renorm = self.geometry.I(tracer1, tracer2, 2,2) / pypower.wnorm * naverage
+                self.pk_renorm = self.geometry.I(tracer1, tracer2, 1,1,1,1) / pypower.wnorm * naverage
                 self.logger.info(
                     f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
