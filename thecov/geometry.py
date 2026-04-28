@@ -350,7 +350,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         return result
 
     @base.cache
-    def compute_window_matrix(self, pk_ellmax=PK_ELL_MAX, mask_ellmax=MASK_ELL_MAX, kmodes_sampled=2000, n_workers=None, monitor=False, monitor_interval=5.0):
+    def compute_window_matrix(self, pk_ellmax=PK_ELL_MAX, mask_ellmax=MASK_ELL_MAX, kmodes_sampled=2000, n_workers=None, monitor=False, monitor_interval=5.0, m0_only=False):
         '''Computes the window matrix using multiprocessing with shared memory.
 
         Parameters
@@ -430,6 +430,8 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         # Collect all unique (nbar_power, weight_power, ell, m) combinations
         unique_mesh_params = set()
         for la, lb, ma, mb in utils.ellmiter(mask_ellmax, 2):
+            if m0_only and (ma != 0 or mb != 0):
+                continue
             unique_mesh_params.add((2, 2, la, ma))  # cosmic variance
             unique_mesh_params.add((2, 2, lb, mb))  # cosmic variance
             unique_mesh_params.add((1, 2, la, ma))  # mixed/shotnoise
@@ -498,6 +500,9 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             for index in coeff.T.nonzero_indices_out():
                 la, lb = 2*index[0], 2*index[1]
                 ma, mb = index[2] - la, index[3] - lb
+
+                if m0_only and (ma != 0 or mb != 0):
+                    continue
 
                 product[index] = (mesh_cache[(*nw1, la, ma)] * np.conj(mesh_cache[(*nw2, lb, mb)])).real.ravel().astype(float_dtype)
                 n_nonzero += 1

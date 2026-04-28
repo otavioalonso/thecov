@@ -1,0 +1,17 @@
+I just finished modifying geometry.py to perform the window computations in the spherical harmonics basis.
+
+Now we need to update covariance.py so the GaussianCovariance is compatible with it. The geometry.window_matrix objects should be contracted with the power spectrum as in
+
+> cosmic_variance = np.einsum('abcdxy,cx,dy->abxy', geometry.window_matrix['cosmic_variance'], pk, pk)
+> mixed_term = np.einsum('abcxy,cx->abxy', geometry.window_matrix['mixed_term'], pk)
+> shotnoise = geometry.window_matrix['shotnoise']
+
+And the whole interface should be made compatible. Let us not worry about the RegularTrispectrum and SuperSampleCovariance terms for now.
+
+Next step is to generalize this to multiple tracers, so we have to create a document describing the implementation for that. Main numerically relevant thing I believe is in compute_mesh. Right now, number densities and weights are multiplied at the catalog-level (positions of randoms), which is the highest resolution possible. Only then they're painted to a lower resolution mesh. For multitracer, nbar_power=2, weight_power=2 means one power of nbar comes from tracer A and another from tracer B. Similarly for weights. Would the only option here be to paint them on separate meshes and require higher mesh resolution? After we sort this out, note that for the covariance of tracers ABCD we need one mesh for AB and another for CD, and the window product computed in compute_window_matrix should involve W_AB * W_CD. Ideally, optimization would happen automatically if any tracers are identical. The covariance object would also need to be made compatible with the multiple cross-spectra necessary for this computation. The most urgent computation is C_AABB. We'd like to have a full description of the best approach to implement all this in an intuitive and optimal way, both numerically stable and computationally efficient. 
+
+Another todo item is to do a complete read of the code and make it all consistent. A list of modifications should be created such as to make this a nice and tidy framework for covariance computation.
+
+This will eventually be generalized for the bispectrum computation. The main mesh calculations are the same. But the coefficient structure is different. The covariance will still be a function of multiple multi-tracer power spectra. A suggestion for how to generalize the code structure to be adaptive to such computation should be presented. One approach adopted by other codes is to define an observable entity. But I don't want to create too much overhead, and in that case would want to have the most minimal abstraction level to make the code nice and usable. But I'd like to discuss whether that'd be necessary, so a document discussing this would be nice.
+
+Finally, a discussion on how to adapt RegularTrispectrum and SuperSampleCovariance to the new code (power spectrum only).

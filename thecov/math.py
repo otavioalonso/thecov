@@ -219,9 +219,9 @@ def get_real_Ylm(ell, m, modules=None):
     Returns
     -------
     Ylm : callable
-        A function that takes 3 arguments: (xhat, yhat, zhat)
-        unit-normalized Cartesian coordinates and returns the
-        specified Ylm.
+        A function that takes 3 arguments: (x, y, z)
+        Cartesian coordinates and returns the specified Ylm,
+        after normalizing the input vector.
 
     References
     ----------
@@ -254,16 +254,18 @@ def get_real_Ylm(ell, m, modules=None):
     if sp is None:
         import scipy.special
 
-        def Ylm(xhat, yhat, zhat):
-            # The cos(theta) dependence encoded by the associated Legendre polynomial
+        def Ylm(x, y, z):
+            norm = np.sqrt(x**2 + y**2 + z**2)
+            mask = norm == 0
+            norm = np.where(mask, 1, norm)
+            xhat, yhat, zhat = x / norm, y / norm, z / norm
             toret = amp * (-1)**m * scipy.special.lpmv(abs(m), ell, zhat)
-            # The phi dependence
             phi = np.arctan2(yhat, xhat)
             if m < 0:
                 toret *= np.sin(abs(m) * phi)
             else:
                 toret *= np.cos(abs(m) * phi)
-            return toret
+            return np.where(mask, 0, toret)
 
         # Attach some meta-data
         Ylm.l = ell
@@ -294,7 +296,15 @@ def get_real_Ylm(ell, m, modules=None):
 
     try: import numexpr
     except ImportError: numexpr = None
-    Ylm = sp.lambdify((xhat, yhat, zhat), expr, modules='numexpr' if numexpr is not None else ['scipy', 'numpy'])
+    _Ylm = sp.lambdify((xhat, yhat, zhat), expr, modules='numexpr' if numexpr is not None else ['scipy', 'numpy'])
+
+    def Ylm(x, y, z):
+        norm = np.sqrt(x**2 + y**2 + z**2)
+        mask = norm == 0
+        norm = np.where(mask, 1, norm)
+        xhat, yhat, zhat = x / norm, y / norm, z / norm
+        result = _Ylm(xhat, yhat, zhat)
+        return np.where(mask, 0, result)
 
     # Attach some meta-data
     Ylm.expr = expr
