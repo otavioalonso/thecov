@@ -226,6 +226,7 @@ class SurveyWindow(base.BaseClass):
 
         self.kboxsize = trim_to_nmesh/self.nmesh * self.boxsize
         self.knmesh = trim_to_nmesh//rebin_factor
+        self.rebin_factor = rebin_factor
 
         return trim_to_nmesh, rebin_factor
 
@@ -356,7 +357,7 @@ class SurveyWindow(base.BaseClass):
                 trim_to_nmesh, rebin_factor = self._rebin_parameters(self.dk, self.k_binning.kmax)
 
                 if trim_to_nmesh <= self.nmesh and self.kboxsize <= self.boxsize:
-                    result_combined = result_combined[:trim_to_nmesh, :trim_to_nmesh, :trim_to_nmesh]
+                    result_combined = utils.trim_fourier_mesh(result_combined, self.nmesh, trim_to_nmesh)
                     self.logger.info(f"Trimmed mesh from {self.nmesh} to {trim_to_nmesh} and boxsize from {self.boxsize:.0f} to {self.kboxsize:.0f}.")
 
                     # Sum mesh values in the new mesh
@@ -549,6 +550,7 @@ class SurveyGeometry(base.BaseClass):
 
                 self.logger.info(f"I_{label} for tracers {t1} and {t2}: {I:.3e}")
 
+
     def _init_I_factors_from_randoms(self):
         """initializes all relavent I factors from the input randoms"""
 
@@ -593,6 +595,8 @@ class SurveyGeometry(base.BaseClass):
                     if self.rank == 0: pbar.update(1)
 
                 if self.rank == 0: pbar.close()
+    
+
 
     def I(self, tracer1:int, tracer2:int, nbar_power_1:int, fkp_power_1:int, nbar_power_2:int=0, fkp_power_2:int=0, apply_alpha=False):
         """Retrieve the I normalization factor for the given tracer.
@@ -737,11 +741,6 @@ class SurveyGeometry(base.BaseClass):
             window.save(filename)
             return window
 
-    @property
-    def delta_k_max(self):
-        # TODO: This will usually give much larger values than we probably need. Would be good to test that
-        return self.nmesh // 2 - 1
-
     def cosmic_variance_kernel(self, A, B, C, D):
         """
         The survey window kernel corresponding to the cosmic variance Gaussian term with the specific tracer combination.
@@ -780,8 +779,15 @@ class SurveyGeometry(base.BaseClass):
         return self.windows[0,0].knmesh
     
     @property
+    def delta_k_max(self):
+        return self.nmesh // 2 - 1
+
+    @property
     def boxsize(self):
-        return self.windows[0,0].boxsize
+        if self.windows[0,0].rebin_factor != 1:
+            return self.windows[0,0].kboxsize
+        else:
+            return self.windows[0,0].boxsize
 
     @property
     def kboxsize(self):
@@ -1006,7 +1012,7 @@ class SurveyGeometry(base.BaseClass):
         self._I = {}
 
     @base.cache
-    def compute_window_matrix(self, cache_dir:str=None, A:int=0, B:int=0, C:int=0, D:int=0, kmodes_sampled=100):
+    def compute_window_matrix(self, cache_dir:str=None, A:int=0, B:int=0, C:int=0, D:int=0, kmodes_sampled=50):
         '''Computes the window matrix to be used in the calculation of the covariance.
 
         Notes
@@ -1041,11 +1047,13 @@ class SurveyGeometry(base.BaseClass):
             self.logger.info(f'pk_ellmax={self.pk_ellmax}, mask_ellmax={self.mask_ellmax}')
             self.logger.info('='*60 + '\n')
 
+            self.logger.warning(self.kboxsize, self.boxsize, self.kfun)
+
         # HYBRID SAMPLING
         # Sample k1 modes (in units of k / k_func)
         k_shell_approx = 0.05 
         if self.rank == 0:
-            self.logger.info('Sampling k-modes for binning...')
+            self.logger.info(f'Sampling k-modes for binning...')
             kmodes, Nmodes, weights = math.sample_kmodes(self.k_binning, boxsize=self.boxsize,
                                         max_modes=kmodes_sampled, k_shell_approx=k_shell_approx, sample_mode="monte-carlo")
         else:

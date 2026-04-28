@@ -161,3 +161,22 @@ def gather_field_to_root(field, root=0):
         full[slices] = slab
 
     return full
+
+def trim_fourier_mesh(mesh:np.ndarray, nmesh:int, new_nmesh:int):
+    """Trim a fourier-space mesh to a smaller size, preserving positive and negative frequencies.
+    
+    Args:
+        mesh (numpy.ndarray): The fourier-space mesh to trim.
+        nmesh (int): The original size of the mesh.
+        new_nmesh (int): The desired size of the mesh.
+
+    Returns:
+        numpy.ndarray: The trimmed fourier-space mesh.
+    """
+    mesh = np.fft.fftshift(mesh)
+    center = nmesh // 2
+    half   = new_nmesh // 2
+    mesh = mesh[center-half:center+half,
+                center-half:center+half,
+                center-half:center+half]
+    return np.fft.ifftshift(mesh)
