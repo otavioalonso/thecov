@@ -79,7 +79,7 @@ def cache_method(func):
 
 def ellmiter(lmax, n):
     for ls in itt.product(range(0, lmax + 1, 2), repeat=n):
-        for ms in itt.product(*[range(-l, l+1, 2) for l in ls]):
+        for ms in itt.product(*[range(-l, l+1) for l in ls]):
             yield ls + ms
 
 def elliter(lmax, n):
@@ -88,5 +88,5 @@ def elliter(lmax, n):
 
 
 def miter(*ls):
-    for ms in itt.product(*[range(-l, l+1, 2) for l in ls]):
+    for ms in itt.product(*[range(-l, l+1) for l in ls]):
         yield ms

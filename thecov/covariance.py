@@ -221,8 +221,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         for l1, l2 in itt.combinations_with_replacement(self.ells, r=2):
             self.set_ell_cov(l1, l2, 2/self.nmodes * np.diag(cov[l1, l2]))
 
-        if (self.eigvals < 0).any():
-            self.logger.warning('Covariance matrix is not positive definite.')
+        self._diagnose_covariance()
 
         return self
 
@@ -342,24 +341,50 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
     def _compute_covariance_survey(self):
 
         if self.geometry.window_matrix is None:
+            self.logger.warning(
+                'Window matrix has not been computed yet — running '
+                'geometry.compute_window_matrix() now (this can take a while).')
             self.geometry.compute_window_matrix()
 
-        pks = np.array([4 * np.pi / (2*ell + 1) * self.get_pk(ell, force_return=0.0) for ell in self.ells])
+        W_cv  = self.geometry.window_matrix['cosmic_variance']
+        W_mix = self.geometry.window_matrix['mixed_term']
+        W_sn  = self.geometry.window_matrix['shotnoise']
 
-        cosmic_variance = np.einsum('ijklxy,kx,ly->ijxy', self.geometry.window_matrix['cosmic_variance'], pks, pks)
+        # Build pks indexed by ell//2 so the layout is decoupled from
+        # whichever subset of ells the user has set on the covariance.
+        n_ell = W_cv.shape[0]
+        pks = np.zeros((n_ell, self.kbins))
+        for ell in self.ells:
+            pks[ell // 2] = 4 * np.pi / (2*ell + 1) * self.get_pk(ell, force_return=0.0)
 
-        mixed_term  = np.einsum('ijkxy,kx->ijxy', self.geometry.window_matrix['mixed_term'], pks)
-        mixed_term += np.einsum('ijkxy,ky->ijxy', self.geometry.window_matrix['mixed_term'], pks)
-        mixed_term *= (1 + self.alpha) / 2
+        cosmic_variance = np.einsum('abcdxy,cx,dy->abxy', W_cv, pks, pks)
 
-        shotnoise = (1 + self.alpha)**2 * self.geometry.window_matrix['cosmic_variance']
+        # Mixed term has a (k1 <-> k2) symmetric piece. The ('abcxy,cx->abxy')
+        # contraction sums the power spectrum on the k1 axis; the symmetric
+        # contribution sums it on k2 with l1 <-> l2 and k1 <-> k2 swapped.
+        mixed_term = (
+            np.einsum('abcxy,cx->abxy', W_mix, pks)
+            + np.einsum('abcxy,cy->abxy', W_mix, pks).swapaxes(0, 1).swapaxes(-1, -2)
+        )
 
-        covariance = cosmic_variance + mixed_term + shotnoise
+        shotnoise = W_sn
 
-        for l1,l2 in utils.elliter(max(self.ells), 2):
-            self.set_ell_cov(l1,l2, covariance[l1//2,l2//2,:,:])
+        # pk_renorm reconciles the covariance normalization with the input
+        # power spectrum normalization (Cov ~ P^2 ~ pk_renorm^2). It also
+        # scales the implicit shotnoise that lives inside W_sn through
+        # `self.shotnoise`.
+        covariance = self.pk_renorm**2 * (
+            cosmic_variance
+            + (1 + self.alpha)    * mixed_term
+            + (1 + self.alpha)**2 * shotnoise
+        )
 
-        return
+        for l1, l2 in utils.elliter(max(self.ells), 2):
+            self.set_ell_cov(l1, l2, covariance[l1//2, l2//2, :, :])
+
+        self._diagnose_covariance()
+
+        return self
 
 class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.

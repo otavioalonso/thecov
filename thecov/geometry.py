@@ -803,7 +803,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
                 for la in np.arange(np.abs(l1-l4), min(l1+l4, mask_ellmax)+1, 2):
                     for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
-                        for ma, mb in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lb)]):
+                        for ma, mb in itt.product(*[np.arange(-l, l+1) for l in (la, lb)]):
 
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
                                                 sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
@@ -848,7 +848,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
                 for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
                     for la in np.arange(np.abs(lc-l4), min(lc+l4, mask_ellmax)+1, 2):
-                        for ma, mc in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lc)]):
+                        for ma, mc in itt.product(*[np.arange(-l, l+1) for l in (la, lc)]):
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
                                                 sympy.physics.wigner.gaunt(lc,l4,la,mc,m4,ma))
                             lb, mb = l3, m3
@@ -892,7 +892,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                 lb, mb = l1, m1
                 if lb <= mask_ellmax:
                     for la in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
-                        for ma in np.arange(-la, la+1, 2):
+                        for ma in np.arange(-la, la+1):
                             value = np.float64(sympy.physics.wigner.gaunt(l2,l3,la,m2,m3,ma))
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
@@ -900,7 +900,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                 lb, mb = l2, m2
                 if lb <= mask_ellmax:
                     for la in np.arange(np.abs(l1-l3), min(l1+l3, mask_ellmax)+1, 2):
-                        for ma in np.arange(-la, la+1, 2):
+                        for ma in np.arange(-la, la+1):
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l3,la,m1,m3,ma))
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
@@ -908,17 +908,17 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                 la, ma = l3, m3
                 if la <= mask_ellmax:
                     for lb in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                        for mb in np.arange(-lb, lb+1, 2):
-                            
+                        for mb in np.arange(-lb, lb+1):
+
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lb,m1,m2,mb))
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
-                                
+
                 lb, mb = 0,0
                 for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
                     for la in range(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
-                        for ma in np.arange(-la, la+1, 2):
-                            for mc in range(-lc, lc+1, 2):
+                        for ma in np.arange(-la, la+1):
+                            for mc in range(-lc, lc+1):
                                 value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
                                                    sympy.physics.wigner.gaunt(lc,l3,la,mc,m3,ma))
                                 if value != 0:
@@ -960,7 +960,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
 
                 lb,mb = 0,0
                 for la in range(np.abs(l1-l2), min(l1+l2+1, mask_ellmax), 2):
-                    for ma in range(-la, la+1, 2):
+                    for ma in range(-la, la+1):
                         value = np.float64(sympy.physics.wigner.gaunt(l1,l2,la,m1,m2,ma))
                         if value != 0:
                             gaunt_coefficients[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += value

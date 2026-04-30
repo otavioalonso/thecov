@@ -15,3 +15,5 @@ Another todo item is to do a complete read of the code and make it all consisten
 This will eventually be generalized for the bispectrum computation. The main mesh calculations are the same. But the coefficient structure is different. The covariance will still be a function of multiple multi-tracer power spectra. A suggestion for how to generalize the code structure to be adaptive to such computation should be presented. One approach adopted by other codes is to define an observable entity. But I don't want to create too much overhead, and in that case would want to have the most minimal abstraction level to make the code nice and usable. But I'd like to discuss whether that'd be necessary, so a document discussing this would be nice.
 
 Finally, a discussion on how to adapt RegularTrispectrum and SuperSampleCovariance to the new code (power spectrum only).
+
+Unit tests should be defined, so a document describing what tests need to be created would be nice.

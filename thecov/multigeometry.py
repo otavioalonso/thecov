@@ -464,7 +464,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
                 for la in np.arange(np.abs(l1-l4), min(l1+l4, mask_ellmax)+1, 2):
                     for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
-                        for ma, mb in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lb)]):
+                        for ma, mb in itt.product(*[np.arange(-l, l+1) for l in (la, lb)]):
 
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
                                                 sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
