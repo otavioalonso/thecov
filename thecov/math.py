@@ -230,7 +230,46 @@ def sample_kmodes(k_binning:binning.FourierBinning, boxsize:float, max_modes=100
         # shell_modes = shell_modes[:,:,:-1]
         
         # return cube_modes + list(shell_modes), np.array(cube_nmodes + list(shell_nmodes)), list(cube_weights) + list(shell_weights)
-        
+
+def sample_kmodes_covapt(k_binning:binning.FourierBinning, boxsize:float, max_modes=1000, k_shell_approx=0.05, sample_mode="monte-carlo"):
+    """Same as sample_kmodes, but using the older CovaPT method (for testing)"""
+    kfun = 2 * np.pi / boxsize
+    Lm2 = int(k_binning.dk*k_binning.kbins/kfun)+1
+    print(Lm2)
+    [ix,iy,iz] = np.zeros((3,2*Lm2+1,2*Lm2+1,2*Lm2+1))
+    Bin_kmodes=[]; Bin_ModeNum=np.zeros(k_binning.kbins,dtype=int)
+
+    for i in range(k_binning.kbins): Bin_kmodes.append([])
+    for i in range(len(ix)):
+        ix[i,:,:]+=i-Lm2
+        iy[:,i,:]+=i-Lm2
+        iz[:,:,i]+=i-Lm2
+
+    rk=np.sqrt(ix**2+iy**2+iz**2)
+    # NOTE: CovaPT does not subtract by kmin
+    #sort = (((rk*kfun) - kmin)/dk).astype(int)
+    #sort=(rk*kfun/dk).astype(int)
+    sort = np.ones_like(rk) * -1
+    for kbin in range(k_binning.kbins):
+        idx = np.where((rk*kfun >= k_binning.kedges[kbin]) & 
+                        (rk*kfun < k_binning.kedges[kbin+1]))
+        sort[idx] = kbin
+
+    for i in range(0,k_binning.kbins):
+        ind=(sort==i)
+        Bin_ModeNum[i]=len(ix[ind])
+        Bin_kmodes[i]=np.hstack((ix[ind].reshape(-1,1),
+                                 iy[ind].reshape(-1,1),
+                                 iz[ind].reshape(-1,1),
+                                 rk[ind].reshape(-1,1)))
+    
+        if Bin_ModeNum[i] > max_modes:
+            # randomly sample modes
+            Bin_kmodes[i] = Bin_kmodes[i][np.random.choice(Bin_ModeNum[i], size=max_modes, replace=False)]
+            #Bin_kmodes[i] =(np.random.rand(max_modes)*Bin_ModeNum[i]).astype(int)
+
+    return Bin_kmodes, Bin_ModeNum, np.ones_like(Bin_ModeNum)
+
 def num_sampled_modes(kmodes:list):
     """Returns the number of sampled k-modes in the given list of np arrays
 
@@ -446,7 +485,7 @@ def build_Ylm_table(pk_ellmax:int):
     Ylm_table = []
     for l in range(0, pk_ellmax+1, 2):
         row = []
-        for m in range(-l, l+1, 2):
+        for m in range(-l, l+1, 1):
             row.append(get_real_Ylm(l, m))
         Ylm_table.append(row)
     return Ylm_table
@@ -468,8 +507,8 @@ def evaluate_Ylms(ylm_table:list, pk_ellmax:int, kxh, kyh, kzh):
     for l in range(0, pk_ellmax+1, 2):
         row = []
         l_idx = int(l / 2)
-        for m in range(-l, l+1, 2):
-            m_idx = int((m + l) / 2)
+        for m in range(-l, l+1, 1):
+            m_idx = int(m + l)
             row.append(np.array(ylm_table[l_idx][m_idx](kxh, kyh, kzh)))
         Ylm_k.append(row)
 

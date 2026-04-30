@@ -23,7 +23,7 @@ def test_set_galaxy_pk_multipole_stores_symmetric_keys():
 	alpha = [0.1, 0.1, 0.1]
 	kmax = 0.05
 	g = geometry.SurveyGeometry(randoms, alpha,
-							    nmesh=32, boxpad=1.2,
+							    nmesh=32, boxpad=1.3,
 							    kmin=0.001, kmax=kmax, dk=0.005,
 								resume_file="test.npy")
 	cov = covariance.GaussianCovariance(geometry=g)

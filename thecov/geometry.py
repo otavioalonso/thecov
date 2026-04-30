@@ -322,8 +322,6 @@ class SurveyWindow(base.BaseClass):
         #pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
         result = result.r2c() * self.nmesh**3
 
-        if self.rank == 0: self.logger.info(f"Mesh computation with Ylm ({ell}, {m}) done in {time.time() - time_start:.2f} seconds")
-
         # element-wise addition and send to root rank
         if hasattr(result, 'value'):
             result_combined = utils.gather_field_to_root(result, root=0)
@@ -350,6 +348,7 @@ class SurveyWindow(base.BaseClass):
             if threshold is not None:
                 result_combined[np.abs(result_combined) < threshold] = 0
 
+        if self.rank == 0: self.logger.info(f"Mesh computation with Ylm ({ell}, {m}) done in {time.time() - time_start:.2f} seconds")
         return result_combined
 
     
@@ -815,7 +814,7 @@ class SurveyGeometry(base.BaseClass):
             for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
                 for la in np.arange(np.abs(l1-l4), min(l1+l4, mask_ellmax)+1, 2):
                     for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
-                        for ma, mb in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lb)]):
+                        for ma, mb in itt.product(*[np.arange(-l, l+1, 1) for l in (la, lb)]):
 
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
                                                sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
@@ -826,7 +825,6 @@ class SurveyGeometry(base.BaseClass):
                                                     m3+l3,m4+l4,
                                                     la//2,lb//2,
                                                     ma+la,mb+lb] += value
-
             
             logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
             logger.info(f'Saving first cosmic variance Gaunt coefficients to: {filename}')
@@ -860,10 +858,11 @@ class SurveyGeometry(base.BaseClass):
             for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
                 for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
                     for la in np.arange(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
-                        for ma, mc in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lc)]):
+                        for ma, mc in itt.product(*[np.arange(-l, l+1, 1) for l in (la, lc)]):
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
                                                sympy.physics.wigner.gaunt(lc,l3,la,mc,m3,ma))
                             lb, mb = l4, m4 # <- for indexing into W_BD later
+                        
                             if value != 0.:
                                 gaunt_coefficients[l1//2,l2//2,
                                                     l3//2,l4//2,
@@ -907,7 +906,7 @@ class SurveyGeometry(base.BaseClass):
                     la, ma = l1, m1 # <- for indexing S_A
                     if la > mask_ellmax: continue
                     for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
-                        for mb in np.arange(-lb, lb+1, 2):
+                        for mb in np.arange(-lb, lb+1, 1):
                             value = np.float64(sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
@@ -916,7 +915,7 @@ class SurveyGeometry(base.BaseClass):
                     lb, mb = l2, m2 # <- for indexing S_B
                     if lb > mask_ellmax: continue
                     for la in np.arange(np.abs(l1-l3), min(l1+l3, mask_ellmax)+1, 2):
-                        for ma in np.arange(-la, la+1, 2):
+                        for ma in np.arange(-la, la+1, 1):
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l3,la,m1,m3,ma))
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
@@ -925,7 +924,7 @@ class SurveyGeometry(base.BaseClass):
                     lb, mb = l3, m3 # <- for indexing W_CD
                     if lb > mask_ellmax: continue
                     for la in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                        for ma in np.arange(-la, la+1, 2):
+                        for ma in np.arange(-la, la+1, 1):
                             value = np.float64(sympy.physics.wigner.gaunt(l1,l2,la,m1,m2,ma))
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
@@ -934,8 +933,8 @@ class SurveyGeometry(base.BaseClass):
                     lb, mb = 0, 0 # <- no l,m dependence for S_B in this term
                     for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
                         for la in range(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
-                            for ma in np.arange(-la, la+1, 2):
-                                for mc in range(-lc, lc+1, 2):
+                            for ma in np.arange(-la, la+1, 1):
+                                for mc in range(-lc, lc+1, 1):
                                     value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
                                                        sympy.physics.wigner.gaunt(lc,l3,la,mc,m3,ma))
                                     if value != 0:
@@ -977,7 +976,7 @@ class SurveyGeometry(base.BaseClass):
                 # SECOND TERM: G = gaunt(l1,l2,la) for S_A * conj(S_B)
                 lb,mb = 0,0
                 for la in range(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                    for ma in range(-la, la+1, 2):
+                    for ma in range(-la, la+1, 1):
                         value = np.float64(sympy.physics.wigner.real_gaunt(l1,l2,la,m1,m2,ma))
                         if value != 0:
                             gaunt_coefficients[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += value
@@ -1028,14 +1027,14 @@ class SurveyGeometry(base.BaseClass):
             self.logger.info(f'pk_ellmax={self.pk_ellmax}, mask_ellmax={self.mask_ellmax}')
             self.logger.info('='*60 + '\n')
 
-            self.logger.warning(self.kboxsize, self.boxsize, self.kfun)
-
         # HYBRID SAMPLING
         # Sample k1 modes (in units of k / k_func)
         k_shell_approx = 0.05 
         if self.rank == 0:
             self.logger.info(f'Sampling k-modes for binning...')
-            kmodes, Nmodes, weights = math.sample_kmodes(self.k_binning, boxsize=self.boxsize,
+            # kmodes, Nmodes, weights = math.sample_kmodes(self.k_binning, boxsize=self.boxsize,
+            #                             max_modes=kmodes_sampled, k_shell_approx=k_shell_approx, sample_mode="monte-carlo")
+            kmodes, Nmodes, weights = math.sample_kmodes_covapt(self.k_binning, boxsize=self.boxsize,
                                         max_modes=kmodes_sampled, k_shell_approx=k_shell_approx, sample_mode="monte-carlo")
         else:
             kmodes, Nmodes, weights = None, None, None
@@ -1080,23 +1079,41 @@ class SurveyGeometry(base.BaseClass):
         survey_window['fourth_mixed_term']      = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['fourth_mixed_term'], term="fourth")
         survey_window['shotnoise']              = self.get_shotnoise_window(cache_dir, A, B, coefficients["shotnoise"])
 
-        # TODO: Add clear cache method here to save memory if needed
-        # Let's get the code working first though...
+        # Clear caches and objects we don't need anymore
+        self.get_cosmic_variance_window.cache_clear()
+        self.get_mixed_window.cache_clear()
+        self.get_shotnoise_window.cache_clear()
+
         for (t1, t2) in itt.product(range(self.num_tracers), repeat=2):
             if t2 > t1: continue
             if hasattr(self.windows[t1, t2], 'nz1'):
                 self.windows[t1, t1].nz1 = None
             if hasattr(self.windows[t1, t2], 'nz2'):
                 self.windows[t1, t2].nz2 = None
+            if t1 != 0 and t2 != 0:
+                self.windows[t1, t2] = None
 
-        # Move survey_window to mpi shared memory
-        for key in survey_window:
-            survey_window[key] = survey_window[key].to_shared_memory()
-        
+        # Move survey_window to mpi shared memory, compute product on rank 0 only,
+        # then share the result — avoids holding n_ranks private copies of window_product
         window_product = {}
         for key in list(survey_window.keys()):
-            window_product[key] = coefficients[key] @ survey_window[key]
-            del survey_window[key]  # free memory
+            survey_window[key] = survey_window[key].to_shared_memory()
+            if self.rank == 0:
+                self.logger.info(f"Computing W @ G ({key})")
+                self.logger.info(f"Total of {len(coefficients[key].T.get_nonzero_rows_dense()[0])} meshes, currently {utils.get_available_memory()} GB available")
+                product = coefficients[key] @ survey_window[key]
+            else:
+                product = base.SparseNDArray([1], [1], comm=self.comm)
+            
+            if self.rank == 0:
+                self.logger.info(f"Shape of product: {product.shape_in}, {product.shape_out}")
+                self.logger.info(f"Memory usage for {key}: {(product._matrix.data.nbytes*2 + product._matrix.indices.nbytes + product._matrix.indptr.nbytes) / (1024**3)} GB")
+            
+            self.comm.Barrier()
+            survey_window[key] = None
+            coefficients[key] = None
+            window_product[key] = product.to_shared_memory()
+            product = None
         
         self.comm.Barrier()
 
@@ -1148,12 +1165,12 @@ class SurveyGeometry(base.BaseClass):
                     mesh1 = window_product['first_cosmic_variance']\
                         [l1//2,l2//2,l3//2,l4//2,m1+l1,m2+l2,m3+l3,m4+l4].real
                     mesh1 = mesh1.toarray().reshape(window_product['first_cosmic_variance'].shape_in) # <- [nmesh, nmesh, nmesh]
-                    mesh1 *= Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k1[l2//2][(m2+l2)//2]*Ylm_k2[l3//2][(m3+l3)//2]*Ylm_k2[l4//2][(m4+l4)//2]
-                    
+                    mesh1 *= Ylm_k1[l1//2][(m1+l1)]*Ylm_k1[l2//2][(m2+l2)]*Ylm_k2[l3//2][(m3+l3)]*Ylm_k2[l4//2][(m4+l4)]
+
                     mesh2 = window_product['second_cosmic_variance']\
                         [l1//2,l2//2,l3//2,l4//2,m1+l1,m2+l2,m3+l3,m4+l4].real
                     mesh2 = mesh2.toarray().reshape(window_product['second_cosmic_variance'].shape_in)
-                    mesh2 *= Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k2[l2//2][(m2+l2)//2]*Ylm_k2[l3//2][(m3+l3)//2]*Ylm_k1[l4//2][(m4+l4)//2]
+                    mesh2 *= Ylm_k1[l1//2][(m1+l1)]*Ylm_k2[l2//2][(m2+l2)]*Ylm_k2[l3//2][(m3+l3)]*Ylm_k1[l4//2][(m4+l4)]
 
                     if valid_mask.any():
                         window_matrix['cosmic_variance'][0, l1//2,l2//2,l3//2,l4//2,k1_bin_index,:] += \
@@ -1167,7 +1184,7 @@ class SurveyGeometry(base.BaseClass):
                         mesh = window_product[term]\
                             [l1//2,l2//2,l3//2,m1+l1,m2+l2,m3+l3].real
                         mesh = mesh.toarray().reshape(window_product[term].shape_in)
-                        mesh *= Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k2[l2//2][(m2+l2)//2]*Ylm_k2[l3//2][(m3+l3)//2]
+                        mesh *= Ylm_k1[l1//2][(m1+l1)]*Ylm_k2[l2//2][(m2+l2)]*Ylm_k2[l3//2][(m3+l3)]
 
                         if valid_mask.any():
                             window_matrix["mixed_term"][i, l1//2,l2//2,l3//2,k1_bin_index,:] += \
@@ -1178,7 +1195,7 @@ class SurveyGeometry(base.BaseClass):
                     
                     mesh = window_product['shotnoise'][l1//2,l2//2,m1+l1,m2+l2].real
                     mesh = mesh.toarray().reshape(window_product['shotnoise'].shape_in)
-                    mesh *=Ylm_k1[l1//2][(m1+l1)//2]*Ylm_k2[l2//2][(m2+l2)//2]
+                    mesh *=Ylm_k1[l1//2][(m1+l1)]*Ylm_k2[l2//2][(m2+l2)]
 
                     if valid_mask.any():
                         window_matrix['shotnoise'][l1//2,l2//2,k1_bin_index,:] += \

@@ -1068,7 +1068,7 @@ class SparseNDArray:
             if required_memory > available_memory:
                 logger.warning(f"Not enough available memory to move window to shared memory. Required: {required_memory:.2f} GB, Available: {available_memory:.2f} GB. Program may crash.")
             
-            logger.info("Allocating shared memory...")
+            logger.debug("Allocating shared memory...")
             data_size = int(self._matrix.data.nbytes*2)
             data_shape = self._matrix.data.shape
             indices_size = int(self._matrix.indices.nbytes)
