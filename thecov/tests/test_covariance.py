@@ -5,6 +5,9 @@ import os
 from mockfactory.make_survey import RandomBoxCatalog
 from thecov import covariance, geometry
 
+def get_cache_dir():
+	return os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache/")
+
 def create_basic_randoms(num_tracers):
 
 	nbar = np.random.rand(num_tracers) * 1e-5
@@ -25,7 +28,7 @@ def test_set_galaxy_pk_multipole_stores_symmetric_keys():
 	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.3,
 							    kmin=0.001, kmax=kmax, dk=0.005,
-								resume_file="test.npy")
+								cache_dir=get_cache_dir())
 	cov = covariance.GaussianCovariance(geometry=g)
 
 	# provide a k-binning stub matching pk length
@@ -39,7 +42,8 @@ def test_set_galaxy_pk_multipole_stores_symmetric_keys():
 	assert (ell, 0, 1) in cov._pk
 	assert (ell, 1, 0) in cov._pk
 	assert np.array_equal(cov._pk[(ell, 0, 1)], cov._pk[(ell, 1, 0)])
-	os.remove("test.npy")
+
+	os.remove(get_cache_dir() + "survey_geometry.npy")
 	
 @pytest.mark.parametrize("num_tracers, tracer1, tracer2, expected", [
     (1, 0, 0, None),
@@ -58,7 +62,7 @@ def test_get_tracer_cov_labels(num_tracers, tracer1, tracer2, expected):
 	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
 							    kmin=0.001, kmax=kmax, dk=0.005,
-								resume_file="test.npy")
+								cache_dir=get_cache_dir())
 	cov = covariance.PowerSpectrumCovariance(geometry=g)
 	cov.set_kbins(0.001, kmax, 0.005)
 	for t1 in range(num_tracers):
@@ -73,7 +77,7 @@ def test_get_tracer_cov_labels(num_tracers, tracer1, tracer2, expected):
 		assert C_dummy is not None
 		assert C_dummy.cov[0,0] == tracer1 + tracer2
 
-	os.remove("test.npy")
+	os.remove(get_cache_dir() + "survey_geometry.npy")
 
 def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 	# Build a stub geometry and temporarily make isinstance checks pass by
@@ -85,7 +89,7 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
 							    kmin=0.001, kmax=kmax, dk=0.005,
-								resume_file="test.npy")
+								cache_dir=get_cache_dir())
 
 	cov = covariance.PowerSpectrumCovariance(geometry=g)
 
@@ -99,7 +103,7 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 	sn = cov.shotnoise
 	assert np.allclose(sn, expected)
 
-	os.remove("test.npy")
+	os.remove(get_cache_dir() + "survey_geometry.npy")
 
 def test_load_npy_file_raises_on_wrong_dimensions(tmp_path):
 	randoms = create_basic_randoms(num_tracers=2)
@@ -108,7 +112,7 @@ def test_load_npy_file_raises_on_wrong_dimensions(tmp_path):
 	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
 							    kmin=0.001, kmax=kmax, dk=0.005,
-								resume_file="test.npy")
+								cache_dir=get_cache_dir())
 	cov = covariance.GaussianCovariance(geometry=g)
 
 	arr = np.zeros((2, 2, 2))  # not 4D
@@ -117,4 +121,4 @@ def test_load_npy_file_raises_on_wrong_dimensions(tmp_path):
 
 	with pytest.raises(ValueError):
 		cov.load_npy_file(str(p))
-	os.remove("test.npy")
+	os.remove(get_cache_dir() + "survey_geometry.npy")

@@ -366,7 +366,7 @@ class SurveyGeometry(base.BaseClass):
                  randoms:list=None, alphas:list=None,
                  nmesh=None, boxsize=None, boxpad=2.,
                  kmin=0, kmax=0.2, dk=None, binning_type="linear", mask_ellmax=12, pk_ellmax=4,
-                 sample_mode="monte-carlo", lebedev_degree=25, resume_file=None, comm=MPI.COMM_WORLD):
+                 sample_mode="monte-carlo", lebedev_degree=25, cache_dir=None, comm=MPI.COMM_WORLD):
 
         # set's k-binning
         super().__init__()
@@ -385,14 +385,18 @@ class SurveyGeometry(base.BaseClass):
         self.lebedev_degree = lebedev_degree
         self.window_matrix = {}
 
-        if resume_file is not None:
-            self.set_resume_file(resume_file)
+        if cache_dir is not None:
+            self.cache_dir = cache_dir
         else:
-            self.set_resume_file(os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache/WinKernel.npy"))
+            self.cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache/")
+        if not os.path.exists(self.cache_dir) and self.rank == 0:
+            self.logger.info(f"Cache directory {self.cache_dir} does not exist. Creating it.")
+            os.makedirs(self.cache_dir)
 
+        self.set_resume_file(os.path.join(self.cache_dir, "survey_geometry.npy"))
         self._init_randoms(randoms, alphas)
         self.comm.Barrier()
-        self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk)
+        self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk, binning_type=binning_type)
         self.comm.Barrier()
         self._init_I_factors()
         del self.randoms
@@ -421,13 +425,12 @@ class SurveyGeometry(base.BaseClass):
         '''
         self._resume_file = filename
 
-        if self._resume_file is not None:
-            if os.path.exists(self._resume_file):
-                self.load_resume_file(self._resume_file)
-                if self.rank == 0: self.logger.warning(f'Loaded resume file {self._resume_file}. This might override your settings. See debug messages for more details on the loaded attributes.')
-            else:
-                if self.rank == 0: self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
-                self.save(self._resume_file)
+        if os.path.exists(self._resume_file):
+            self.load_resume_file(self._resume_file)
+            if self.rank == 0: self.logger.warning(f'Loaded resume file {self._resume_file}. This might override your settings. See debug messages for more details on the loaded attributes.')
+        else:
+            if self.rank == 0: self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
+            self.save(self._resume_file)
 
         self.comm.Barrier()
 
@@ -729,7 +732,7 @@ class SurveyGeometry(base.BaseClass):
         """
         key = f"cosmic_variance_{A}{B}{C}{D}"
         if key not in self.window_matrix or np.any(np.isnan(self.window_matrix[key])):
-            self.compute_window_matrix(None, A, B, C, D)
+            self.compute_window_matrix(A, B, C, D)
         return self.window_matrix[key]
     
     def mixed_kernel(self, A, B, C, D):
@@ -740,7 +743,7 @@ class SurveyGeometry(base.BaseClass):
         """
         key = f"mixed_term_{A}{B}{C}{D}"
         if key not in self.window_matrix or np.any(np.isnan(self.window_matrix[key])):
-            self.compute_window_matrix(None, A, B, C, D)
+            self.compute_window_matrix(A, B, C, D)
         return self.window_matrix[key]
 
     def shotnoise_kernel(self, A, B, C=0, D=0):
@@ -751,7 +754,7 @@ class SurveyGeometry(base.BaseClass):
         """
         key = f"shotnoise_{A}{B}"
         if key not in self.window_matrix or np.any(np.isnan(self.window_matrix[key])):
-            self.compute_window_matrix(None, A, B, C, D)
+            self.compute_window_matrix(A, B, C, D)
         return self.window_matrix[key]
 
     @property
@@ -992,7 +995,7 @@ class SurveyGeometry(base.BaseClass):
         self._I = {}
 
     @base.cache
-    def compute_window_matrix(self, cache_dir:str=None, A:int=0, B:int=0, C:int=0, D:int=0, kmodes_sampled=50):
+    def compute_window_matrix(self, A:int=0, B:int=0, C:int=0, D:int=0, kmodes_sampled=50):
         '''Computes the window matrix to be used in the calculation of the covariance.
 
         Notes
@@ -1001,13 +1004,11 @@ class SurveyGeometry(base.BaseClass):
 
         References
         ----------
-        .. [1] https://arxiv.org/abs/1910.02914
+        [1] https://arxiv.org/abs/1910.02914
+        [2] Alves et al, in prep
         '''
 
-        if cache_dir is None:
-            cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
-
-        window_matrix_file = os.path.join(cache_dir, f'window_matrix_{A}{B}{C}{D}.npz')
+        window_matrix_file = os.path.join(self.cache_dir, f'window_matrix_{A}{B}{C}{D}.npz')
         if os.path.exists(window_matrix_file):
             self.window_matrix = {}
             if self.rank == 0: self.logger.info(f'Loading window matrices from cache: {window_matrix_file}')
@@ -1057,13 +1058,13 @@ class SurveyGeometry(base.BaseClass):
         if self.rank == 0:
             self.logger.info('Contracting Gaunt coefficients with window meshes...')
             coefficients = {
-                'first_cosmic_variance':  self.get_first_cosmic_variance_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax),
-                'second_cosmic_variance': self.get_second_cosmic_variance_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax),
-                'first_mixed_term':       self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, term="first"),
-                'second_mixed_term':      self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, term="second"),
-                'third_mixed_term':       self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, term="third"),
-                'fourth_mixed_term':      self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, term="fourth"),
-                'shotnoise':              self.get_shotnoise_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax),
+                'first_cosmic_variance':  self.get_first_cosmic_variance_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, self.cache_dir),
+                'second_cosmic_variance': self.get_second_cosmic_variance_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, self.cache_dir),
+                'first_mixed_term':       self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, cache_dir=self.cache_dir, term="first"),
+                'second_mixed_term':      self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, cache_dir=self.cache_dir, term="second"),
+                'third_mixed_term':       self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, cache_dir=self.cache_dir, term="third"),
+                'fourth_mixed_term':      self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, cache_dir=self.cache_dir, term="fourth"),
+                'shotnoise':              self.get_shotnoise_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, self.cache_dir),
             }
         else:
             coefficients = None
@@ -1071,13 +1072,13 @@ class SurveyGeometry(base.BaseClass):
         coefficients = self.comm.bcast(coefficients)
 
         survey_window = {}
-        survey_window['first_cosmic_variance']  = self.get_cosmic_variance_window(cache_dir, A, B, C, D, coefficients['first_cosmic_variance'], term="first")
-        survey_window['second_cosmic_variance'] = self.get_cosmic_variance_window(cache_dir, A, B, C, D, coefficients['second_cosmic_variance'], term="second")
-        survey_window['first_mixed_term']       = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['first_mixed_term'], term="first")
-        survey_window['second_mixed_term']      = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['second_mixed_term'], term="second")
-        survey_window['third_mixed_term']       = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['third_mixed_term'], term="third")
-        survey_window['fourth_mixed_term']      = self.get_mixed_window(cache_dir, A, B, C, D, coefficients['fourth_mixed_term'], term="fourth")
-        survey_window['shotnoise']              = self.get_shotnoise_window(cache_dir, A, B, coefficients["shotnoise"])
+        survey_window['first_cosmic_variance']  = self.get_cosmic_variance_window(self.cache_dir, A, B, C, D, coefficients['first_cosmic_variance'], term="first")
+        survey_window['second_cosmic_variance'] = self.get_cosmic_variance_window(self.cache_dir, A, B, C, D, coefficients['second_cosmic_variance'], term="second")
+        survey_window['first_mixed_term']       = self.get_mixed_window(self.cache_dir, A, B, C, D, coefficients['first_mixed_term'], term="first")
+        survey_window['second_mixed_term']      = self.get_mixed_window(self.cache_dir, A, B, C, D, coefficients['second_mixed_term'], term="second")
+        survey_window['third_mixed_term']       = self.get_mixed_window(self.cache_dir, A, B, C, D, coefficients['third_mixed_term'], term="third")
+        survey_window['fourth_mixed_term']      = self.get_mixed_window(self.cache_dir, A, B, C, D, coefficients['fourth_mixed_term'], term="fourth")
+        survey_window['shotnoise']              = self.get_shotnoise_window(self.cache_dir, A, B, coefficients["shotnoise"])
 
         # Clear caches and objects we don't need anymore
         self.get_cosmic_variance_window.cache_clear()
