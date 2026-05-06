@@ -3,6 +3,7 @@
 import os, functools, psutil, sys
 import numpy as np
 import itertools as itt
+from scipy.interpolate import InterpolatedUnivariateSpline
 
 def mkdir(dirname):
     """Try to create ``dirname`` and catch :class:`OSError`."""
@@ -180,3 +181,75 @@ def trim_fourier_mesh(mesh:np.ndarray, nmesh:int, new_nmesh:int):
                 center-half:center+half,
                 center-half:center+half]
     return np.fft.ifftshift(mesh)
+
+def build_radial_profile(positions, values, comm, n_bins=500):
+    """Creats a radial profile interpolator (MPI-safe) from a set of 3D positions and values.
+ 
+    Each rank contributes its local particles; bin sums and counts are
+    reduced across all ranks before building the spline.
+ 
+    Parameters
+    ----------
+    positions : array_like, shape (N_local, 3)
+        Local Cartesian positions (observer at origin).
+    values : array_like, shape (N_local,)
+        Local quantity to profile.
+    comm : MPI communicator
+        MPI communicator.
+    n_bins : int
+        Number of radial bins.
+ 
+    Returns
+    -------
+    InterpolatedUnivariateSpline
+        Spline interpolator for the radial profile (identical on all ranks).
+    """
+    from mpi4py import MPI
+ 
+    r = np.sqrt(np.sum(positions**2, axis=-1))
+ 
+    # Global min/max for consistent bin edges across ranks
+    local_bounds = np.array([r.min(), r.max()])
+    global_bounds = np.empty(2)
+    comm.Allreduce(np.array([r.min()]), global_bounds[:1], op=MPI.MIN)
+    comm.Allreduce(np.array([r.max()]), global_bounds[1:], op=MPI.MAX)
+ 
+    r_min, r_max = global_bounds
+    bin_edges = np.linspace(r_min, r_max, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    bin_idx = np.clip(np.digitize(r, bin_edges) - 1, 0, n_bins - 1)
+ 
+    # Local bin sums and counts
+    local_sums = np.bincount(bin_idx, weights=values, minlength=n_bins).astype(np.float64)
+    local_counts = np.bincount(bin_idx, minlength=n_bins).astype(np.float64)
+ 
+    # Reduce across ranks
+    global_sums = np.empty_like(local_sums)
+    global_counts = np.empty_like(local_counts)
+    comm.Allreduce(local_sums, global_sums, op=MPI.SUM)
+    comm.Allreduce(local_counts, global_counts, op=MPI.SUM)
+ 
+    valid = global_counts > 0
+    bin_avg = global_sums[valid] / global_counts[valid]
+ 
+    return InterpolatedUnivariateSpline(bin_centers[valid], bin_avg, k=3)
+ 
+ 
+def interpolate_to_positions(profile, positions):
+    """Evaluate a radial profile at given positions.
+ 
+    Parameters
+    ----------
+    profile : InterpolatedUnivariateSpline
+        Radial profile from build_radial_profile.
+    positions : array_like, shape (M, 3)
+        Cartesian positions where values are needed.
+ 
+    Returns
+    -------
+    array_like, shape (M,)
+        Interpolated values.
+    """
+    r = np.sqrt(np.sum(positions**2, axis=-1))
+    return profile(r)
+

@@ -1062,14 +1062,14 @@ class SparseNDArray:
 
         if rank == 0:
             available_memory = utils.get_available_memory()
-            required_memory = (self._matrix.data.nbytes*2 +
-                               self._matrix.indices.nbytes +
-                               self._matrix.indptr.nbytes) / (1024**3)  # in GB
+            required_memory = max(self._matrix.data.nbytes,
+                                  self._matrix.indices.nbytes,
+                                  self._matrix.indptr.nbytes) / (1024**3)  # in GB
             if required_memory > available_memory:
                 logger.warning(f"Not enough available memory to move window to shared memory. Required: {required_memory:.2f} GB, Available: {available_memory:.2f} GB. Program may crash.")
-            
+
             logger.debug("Allocating shared memory...")
-            data_size = int(self._matrix.data.nbytes*2)
+            data_size = int(self._matrix.data.nbytes)
             data_shape = self._matrix.data.shape
             indices_size = int(self._matrix.indices.nbytes)
             indptr_size = int(self._matrix.indptr.nbytes)
@@ -1107,25 +1107,34 @@ class SparseNDArray:
         indices_dtype = self.comm.bcast(indices_dtype, root=0)
         indptr_dtype = self.comm.bcast(indptr_dtype, root=0)
 
-        win_data = MPI.Win.Allocate_shared(data_size, np.dtype(data_dtype).itemsize, comm=self.comm)
+        # Only rank 0 contributes bytes; other ranks pass 0 so total == data_size
+        local_data_size    = data_size    if rank == 0 else 0
+        local_indices_size = indices_size if rank == 0 else 0
+        local_indptr_size  = indptr_size  if rank == 0 else 0
+
+        # Interleave allocation, copy, and free to keep peak memory to one window at a time.
+        # Allocate_shared is collective so all ranks call it; only rank 0 copies and frees.
+        win_data = MPI.Win.Allocate_shared(local_data_size, np.dtype(data_dtype).itemsize, comm=self.comm)
         buf, _ = win_data.Shared_query(0)
         window_data = np.ndarray(buffer=buf, dtype=data_dtype, shape=data_shape)
-
-        # indices is a 1D array; compute length from bytes
-        indices_len = indices_size // np.dtype(indices_dtype).itemsize
-        win_indices = MPI.Win.Allocate_shared(indices_size, np.dtype(indices_dtype).itemsize, comm=self.comm)
-        buf, _ = win_indices.Shared_query(0)
-        window_indicies = np.ndarray(buffer=buf, dtype=indices_dtype, shape=(indices_len,))
-
-        win_indptr = MPI.Win.Allocate_shared(indptr_size, np.dtype(indptr_dtype).itemsize, comm=self.comm)
-        buf, _ = win_indptr.Shared_query(0)
-        window_indptr = np.ndarray(buffer=buf, dtype=indptr_dtype, shape=indptr_shape)
-
-        # Initialize only on rank 0
         if rank == 0:
             window_data[...] = self._matrix.data
+            self._matrix.data = np.empty(0, dtype=data_dtype)
+
+        indices_len = indices_size // np.dtype(indices_dtype).itemsize
+        win_indices = MPI.Win.Allocate_shared(local_indices_size, np.dtype(indices_dtype).itemsize, comm=self.comm)
+        buf, _ = win_indices.Shared_query(0)
+        window_indicies = np.ndarray(buffer=buf, dtype=indices_dtype, shape=(indices_len,))
+        if rank == 0:
             window_indicies[...] = self._matrix.indices
+            self._matrix.indices = np.empty(0, dtype=indices_dtype)
+
+        win_indptr = MPI.Win.Allocate_shared(local_indptr_size, np.dtype(indptr_dtype).itemsize, comm=self.comm)
+        buf, _ = win_indptr.Shared_query(0)
+        window_indptr = np.ndarray(buffer=buf, dtype=indptr_dtype, shape=indptr_shape)
+        if rank == 0:
             window_indptr[...] = self._matrix.indptr
+            self._matrix = None
 
         self.comm.Barrier()
         # Build CSR on all ranks from the shared-memory buffers
