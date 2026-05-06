@@ -1031,17 +1031,22 @@ class SparseNDArray:
         """
         # Get unique nonzero row indices
         nonzero_rows = np.unique(self._matrix.nonzero()[0])
-        
+
         if len(nonzero_rows) == 0:
-            return np.empty((0, len(self.shape_out)), dtype=int), \
-                   np.empty((0, int(np.prod(self.shape_in))), dtype=self._matrix.dtype)
-        
-        # Convert flat row indices to ND indices
-        indices = np.array(np.unravel_index(nonzero_rows, self.shape_out)).T
-        
-        # Extract all nonzero rows at once (much faster than repeated getrow)
-        values = self._matrix[nonzero_rows].toarray()
-        
+            indices = np.empty((0, len(self.shape_out)), dtype=int)
+            values  = np.empty((0, int(np.prod(self.shape_in))), dtype=self._matrix.dtype)
+        else:
+            # Convert flat row indices to ND indices
+            indices = np.array(np.unravel_index(nonzero_rows, self.shape_out)).T
+            # Extract all nonzero rows at once (much faster than repeated getrow)
+            values = self._matrix[nonzero_rows].toarray()
+
+        # Broadcast indices from root so all ranks iterate the same rows even when
+        # _matrix is only populated on root (e.g. after SparseNDArray.load from cache).
+        # values are only consumed on root (for the @ product), so they are not broadcast.
+        if hasattr(self, 'comm') and self.comm.Get_size() > 1:
+            indices = self.comm.bcast(indices, root=self.root)
+
         return indices, values
 
     def to_shared_memory(self):

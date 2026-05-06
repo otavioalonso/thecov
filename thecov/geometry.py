@@ -788,9 +788,10 @@ class SurveyGeometry(base.BaseClass):
         logger = logging.getLogger('SurveyGeometry')
 
         if os.path.exists(filename):
-            logger.info(f'Loading first cosmic variance Gaunt coefficients from cache: {filename}')
+            if rank == 0: logger.info(f'Loading first cosmic variance Gaunt coefficients from cache: {filename}')
             return base.SparseNDArray.load(filename)
         else:
+            print(f"Rank {rank}: Computing first cosmic variance Gaunt coefficients...")
             if rank == 0:
                 logger.info(f'Computing first cosmic variance Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
                 import sympy.physics.wigner
@@ -836,7 +837,7 @@ class SurveyGeometry(base.BaseClass):
         logger = logging.getLogger('SurveyGeometry')
 
         if os.path.exists(filename):
-            logger.info(f'Loading second cosmic variance Gaunt coefficients from cache: {filename}')
+            if rank == 0: logger.info(f'Loading second cosmic variance Gaunt coefficients from cache: {filename}')
             return base.SparseNDArray.load(filename)
         else:
             if rank == 0:
@@ -883,7 +884,7 @@ class SurveyGeometry(base.BaseClass):
         logger = logging.getLogger('SurveyGeometry')
 
         if os.path.exists(filename):
-            logger.info(f'Loading mixed Gaunt coefficients from cache: {filename}')
+            if rank == 0: logger.info(f'Loading mixed Gaunt coefficients from cache: {filename}')
             return base.SparseNDArray.load(filename)
         else:
             if rank == 0:
