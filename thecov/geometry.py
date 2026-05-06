@@ -378,6 +378,7 @@ class SurveyGeometry(base.BaseClass):
         if not os.path.exists(self.cache_dir) and self.rank == 0:
             self.logger.info(f"Cache directory {self.cache_dir} does not exist. Creating it.")
             os.makedirs(self.cache_dir)
+        self.comm.Barrier()
 
         self.set_resume_file(os.path.join(self.cache_dir, "survey_geometry.npy"))
         self._init_randoms(randoms, alphas)
@@ -411,7 +412,13 @@ class SurveyGeometry(base.BaseClass):
         '''
         self._resume_file = filename
 
-        if os.path.exists(self._resume_file):
+        # Only rank 0 checks file existence and broadcasts the result. On HPC
+        # NFS file systems, other nodes may have stale metadata cache after a
+        # delete, causing ranks to disagree and mismatching MPI collectives.
+        file_exists = os.path.exists(self._resume_file) if self.rank == 0 else None
+        file_exists = self.comm.bcast(file_exists, root=0)
+
+        if file_exists:
             self.load_resume_file(self._resume_file)
             if self.rank == 0: self.logger.warning(f'Loaded resume file {self._resume_file}. This might override your settings. See debug messages for more details on the loaded attributes.')
         else:
@@ -494,31 +501,44 @@ class SurveyGeometry(base.BaseClass):
 
     def _init_I_factors(self):
         """Initializes all relavent I factors from the random meshes, rather than the randoms directly.
-        This distinction is to ensure any mesh
+        This distinction is to ensure any mesh effects are properly accounted for.
         """
         #self.I_LABELS = ['12', '22', '10', '24', '14', '34', '44', '32']
         self.I_LABELS = ["1200", "1111"]
-        self._I = np.full((len(self.I_LABELS), self.num_tracers, self.num_tracers), 1.0)
+        filename = os.path.join(self.cache_dir, f"I_factors.npz")
 
-        for t1, t2 in itt.product(range(self.num_tracers), repeat=2):
+        if os.path.exists(filename):
             if self.rank == 0: 
-                self.logger.info(f"Initializing I factors from randoms {t1} and {t2}...")
-                pbar = self.tqdm(total=len(self.I_LABELS), desc=f"I factors for tracers {t1} and {t2}")
+                self.logger.info("Loading I factors from cache...")
+                I = np.load(filename)['I']
+            else: I = None
+            self._I = self.comm.bcast(I, root=0)
+            return
+        else:
+            self._I = np.full((len(self.I_LABELS), self.num_tracers, self.num_tracers), 1.0)
 
-            for i, label in enumerate(self.I_LABELS):
-                nbar_power_1 = int(label[0])
-                fkp_power_1 = int(label[1])
-                nbar_power_2 = int(label[2])
-                fkp_power_2 = int(label[3])
+            for t1, t2 in itt.product(range(self.num_tracers), repeat=2):
+                if self.rank == 0: 
+                    self.logger.info(f"Initializing I factors from randoms {t1} and {t2}...")
+                    pbar = self.tqdm(total=len(self.I_LABELS), desc=f"I factors for tracers {t1} and {t2}")
 
-                if t2 > t1 or self.windows[t1, t2] == {}: continue
-                
-                I = self.windows[t1, t2].compute_I(nbar_power_1, fkp_power_1, nbar_power_2, fkp_power_2)
-                self._I[i, t1, t2] = I
-                if self.rank == 0: pbar.update(1)
+                for i, label in enumerate(self.I_LABELS):
+                    nbar_power_1 = int(label[0])
+                    fkp_power_1 = int(label[1])
+                    nbar_power_2 = int(label[2])
+                    fkp_power_2 = int(label[3])
 
-                self.logger.info(f"I_{label} for tracers {t1} and {t2}: {I:.3e}")
+                    if t2 > t1 or self.windows[t1, t2] == {}: continue
+                    
+                    I = self.windows[t1, t2].compute_I(nbar_power_1, fkp_power_1, nbar_power_2, fkp_power_2)
+                    self._I[i, t1, t2] = I
+                    if self.rank == 0: pbar.update(1)
 
+                    self.logger.info(f"I_{label} for tracers {t1} and {t2}: {I:.3e}")
+
+                if self.rank == 0: 
+                    pbar.close() 
+                    np.savez(filename, I=self._I)
 
     def _init_I_factors_from_randoms(self):
         """initializes all relavent I factors from the input randoms"""
@@ -1113,14 +1133,16 @@ class SurveyGeometry(base.BaseClass):
             self.comm.Barrier()
             coefficients = coefficients.to_shared_memory()
             survey_window = survey_window.to_shared_memory()
+            num_meshes = len(coefficients.T.get_nonzero_rows_dense()[0])
 
             if self.rank == 0:
                 self.logger.info(f"Computing W @ G ({key})")
-                self.logger.info(f"Total of {len(coefficients.T.get_nonzero_rows_dense()[0])} meshes, currently {utils.get_available_memory():0.2f} GB available")
+                self.logger.info(f"Total of {num_meshes} meshes, currently {utils.get_available_memory():0.2f} GB available")
                 window_product = coefficients @ survey_window
             else:
                 window_product = base.SparseNDArray([1], [1], comm=self.comm)
-            
+            self.comm.Barrier()
+
             if self.rank == 0:
                 self.logger.info(f"Shape of product: {window_product.shape_in}, {window_product.shape_out}")
                 self.logger.info(f"Memory usage for {key}: {(window_product._matrix.data.nbytes + window_product._matrix.indices.nbytes + window_product._matrix.indptr.nbytes) / (1024**3):0.2f} GB")
