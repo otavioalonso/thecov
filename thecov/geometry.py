@@ -809,18 +809,16 @@ class SurveyGeometry(base.BaseClass):
 
         if os.path.exists(filename):
             if rank == 0: logger.info(f'Loading first cosmic variance Gaunt coefficients from cache: {filename}')
-            return base.SparseNDArray.load(filename)
         else:
-            print(f"Rank {rank}: Computing first cosmic variance Gaunt coefficients...")
+            # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
+            # shape_in =  la, lb, ma, mb
+            shape_out = 4*[pk_ellmax//2 + 1] + 4*[2*pk_ellmax + 1]
+            shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
+            gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
+            # TODO: upgrade loop to use multiple ranks
             if rank == 0:
                 logger.info(f'Computing first cosmic variance Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
                 pbar = shell_tqdm(desc="Computing first cosmic variance Gaunt coefficients", total=((pk_ellmax//2 + 1) * (pk_ellmax + 1))**4)
-
-                # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
-                # shape_in =  la, lb, ma, mb
-                shape_out = 4*[pk_ellmax//2 + 1] + 4*[2*pk_ellmax + 1]
-                shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
-                gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
                 for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
                     for la in np.arange(np.abs(l1-l4), min(l1+l4, mask_ellmax)+1, 2):
@@ -838,15 +836,14 @@ class SurveyGeometry(base.BaseClass):
                                                         ma+la,mb+lb] += value
                 
                     pbar.update(1)
-                    #sys.stderr.flush()
+
                 pbar.close()
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving first cosmic variance Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
-            else:
-                gaunt_coefficients = None
-            gaunt_coefficients = comm.bcast(gaunt_coefficients, root=0)
-            return gaunt_coefficients
+
+        comm.Barrier()
+        return base.SparseNDArray.load(filename)
 
     @staticmethod
     def get_second_cosmic_variance_gaunt_coefficients(mask_ellmax=MASK_ELL_MAX, pk_ellmax=PK_ELL_MAX, cache_dir=None, rank=0, comm=MPI.COMM_WORLD):
@@ -861,7 +858,6 @@ class SurveyGeometry(base.BaseClass):
 
         if os.path.exists(filename):
             if rank == 0: logger.info(f'Loading second cosmic variance Gaunt coefficients from cache: {filename}')
-            return base.SparseNDArray.load(filename)
         else:
             if rank == 0:
                 logger.info(f'Computing second cosmic variance Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
@@ -894,10 +890,9 @@ class SurveyGeometry(base.BaseClass):
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving second cosmic variance Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
-            else:
-                gaunt_coefficients = None
-            gaunt_coefficients = comm.bcast(gaunt_coefficients, root=0)
-            return gaunt_coefficients
+
+        comm.Barrier()
+        return base.SparseNDArray.load(filename)
 
     @staticmethod
     def get_mixed_gaunt_coefficients(mask_ellmax=MASK_ELL_MAX, pk_ellmax=PK_ELL_MAX, cache_dir=None, term="first", rank=0, comm=MPI.COMM_WORLD):
@@ -911,7 +906,6 @@ class SurveyGeometry(base.BaseClass):
 
         if os.path.exists(filename):
             if rank == 0: logger.info(f'Loading mixed Gaunt coefficients from cache: {filename}')
-            return base.SparseNDArray.load(filename)
         else:
             if rank == 0:
                 logger.info(f'Computing mixed Gaunt coefficients (term= {term}, pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
@@ -969,10 +963,8 @@ class SurveyGeometry(base.BaseClass):
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving mixed Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
-            else:
-                gaunt_coefficients = None
-            gaunt_coefficients = comm.bcast(gaunt_coefficients)
-            return gaunt_coefficients
+        comm.Barrier()
+        return base.SparseNDArray.load(filename)
         
     @staticmethod
     def get_shotnoise_gaunt_coefficients(mask_ellmax=MASK_ELL_MAX, pk_ellmax=PK_ELL_MAX, cache_dir=None, rank=0, comm=MPI.COMM_WORLD):
@@ -983,7 +975,7 @@ class SurveyGeometry(base.BaseClass):
         logger = logging.getLogger('SurveyGeometry')
 
         if os.path.exists(filename):
-            return base.SparseNDArray.load(filename)
+            if rank == 0: logger.info(f'Loading shotnoise Gaunt coefficients from cache: {filename}')
         else:
             if rank == 0:
                 logger.info(f'Computing shotnoise Gaunt coefficients...')
@@ -1016,10 +1008,9 @@ class SurveyGeometry(base.BaseClass):
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving shotnoise Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
-            else:
-                gaunt_coefficients = None
-            gaunt_coefficients = comm.bcast(gaunt_coefficients)
-            return gaunt_coefficients
+
+        comm.Barrier()
+        return base.SparseNDArray.load(filename)
 
     def clean(self):
         '''Clean window kernels and power spectra.'''
@@ -1027,7 +1018,7 @@ class SurveyGeometry(base.BaseClass):
         self._I = {}
 
     @base.cache
-    def compute_window_matrix(self, A:int=0, B:int=0, C:int=0, D:int=0, kmodes_sampled=50):
+    def compute_window_matrix(self, A:int=0, B:int=0, C:int=0, D:int=0, kmodes_sampled=100):
         '''Computes the window matrix to be used in the calculation of the covariance.
 
         Notes

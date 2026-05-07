@@ -3,6 +3,12 @@ import pytest
 import logging
 from thecov import geometry
 from mockfactory.make_survey import RandomBoxCatalog
+import os
+import glob
+from mpi4py import MPI
+
+def get_cache_dir():
+	return os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache/")
 
 def create_basic_randoms(num_tracers):
 
@@ -88,3 +94,78 @@ def test_knyquist_and_kfun_use_knmesh_when_present():
     w2.boxsize = 8.0
     assert np.isclose(w2.knyquist, np.pi * w2.nmesh / w2.boxsize)
     assert np.isclose(w2.kfun, 2 * np.pi / w2.boxsize)
+
+@pytest.mark.parametrize("function, term", [
+    ("first_cosmic_variance", None),
+    ("second_cosmic_variance", None),
+    ("mixed_term", "first"),
+    ("mixed_term", "second"),
+    ("mixed_term", "third"),
+    ("mixed_term", "fourth"),
+    ("shotnoise", None),
+])
+@pytest.mark.mpi(min_size=2)
+def test_gaunt_coefficient_methods_are_mpi_safe(function, term):
+
+    rank = MPI.COMM_WORLD.Get_rank()
+    comm = MPI.COMM_WORLD
+    
+    if rank == 0:
+        for f in glob.glob(os.path.join(get_cache_dir(), "*coefficients*.npz")):
+            os.remove(f)
+    comm.Barrier()  # Ensure all processes wait for the file to be removed before proceeding
+
+    if function == "first_cosmic_variance":
+          coefficients = geometry.SurveyGeometry.get_first_cosmic_variance_gaunt_coefficients(
+              mask_ellmax=2, pk_ellmax=2, cache_dir=get_cache_dir(), rank=rank, comm=comm)
+    elif function == "second_cosmic_variance":
+          coefficients = geometry.SurveyGeometry.get_second_cosmic_variance_gaunt_coefficients(
+              mask_ellmax=2, pk_ellmax=2, cache_dir=get_cache_dir(), rank=rank, comm=comm)
+    elif function == "mixed_term":
+          coefficients = geometry.SurveyGeometry.get_mixed_gaunt_coefficients(
+              mask_ellmax=2, pk_ellmax=2, cache_dir=get_cache_dir(), rank=rank, comm=comm, term=term)
+    elif function == "shotnoise":
+          coefficients = geometry.SurveyGeometry.get_shotnoise_gaunt_coefficients(
+              mask_ellmax=2, pk_ellmax=2, cache_dir=get_cache_dir(), rank=rank, comm=comm)
+    
+    comm.Barrier()
+    
+    # try accessing some properties of coefficients to ensure they were loaded correctly
+    assert coefficients is not None
+    idx_nonzero, values_nonzero = coefficients.T.get_nonzero_rows_dense()
+    assert type(idx_nonzero) == np.ndarray
+    assert type(values_nonzero) == np.ndarray
+    total_iterations = len(idx_nonzero)
+    assert type(total_iterations) == int
+    assert total_iterations > 0
+
+    # Now do the exact same tests, but without clearing the cache, so that we test the loading path instead of the computation path. This ensures both paths are MPI-safe.
+    if function == "first_cosmic_variance":
+          coefficients = geometry.SurveyGeometry.get_first_cosmic_variance_gaunt_coefficients(
+              mask_ellmax=2, pk_ellmax=2, cache_dir=get_cache_dir(), rank=rank, comm=comm)
+    elif function == "second_cosmic_variance":
+          coefficients = geometry.SurveyGeometry.get_second_cosmic_variance_gaunt_coefficients(
+              mask_ellmax=2, pk_ellmax=2, cache_dir=get_cache_dir(), rank=rank, comm=comm)
+    elif function == "mixed_term":
+          coefficients = geometry.SurveyGeometry.get_mixed_gaunt_coefficients(
+              mask_ellmax=2, pk_ellmax=2, cache_dir=get_cache_dir(), rank=rank, comm=comm, term=term)
+    elif function == "shotnoise":
+          coefficients = geometry.SurveyGeometry.get_shotnoise_gaunt_coefficients(
+              mask_ellmax=2, pk_ellmax=2, cache_dir=get_cache_dir(), rank=rank, comm=comm)
+    
+    comm.Barrier()
+    # try accessing some properties of coefficients to ensure they were loaded correctly
+    assert coefficients is not None
+    idx_nonzero, values_nonzero = coefficients.T.get_nonzero_rows_dense()
+    assert type(idx_nonzero) == np.ndarray
+    assert type(values_nonzero) == np.ndarray
+    total_iterations = len(idx_nonzero)
+    assert type(total_iterations) == int
+    assert total_iterations > 0
+
+    if rank == 0:
+        for f in glob.glob(os.path.join(get_cache_dir(), "*coefficients*.npz")):
+            os.remove(f)
+    # mpirun -n 2 python -m pytest -v --capture=tee-sys --tb=short --with-mpi thecov/tests -m mpi 
+
+     
