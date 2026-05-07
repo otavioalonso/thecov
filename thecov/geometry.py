@@ -11,7 +11,7 @@ import logging
 logging.basicConfig(level = logging.INFO)
 
 import numpy as np
-import os, time
+import os, time, sys
 import itertools as itt
 
 from tqdm import tqdm as shell_tqdm
@@ -271,7 +271,7 @@ class SurveyWindow(base.BaseClass):
         unit_positions = self.mesh1.data_positions / np.sqrt(np.sum(self.mesh1.data_positions**2, axis=-1))[:, None]
         self.comm.Barrier()
 
-        weights = self.nz1 ** (nbar_power_1 - 1) * (self.mesh1.data_weights ** fkp_power_1)
+        weights = self.nz1 ** (nbar_power_1 - 1) * (self.mesh1.data_weights ** fkp_power_1) * self.alpha1
         if nbar_power_2 is not None and fkp_power_2 is not None and hasattr(self, 'mesh2'):
             # interpolate n_B, w_fkp to mesh1 positions
             nb_profile = utils.build_radial_profile(self.mesh2.data_positions, self.nz2, self.comm)
@@ -814,7 +814,7 @@ class SurveyGeometry(base.BaseClass):
             print(f"Rank {rank}: Computing first cosmic variance Gaunt coefficients...")
             if rank == 0:
                 logger.info(f'Computing first cosmic variance Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
-                import sympy.physics.wigner
+                pbar = shell_tqdm(desc="Computing first cosmic variance Gaunt coefficients", total=((pk_ellmax//2 + 1) * (pk_ellmax + 1))**4)
 
                 # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
                 # shape_in =  la, lb, ma, mb
@@ -827,8 +827,8 @@ class SurveyGeometry(base.BaseClass):
                         for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
                             for ma, mb in itt.product(*[np.arange(-l, l+1, 1) for l in (la, lb)]):
 
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
-                                                sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
+                                value = np.float64(math.get_real_gaunt(l1,l4,la,m1,m4,ma)*\
+                                                   math.get_real_gaunt(l2,l3,lb,m2,m3,mb))
                                 if value != 0.:
                                     gaunt_coefficients[l1//2,l2//2,
                                                         l3//2,l4//2,
@@ -837,6 +837,9 @@ class SurveyGeometry(base.BaseClass):
                                                         la//2,lb//2,
                                                         ma+la,mb+lb] += value
                 
+                    pbar.update(1)
+                    #sys.stderr.flush()
+                pbar.close()
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving first cosmic variance Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
@@ -862,7 +865,7 @@ class SurveyGeometry(base.BaseClass):
         else:
             if rank == 0:
                 logger.info(f'Computing second cosmic variance Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
-                import sympy.physics.wigner
+                pbar = shell_tqdm(desc="Computing second cosmic variance Gaunt coefficients", total=((pk_ellmax//2 + 1) * (pk_ellmax + 1))**4)
 
                 # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
                 # shape_in =  la, lb, ma, mb  (a for W22 and b for W12)
@@ -874,8 +877,8 @@ class SurveyGeometry(base.BaseClass):
                     for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
                         for la in np.arange(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
                             for ma, mc in itt.product(*[np.arange(-l, l+1, 1) for l in (la, lc)]):
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                sympy.physics.wigner.gaunt(lc,l3,la,mc,m3,ma))
+                                value = np.float64(math.get_real_gaunt(l1,l2,lc,m1,m2,mc)*\
+                                                   math.get_real_gaunt(lc,l3,la,mc,m3,ma))
                                 lb, mb = l4, m4 # <- for indexing into W_BD later
                             
                                 if value != 0.:
@@ -885,6 +888,9 @@ class SurveyGeometry(base.BaseClass):
                                                         m3+l3,m4+l4,
                                                         la//2,lb//2,
                                                         ma+la,mb+lb] += value
+                
+                    pbar.update(1)
+                pbar.close()
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving second cosmic variance Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
@@ -909,8 +915,7 @@ class SurveyGeometry(base.BaseClass):
         else:
             if rank == 0:
                 logger.info(f'Computing mixed Gaunt coefficients (term= {term}, pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
-                import sympy.physics.wigner
-
+                pbar = shell_tqdm(desc=f"Computing {term} mixed Gaunt coefficients", total=((pk_ellmax//2 + 1) * (pk_ellmax + 1))**3)
                 # shape_out = l1, l2, l3, m1, m2, m3
                 # shape_in =  la, ma, lb, mb
                 # Only including positive m values, as -m is equivalent to m
@@ -926,7 +931,7 @@ class SurveyGeometry(base.BaseClass):
                         if la > mask_ellmax: continue
                         for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
                             for mb in np.arange(-lb, lb+1, 1):
-                                value = np.float64(sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
+                                value = np.float64(math.get_real_gaunt(l2,l3,lb,m2,m3,mb))
                                 if value != 0:
                                     gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
 
@@ -935,7 +940,7 @@ class SurveyGeometry(base.BaseClass):
                         if lb > mask_ellmax: continue
                         for la in np.arange(np.abs(l1-l3), min(l1+l3, mask_ellmax)+1, 2):
                             for ma in np.arange(-la, la+1, 1):
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l3,la,m1,m3,ma))
+                                value = np.float64(math.get_real_gaunt(l1,l3,la,m1,m3,ma))
                                 if value != 0:
                                     gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
 
@@ -944,7 +949,7 @@ class SurveyGeometry(base.BaseClass):
                         if lb > mask_ellmax: continue
                         for la in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
                             for ma in np.arange(-la, la+1, 1):
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l2,la,m1,m2,ma))
+                                value = np.float64(math.get_real_gaunt(l1,l2,la,m1,m2,ma))
                                 if value != 0:
                                     gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
                                     
@@ -954,11 +959,13 @@ class SurveyGeometry(base.BaseClass):
                             for la in range(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
                                 for ma in np.arange(-la, la+1, 1):
                                     for mc in range(-lc, lc+1, 1):
-                                        value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                        sympy.physics.wigner.gaunt(lc,l3,la,mc,m3,ma))
+                                        value = np.float64(math.get_real_gaunt(l1,l2,lc,m1,m2,mc)*\
+                                                           math.get_real_gaunt(lc,l3,la,mc,m3,ma))
                                         if value != 0:
                                             gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
-                                        
+
+                    pbar.update(1)
+                pbar.close()                        
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving mixed Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
@@ -980,8 +987,7 @@ class SurveyGeometry(base.BaseClass):
         else:
             if rank == 0:
                 logger.info(f'Computing shotnoise Gaunt coefficients...')
-                import sympy.physics.wigner
-
+                pbar = shell_tqdm(desc="Computing shotnoise Gaunt coefficients", total=((pk_ellmax//2 + 1) * (pk_ellmax + 1))**2)
                 # shape_out = l1, l2, m1, m2
                 # shape_in =  la, lb, ma, mb
                 # Only including positive m values, as -m is equivalent to m
@@ -1001,10 +1007,12 @@ class SurveyGeometry(base.BaseClass):
                     lb,mb = 0,0
                     for la in range(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
                         for ma in range(-la, la+1, 1):
-                            value = np.float64(sympy.physics.wigner.real_gaunt(l1,l2,la,m1,m2,ma))
+                            value = np.float64(math.get_real_gaunt(l1,l2,la,m1,m2,ma))
                             if value != 0:
                                 gaunt_coefficients[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += value
 
+                    pbar.update(1)
+                pbar.close()
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving shotnoise Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
@@ -1057,10 +1065,10 @@ class SurveyGeometry(base.BaseClass):
         k_shell_approx = 0.05 
         if self.rank == 0:
             self.logger.info(f'Sampling k-modes for binning...')
-            # kmodes, Nmodes, weights = math.sample_kmodes(self.k_binning, boxsize=self.boxsize,
-            #                             max_modes=kmodes_sampled, k_shell_approx=k_shell_approx, sample_mode="monte-carlo")
-            kmodes, Nmodes, weights = math.sample_kmodes_covapt(self.k_binning, boxsize=self.boxsize,
-                                        max_modes=kmodes_sampled, k_shell_approx=k_shell_approx, sample_mode="monte-carlo")
+            kmodes, Nmodes, weights = math.sample_kmodes(self.k_binning, boxsize=self.boxsize,
+                                         max_modes=kmodes_sampled, k_shell_approx=k_shell_approx, sample_mode="monte-carlo")
+            #kmodes, Nmodes, weights = math.sample_kmodes_covapt(self.k_binning, boxsize=self.boxsize,
+            #                            max_modes=kmodes_sampled, k_shell_approx=k_shell_approx, sample_mode="monte-carlo")
         else:
             kmodes, Nmodes, weights = None, None, None
 
@@ -1121,7 +1129,7 @@ class SurveyGeometry(base.BaseClass):
                 coefficients = self.get_second_cosmic_variance_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, self.cache_dir, self.rank, self.comm)
                 survey_window = self.get_cosmic_variance_window(self.cache_dir, A, B, C, D, coefficients, term="second")
             elif "mixed_term" in key:
-                term = key.split("_")[-1]
+                term = key.split("_")[0]
                 coefficients = self.get_mixed_gaunt_coefficients(self.mask_ellmax, self.pk_ellmax, cache_dir=self.cache_dir, term=term, rank=self.rank, comm=self.comm)
                 survey_window = self.get_mixed_window(self.cache_dir, A, B, C, D, coefficients, term=term)
             elif key == "shotnoise":

@@ -2,8 +2,9 @@
 """
 import numpy as np
 import scipy
-import sympy
+from sympy.physics.wigner import real_gaunt
 import os
+import functools
 from . import binning
 
 def r2c_to_c2c_3d(fourier):
@@ -470,7 +471,6 @@ def get_real_Ylm(ell, m, modules=None):
     Ylm.m = m
     return Ylm
 
-
 def build_Ylm_table(pk_ellmax:int):
     """Builda a table of callable Ylm functions with all possible
     iteratons of l, m
@@ -513,6 +513,12 @@ def evaluate_Ylms(ylm_table:list, pk_ellmax:int, kxh, kyh, kzh):
         Ylm_k.append(row)
 
     return Ylm_k
+
+@functools.cache
+def get_real_gaunt(l1, l2, l3, m1, m2, m3):
+    """Returns the real Gaunt coefficient for the given quantum numbers."""
+    return real_gaunt(l1, l2, l3, m1, m2, m3)
+
 
 def get_lebedev_points(degree:int, r=1.):
     """Returns a list of points on a sphere with radius r corresponding to Lebedev quadrature integration
