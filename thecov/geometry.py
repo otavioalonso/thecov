@@ -59,14 +59,14 @@ class SurveyWindow(base.BaseClass):
         self.boxpad = boxpad
         self.alpha1, self.alpha2 = alpha1, alpha2
 
-        self.mesh1, self.nz1 = self._create_mesh(randoms=randoms1)
+        self.mesh1, self.nz1, self.sys_weights1 = self._create_mesh(randoms=randoms1)
         self.boxsize = self.mesh1.boxsize[0]
         self.nmesh = self.mesh1.nmesh[0]
 
         if randoms2 is not None:
             assert alpha2 is not None, "If randoms2 is provided, alpha2 must also be provided."
 
-            self.mesh2, self.nz2 = self._create_mesh(randoms=randoms2)
+            self.mesh2, self.nz2, _ = self._create_mesh(randoms=randoms2)
 
             self.boxsize = max(self.mesh1.boxsize[0], self.mesh2.boxsize[0])
             self.nmesh = max(self.mesh1.nmesh[0], self.mesh2.nmesh[0])
@@ -103,7 +103,7 @@ class SurveyWindow(base.BaseClass):
         # W_AB = nbar * fkp (implicit factor of nbar comes when painting to mesh)
         mesh = CatalogMesh(
             data_positions=randoms['POSITION'],
-            data_weights=randoms['WEIGHT'],
+            data_weights=randoms['WEIGHT_FKP'],
             position_type='pos',
             nmesh=self.nmesh,
             cellsize=self.cellsize,
@@ -118,7 +118,7 @@ class SurveyWindow(base.BaseClass):
         #self.test_mesh_stuff(mesh, randoms)
 
         if self.rank == 0: self.logger.info(f'Created meshes in {time.time() - start_time:.2f} seconds.')
-        return mesh, randoms["NZ"]
+        return mesh, randoms["NZ"], randoms["WEIGHT"]
         
     # Temporary function for debugging
     def test_mesh_stuff(self, mesh, randoms):
@@ -217,30 +217,17 @@ class SurveyWindow(base.BaseClass):
             fkp_power_2 (int, optional): Power of FKP weight for the second mesh. If None, only the first mesh will be used. Default is None.
         """
 
-        weights = self.nz1 ** (nbar_power_1 - 1) * (self.mesh1.data_weights ** fkp_power_1) * self.alpha1
+        weights = self.nz1 ** (nbar_power_1 - 1) * (self.mesh1.data_weights ** fkp_power_1) * self.sys_weights1 * self.alpha1
         if nbar_power_2 is not None and fkp_power_2 is not None and hasattr(self, 'mesh2'):
             # interpolate n_B, w_fkp to mesh1 positions
-            nb_profile = utils.build_radial_profile(self.mesh2.data_positions, self.nz2, self.comm)
-            fkp_profile = utils.build_radial_profile(self.mesh2.data_positions, self.mesh2.data_weights, self.comm)
-            weights *= utils.interpolate_to_positions(nb_profile, self.mesh1.data_positions) ** nbar_power_2 * \
-                       utils.interpolate_to_positions(fkp_profile, self.mesh1.data_positions) ** fkp_power_2
+            nb_profile = utils.build_radial_profile(self.mesh2.data_positions, self.nz2 ** nbar_power_2, self.comm)
+            fkp_profile = utils.build_radial_profile(self.mesh2.data_positions, self.mesh2.data_weights ** fkp_power_2, self.comm)
+            weights *= utils.interpolate_to_positions(nb_profile, self.mesh1.data_positions) * \
+                       utils.interpolate_to_positions(fkp_profile, self.mesh1.data_positions)
         elif nbar_power_2 is not None and fkp_power_2 is not None and not hasattr(self, 'mesh2'):
             raise ValueError("nbar_power_2 and fkp_power_2 specified but second mesh not initialized. Check if randoms2 and alpha2 were provided when initializing SurveyWindow.")
         
-        result = self.mesh1.clone(
-                data_positions=self.mesh1.data_positions,
-                data_weights=weights,
-                position_type='pos',
-                mpicomm=self.comm
-            ).to_mesh(compensate=True)
-
-        # elif nbar_power_2 == 0 and fkp_power_2 == 0:
-        #     # Single-mesh: correct for the missing V / alpha that a second mesh would contribute
-        #     self.logger.debug("Applying correction factor from only using one mesh")
-        #     cell_vol = ((self.mesh1.boxsize[0] / self.mesh1.nmesh[0])**3)
-        #     result *= cell_vol / self.alpha1
-        
-        I_sub = result.value.sum().item()
+        I_sub = np.sum(weights)
         I = self.comm.allreduce(I_sub, op=MPI.SUM)
         return I.real
 
@@ -271,13 +258,13 @@ class SurveyWindow(base.BaseClass):
         unit_positions = self.mesh1.data_positions / np.sqrt(np.sum(self.mesh1.data_positions**2, axis=-1))[:, None]
         self.comm.Barrier()
 
-        weights = self.nz1 ** (nbar_power_1 - 1) * (self.mesh1.data_weights ** fkp_power_1) * self.alpha1
+        weights = self.nz1 ** (nbar_power_1 - 1) * (self.mesh1.data_weights ** fkp_power_1) * self.sys_weights1 * self.alpha1
         if nbar_power_2 is not None and fkp_power_2 is not None and hasattr(self, 'mesh2'):
             # interpolate n_B, w_fkp to mesh1 positions
-            nb_profile = utils.build_radial_profile(self.mesh2.data_positions, self.nz2, self.comm)
-            fkp_profile = utils.build_radial_profile(self.mesh2.data_positions, self.mesh2.data_weights, self.comm)
-            weights *= utils.interpolate_to_positions(nb_profile, self.mesh1.data_positions) ** nbar_power_2 * \
-                       utils.interpolate_to_positions(fkp_profile, self.mesh1.data_positions) ** fkp_power_2
+            nb_profile = utils.build_radial_profile(self.mesh2.data_positions, self.nz2 ** nbar_power_2, self.comm)
+            fkp_profile = utils.build_radial_profile(self.mesh2.data_positions, self.mesh2.data_weights ** fkp_power_2, self.comm)
+            weights *= utils.interpolate_to_positions(nb_profile, self.mesh1.data_positions)* \
+                       utils.interpolate_to_positions(fkp_profile, self.mesh1.data_positions)
         elif nbar_power_2 is not None and fkp_power_2 is not None and not hasattr(self, 'mesh2'):
             raise ValueError("nbar_power_2 and fkp_power_2 specified but second mesh not initialized. Check if randoms2 and alpha2 were provided when initializing SurveyWindow.")
         
@@ -461,14 +448,11 @@ class SurveyGeometry(base.BaseClass):
             randoms = mockfactory.Catalog(randoms)
 
         # Check if the randoms have weights, otherwise set them to 1
-        if 'WEIGHT' not in randoms:
-            if 'WEIGHT_FKP' in randoms:
-                if self.rank == 0: self.logger.info('Setting WEIGHT column in randoms to WEIGHT_FKP values.')
-                randoms['WEIGHT'] = randoms['WEIGHT_FKP'].copy()
-            else:
-                if self.rank == 0: self.logger.warning(f'WEIGHT column not found in randoms. Setting it to 1.')
-                randoms['WEIGHT'] = np.ones(randoms.size, dtype='f8')
-            
+        for name in ['WEIGHT', 'WEIGHT_FKP']:
+            if name not in randoms: 
+                if self.rank == 0: self.logger.warning(f'{name} column not found in randoms. Setting it to all ones.')
+                randoms[name] = np.ones(randoms.size, dtype='f8')      
+
         if 'NZ' not in randoms:
             if self.rank == 0: self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
             import healpy as hp
