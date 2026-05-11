@@ -11,7 +11,7 @@ import logging
 logging.basicConfig(level = logging.INFO)
 
 import numpy as np
-import os, time, sys
+import os, time
 import itertools as itt
 
 from tqdm import tqdm as shell_tqdm
@@ -30,11 +30,50 @@ PK_ELL_MAX = 4
 __all__ = ['SurveyWindow', 'SurveyGeometry']
 
 class SurveyWindow(base.BaseClass):
+    """Class that represents the survey window function and its associated geometry. This class is responsible for creating the window function meshes and computing the I factors.
+    
+    Attributes
+    ----------
+    mesh1 : CatalogMesh
+        Mesh object containing the first set of randoms.
+    mesh2 : CatalogMesh, optional
+        Mesh object containing the second set of randoms. Only used for multi-tracer calculations. Default is None.
+    """
 
     def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, mpi_comm=MPI.COMM_WORLD,
                  nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmin=0.0, kmax=0.02, 
                  dk=None, binning_type="linear"):
-
+        """Initialize the SurveyWindow object.
+        
+        Parameters
+        ----------
+        randoms1 : mockfactory.Catalog
+            Catalog of randoms for the first tracer.
+        alpha1 : float
+            N_galaxies / N_randoms for the first tracer.
+        randoms2 : mockfactory.Catalog, optional
+            Catalog of randoms for the second tracer. Only used for multi-tracer calculations. Default is None.
+        alpha2 : float, optional
+            N_galaxies / N_randoms for the second tracer. Only used for multi-tracer calculations. Default is None.
+        mpi_comm : MPI.Comm, optional
+            MPI communicator for parallel processing. Default is MPI.COMM_WORLD.
+        nmesh : int, optional
+            Number of mesh points in each dimension. If not provided, it will be determined based on the kmax parameter. Default is None.
+        cellsize : float, optional
+            Size of each cell in the mesh. If not provided, it will be determined based on the kmax parameter. Default is None.
+        boxsize : float, optional
+            Size of the box for the mesh. If not provided, it will be determined based on the positions of the randoms. Default is None.
+        boxpad : float, optional
+            Padding factor to apply to the boxsize determined from the randoms. Default is 2.0.
+        kmin : float, optional
+            Minimum wavenumber for the window function. Default is 0.0.
+        kmax : float, optional
+            Maximum wavenumber for the window function. Default is 0.02.
+        dk : float, optional
+            Width of the k-bins for the window function. If not provided, it will be determined based on the kmax parameter. Default is None.
+        binning_type : str, optional
+            Type of binning to use for the k-bins. Must be either "linear" or "log". Default is "linear".
+        """
         super().__init__()
 
         self.comm = mpi_comm
@@ -210,11 +249,16 @@ class SurveyWindow(base.BaseClass):
     def compute_I(self, nbar_power_1, fkp_power_1, nbar_power_2=None, fkp_power_2=None):
         """Compute the I factor for the given powers of nbar and fkp weight.
 
-        Args:
-            nbar_power_1 (int): Power of nbar for the first mesh.
-            fkp_power_1 (int): Power of FKP weight for the first mesh.
-            nbar_power_2 (int, optional): Power of nbar for the second mesh. If None, only the first mesh will be used. Default is None.
-            fkp_power_2 (int, optional): Power of FKP weight for the second mesh. If None, only the first mesh will be used. Default is None.
+        Parameters
+        ----------
+        nbar_power_1 : int
+            Power of nbar for the first mesh.
+        fkp_power_1 : int
+            Power of FKP weight for the first mesh.
+        nbar_power_2 : int, optional
+            Power of nbar for the second mesh. If None, only the first mesh will be used. Default is None.
+        fkp_power_2 : int, optional
+            Power of FKP weight for the second mesh. If None, only the first mesh will be used. Default is None.
         """
 
         weights = self.nz1 ** (nbar_power_1 - 1) * (self.mesh1.data_weights ** fkp_power_1) * self.sys_weights1 * self.alpha1
@@ -235,17 +279,27 @@ class SurveyWindow(base.BaseClass):
     def compute_mesh(self, ell:int, m:int, nbar_power_1, fkp_power_1, nbar_power_2=None, fkp_power_2=None, threshold=None):
         """Compute the product of meshes and multiply by real Ylm evaluated at the same coordinates.
 
-        Args:
-            ell (int): Degree of the spherical harmonic.
-            m (int): Order of the spherical harmonic.
-            nbar_power_1 (int): nbar-power for the first mesh.
-            fkp_power_1 (int): fkp-power for the first mesh.
-            nbar_power_2 (int, optional): nbar-power for the second mesh. If None, only the first mesh will be used. Default is None.
-            fkp_power_2 (int, optional): fkp-power for the second mesh. If None, only the first mesh will be used. Default is None.
-            threshold (float, optional): If provided, values in the resulting mesh below this threshold are set to zero to save memory. Default is None.
+        Parameters
+        ----------
+        ell : int
+            Degree of the spherical harmonic.
+        m : int
+            Order of the spherical harmonic.
+        nbar_power_1 : int
+            nbar-power for the first mesh.
+        fkp_power_1 : int
+            fkp-power for the first mesh.
+        nbar_power_2 : int, optional
+            nbar-power for the second mesh. If None, only the first mesh will be used. Default is None.
+        fkp_power_2 : int, optional
+            fkp-power for the second mesh. If None, only the first mesh will be used. Default is None.
+        threshold : float, optional
+            If provided, values in the resulting mesh below this threshold are set to zero to save memory. Default is None.
 
-        Returns:
-            np.ndarray: Fourier transform of mesh * Ylm(ell, m) with shape: [nmesh, nmesh, nmesh]
+        Returns
+        -------
+        np.ndarray
+            Fourier transform of mesh * Ylm(ell, m) with shape: [nmesh, nmesh, nmesh].
         """
 
         assert ell >= 0, "ell must be non-negative"
@@ -274,23 +328,6 @@ class SurveyWindow(base.BaseClass):
                 position_type='pos',
                 mpicomm=self.comm
             ).to_mesh(compensate=True)
-
-        # W_B or S_B
-        # if nbar_power_2 is not None and fkp_power_2 is not None and hasattr(self, 'mesh2'):
-
-        #     weights = self.nz2 ** (nbar_power_2 - 1) * (self.mesh2.data_weights**fkp_power_2)
-        #     result *= self.mesh2.clone(data_positions=self.mesh2.data_positions,
-        #                                 data_weights=weights,
-        #                                 position_type='pos', 
-        #                                 mpicomm=self.comm).to_mesh(compensate=True)
-
-        # elif nbar_power_2 is not None and fkp_power_2 is not None and not hasattr(self, 'mesh2'):
-        #     raise ValueError("nbar_power_2 and fkp_power_2 specified but second mesh not initialized. Check if randoms2 and alpha2 were provided when initializing SurveyWindow.")
-        # elif nbar_power_2 is None and fkp_power_2 is None:
-        #     # Single-mesh: correct for the missing V / alpha that a second mesh would contribute
-        #     if self.rank == 0: self.logger.debug("Applying correction factor from only using one mesh")
-        #     cell_vol = ((self.mesh1.boxsize[0] / self.mesh1.nmesh[0])**3)
-        #     result *= cell_vol / self.alpha1
 
         #pmesh fft convention is F(k) = 1/N^3 \sum_{r} e^{-ikr} F(r); let us correct it here
         result = result.r2c() * self.nmesh**3
@@ -325,16 +362,244 @@ class SurveyWindow(base.BaseClass):
         return result_combined
 
     
-# barebones class so covariance.py compiles without error for now
-# TODO for Otavio: restore this class?
 class BoxGeometry(base.BaseClass):
+    '''Class that represents the geometry of a periodic cubic box.
+    NOTE: This class uses the older single-tracer convention.
 
-    def __init__(self):
-        pass
+    Attributes
+    ----------
+    boxsize : float
+        Size of the box.
+    nmesh : int
+        Number of mesh points in each dimension.
+    alpha : float
+        <number of galaxies>/<number of randoms> in the box.
+
+    Methods
+    -------
+    set_boxsize
+        Set the size of the box.
+    set_nmesh
+        Set the number of mesh points in each dimension.
+    set_alpha
+        Set the alpha parameter.
+    '''
+    logger = logging.getLogger('BoxGeometry')
+
+    def __init__(self, volume=None, nbar=None):
+        self._volume = volume
+        self._nbar = nbar
+        self._zmin = None
+        self._zmax = None
+        self.fsky = 1.0
+
+    @property
+    def volume(self):
+        return self._volume
+
+    @volume.setter
+    def volume(self, volume):
+        self._volume = volume
+
+    @property
+    def nbar(self):
+        return self._nbar
+
+    @nbar.setter
+    def nbar(self, nbar):
+        self._nbar = nbar
+
+    @property
+    def shotnoise(self):
+        '''Estimates the Poissonian shotnoise of the sample as 1/nbar.
+
+        Returns
+        -------
+        float
+            Poissonian shotnoise of the sample = 1/nbar.'''
+        return 1. / self.nbar
+
+    @shotnoise.setter
+    def shotnoise(self, shotnoise):
+        '''Sets the Poissonian shotnoise of the sample and nbar = 1/shotnoise.
+
+        Parameters
+        ----------
+        shotnoise : float
+            Shotnoise of the sample.'''
+        self.nbar = 1. / shotnoise
+
+    @property
+    def zedges(self):
+        return self._zedges
+
+    @property
+    def zmid(self):
+        return (self.zedges[1:] + self.zedges[:-1])/2
+
+    @property
+    def zmin(self):
+        return self._zmin if self._zmin is not None else self.zedges[0]
+
+    @property
+    def zmax(self):
+        return self._zmax if self._zmax is not None else self.zedges[-1]
+
+    @property
+    def zavg(self):
+        bin_volume = np.diff(self.cosmo.comoving_radial_distance(self.zedges)**3)
+        return np.average(self.zmid, weights=self.nz * bin_volume)
+
+    def set_effective_volume(self, zmin, zmax, fsky=None):
+        '''Set the effective volume of the box based on the redshift limits of the sample and the fraction of the sky covered.
+
+        Parameters
+        ----------
+        zmin : float
+            Minimum redshift of the sample.
+        zmax : float
+            Maximum redshift of the sample.
+        fsky : float, optional
+            Fraction of the sky covered by the sample. If not given, the current value of fsky is used.
+
+        Returns
+        -------
+        float
+            Effective volume of the box.'''
+
+        if fsky is not None:
+            self.fsky = fsky
+
+        self._zmin = zmin
+        self._zmax = zmax
+
+        self.volume = self.fsky * 4. / 3. * np.pi * \
+            (self.cosmo.comoving_radial_distance(zmax)**3 -
+             self.cosmo.comoving_radial_distance(zmin)**3)
+
+        return self.volume
+
+    def set_nz(self, zedges, nz, *args, **kwargs):
+        '''Set the effective volume and number density of the box based on the
+        redshift distribution of the sample.
+
+        Parameters
+        ----------
+        zedges : array_like
+            Array of redshift bin edges.
+        nz : array_like
+            Array of redshift distribution of the sample.
+        *args, **kwargs
+            Arguments and keyword arguments to be passed to set_effective_volume.
+        '''
+        assert len(zedges) == len(nz) + \
+            1, "Length of zedges should equal length of nz + 1."
+
+        self._zedges = np.array(zedges)
+        self._nz = np.array(nz)[np.argsort(self.zmid)]
+        self._zedges.sort()
+
+        self.set_effective_volume(
+            zmin=self.zmin, zmax=self.zmax, *args, **kwargs)
+        self.logger.info(f'Effective volume: {self.volume:.3e} (Mpc/h)^3')
+
+        bin_volume = self.fsky * \
+            np.diff(self.cosmo.comoving_radial_distance(self.zedges)**3)
+        self.nbar = np.average(self.nz, weights=bin_volume)
+        self.logger.info(f'Estimated nbar: {self.nbar:.3e} (Mpc/h)^-3')
+
+    def set_randoms(self, randoms, alpha=1.0, bins=None, fsky=None):
+        '''Estimates the effective volume and number density of the box based on a
+        provided catalog of randoms.
+
+        Parameters
+        ----------
+        randoms : array_like
+            Catalog of randoms.
+        alpha : float, optional
+            Factor to multiply the number density of the randoms. Default is 1.0.
+        '''
+        from mockfactory import RedshiftDensityInterpolator
+
+        if fsky is None:
+            import healpy as hp
+
+            nside = 512
+            hpixel = hp.ang2pix(nside, randoms['RA'], randoms['DEC'], lonlat=True)
+            unique_hpixels = np.unique(hpixel)
+            self.fsky = len(unique_hpixels) / hp.nside2npix(nside)
+
+            self.logger.info(f'fsky estimated from randoms: {self.fsky:.3f}')
+        else:
+            self.fsky = fsky
+
+        nz_hist = RedshiftDensityInterpolator(z=randoms['Z'], bins=bins, fsky=self.fsky, distance=self.cosmo.comoving_radial_distance)
+        self.set_nz(zedges=nz_hist.edges, nz=nz_hist.nbar * alpha)
+
+    @property
+    def area(self):
+        return self.fsky * 360**2 / np.pi
+
+    @area.setter
+    def area(self, area):
+        self.fsky = area / 360**2 * np.pi
+
+    @property
+    def nz(self):
+        return self._nz
+
+    @property
+    def ngals(self):
+        return self.nbar * self.volume
+
+    @property
+    def cosmo(self):
+        if not hasattr(self, '_cosmo'):
+            self.logger.info('Cosmology object not set. Using fiducial cosmology DESI.')
+            from cosmoprimo.fiducial import DESI
+            self._cosmo = DESI()
+        return self._cosmo
+
+    @cosmo.setter
+    def cosmo(self, cosmo):
+        self._cosmo = cosmo
 
 
 class SurveyGeometry(base.BaseClass):
-
+    """Class that represents the geometry of a galaxy survey with potentially multiple correlated tracers
+    
+    Attributes
+    ----------
+    randoms : list of mockfactory.Catalog
+        List of random catalogs for each tracer.
+    alphas : list of float
+        List of alpha parameters for each tracer, where alpha = N_galaxies / N_randoms.
+    boxsize : float
+        Size of the original box for the window function meshes.
+    kboxsize : float
+        Size of the cut box after trimming to achieve the desired kmax for the window function meshes.
+    nmesh : int
+        Number of mesh points in each dimension for the original window function meshes.
+    knmesh : int
+        Number of mesh points in each dimension for the cut box after trimming to achieve the desired kmax for the window function meshes.
+    ikgrid : list of np.ndarray
+        List of 3 arrays containing the grid of wavenumber indices for each dimension, with shape (nmesh,) or (knmesh,) depending on whether the mesh has been trimmed.
+    kfun : float
+        Fundamental wavenumber of the original window function meshes.
+    mask_ellmax : int
+        Maximum ell to use for the spherical harmonic expansion of the survey mask. Must be even.
+    pk_ellmax : int
+        Maximum ell to use for the spherical harmonic expansion of the power spectrum. Current max is 4. Must be even.
+    cache_dir : str
+        Directory to save/load cached window kernels. Also contains the resume file for loading from checkpoint.
+    resume_file : str
+        Name of the file to save/load the window kernels for resuming calculations.
+    windows : dict of SurveyWindows
+        Dictionary containing the SurveyWindow objects for each combination of tracers, where the keys are tuples of tracer indices (t1, t2) and the values are the corresponding SurveyWindow objects.
+    window_matrix : dict of np.ndarray
+        Dictionary containing the window convolution matrices for each combination of tracers and Gaussian term, where the keys are one of
+            [cosmic_variance_{A}{B}{C}{D}, mixed_{A}{B}{C}, shotnoise_{A}{B}] where A,B,C,D are ints representing specific tracer indeces.
+    """
     def __init__(self,
                  randoms:list=None, alphas:list=None,
                  nmesh=None, boxsize=None, boxpad=2.,
@@ -421,9 +686,10 @@ class SurveyGeometry(base.BaseClass):
     def set_kbins(self, binning_obj:binning.FourierBinning):
         '''Set the k-bins for the window kernels.
 
-        Args:
-            binning_obj: binning.FourierBinning
-                Either a linear or log binning object.
+        Parameters
+        ----------
+        binning_obj : binning.FourierBinning
+            Either a linear or log binning object.
         '''
         if not isinstance(binning_obj, binning.LinearBinning) and not isinstance(binning_obj, binning.LogBinning):
             raise ValueError("binning must be either a linear or log binning object")
@@ -574,18 +840,27 @@ class SurveyGeometry(base.BaseClass):
     def I(self, tracer1:int, tracer2:int, nbar_power_1:int, fkp_power_1:int, nbar_power_2:int=0, fkp_power_2:int=0, apply_alpha=False):
         """Retrieve the I normalization factor for the given tracer.
 
-        Args:
-        tracer1 (int): 1st tracer label.
-        tracer2 (int): 2nd tracer label.
-        nbar_power_1 (int): Power of nbar for the first tracer.
-        fkp_power_1 (int): Power of FKP weight for the first tracer.
-        nbar_power_2 (int, optional): Power of nbar for the second tracer. Default is 0.
-        fkp_power_2 (int, optional): Power of FKP weight for the second tracer. Default is 0.
-        apply_alpha (bool, optional): Whether to apply alpha(tracer) Default is False.
+        Parameters
+        ----------
+        tracer1 : int
+            1st tracer label.
+        tracer2 : int
+            2nd tracer label.
+        nbar_power_1 : int
+            Power of nbar for the first tracer.
+        fkp_power_1 : int
+            Power of FKP weight for the first tracer.
+        nbar_power_2 : int, optional
+            Power of nbar for the second tracer. Default is 0.
+        fkp_power_2 : int, optional
+            Power of FKP weight for the second tracer. Default is 0.
+        apply_alpha : bool, optional
+            Whether to apply alpha(tracer). Default is False.
 
         Returns
         -------
-        I factor
+        float
+            I normalization factor.
         """
 
         if tracer1 > self.num_tracers - 1 or tracer2 > self.num_tracers - 1:

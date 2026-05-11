@@ -1,6 +1,6 @@
 """This module contains utility functions for thecov.
 """
-import os, functools, psutil, sys
+import os, functools, psutil
 import numpy as np
 import itertools as itt
 from scipy.interpolate import InterpolatedUnivariateSpline
@@ -80,11 +80,13 @@ def cache_method(func):
     return cached_func
 
 def ellmiter(lmax, n):
+    """Creates generator over all combinations of ell and m up to lmax for n tracers."""
     for ls in itt.product(range(0, lmax + 1, 2), repeat=n):
         for ms in itt.product(*[range(-l, l+1, 1) for l in ls]):
             yield ls + ms
 
 def elliter(lmax, n):
+    """Creates generator over all combinations of ell up to lmax for n tracers."""
     for ls in itt.product(range(0, lmax + 1, 2), repeat=n):
         yield ls
 
@@ -121,16 +123,19 @@ def get_available_memory():
 def gather_field_to_root(field, root=0):
     """Gather a distributed 3D slab `field` onto `root`, preserving spatial layout.
 
-    Args:
-        field (pmesh Field): A pmesh Field (e.g. `RealField`) with attributes `pm`, `start`, `shape`, and
-            `value` representing the local slab (numpy array) on each rank.
-        root (int): MPI rank to gather to. Default is 0.
+    Parameters
+    ----------
+    field : pmesh Field
+        A pmesh Field (e.g. `RealField`) with attributes `pm`, `start`, `shape`, and
+        `value` representing the local slab (numpy array) on each rank.
+    root : int
+        MPI rank to gather to. Default is 0.
 
-    Returns:
-        (numpy.ndarray or None): On `root`, returns the reconstructed full array with global shape
-            On `root`, returns the reconstructed full array with global shape
-            `field.pm.Nmesh` (or `field.pm.Nmesh` for real fields). On non-root ranks,
-            returns ``None``.
+    Returns
+    -------
+    numpy.ndarray or None
+        On `root`, returns the reconstructed full array with global shape
+        `field.pm.Nmesh`. On non-root ranks, returns ``None``.
     """
     import numpy as _np
 
@@ -165,14 +170,20 @@ def gather_field_to_root(field, root=0):
 
 def trim_fourier_mesh(mesh:np.ndarray, nmesh:int, new_nmesh:int):
     """Trim a fourier-space mesh to a smaller size, preserving positive and negative frequencies.
-    
-    Args:
-        mesh (numpy.ndarray): The fourier-space mesh to trim.
-        nmesh (int): The original size of the mesh.
-        new_nmesh (int): The desired size of the mesh.
 
-    Returns:
-        numpy.ndarray: The trimmed fourier-space mesh.
+    Parameters
+    ----------
+    mesh : numpy.ndarray
+        The fourier-space mesh to trim.
+    nmesh : int
+        The original size of the mesh.
+    new_nmesh : int
+        The desired size of the mesh.
+
+    Returns
+    -------
+    numpy.ndarray
+        The trimmed fourier-space mesh.
     """
     mesh = np.fft.fftshift(mesh)
     center = nmesh // 2

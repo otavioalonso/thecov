@@ -768,13 +768,19 @@ class MultipoleFourierCovariance(MultipoleMultiTracerCovariance):
         linear or logarithmic space depending on the binning_type specified at
         initialization.
 
-        Args:
-            kmin (float): minimum k-mode (the edge of the first bin) in h/Mpc
-            kmax (float): maximum k-mode (the edge of the last bin) in h/Mpc
-            dk (float): width of each k-bin. In linear binning this is the absolute width,
-                        while in logarithmic binning this is dlogk = log10(kmax/kmin)/nbins
-            kbins (int, optional): number of k-bins. Only used if dk is not provided. Defaults to None.
-            nmodes (int, optional): number of modes per bin. Defaults to None.
+        Parameters
+        ----------
+        kmin : float
+            minimum k-mode (the edge of the first bin) in h/Mpc
+        kmax : float
+            maximum k-mode (the edge of the last bin) in h/Mpc
+        dk : float
+            width of each k-bin. In linear binning this is the absolute width,
+            while in logarithmic binning this is dlogk = log10(kmax/kmin)/nbins
+        kbins : int, optional
+            number of k-bins. Only used if dk is not provided. Defaults to None.
+        nmodes : int, optional
+            number of modes per bin. Defaults to None.
         """
         self.k_binning.set_kbins(kmin, kmax, dk, kbins, nmodes)
 
@@ -869,13 +875,20 @@ class SparseNDArray:
 
         Currently, this function only loads dense_array from the root rank.
 
-        Args:
-            dense_array (np.ndarray): The dense array to convert. Will only read in data on the root rank.
-            shape_out (list, optional): Outer shape that defines the ND array layout. If None, inferred from dense_array.
-            shape_in (list, optional): Inner shape that defines the ND array layout. If None, inferred from dense_array.
-            comm (mpi4py.MPI.Comm, optional): MPI communicator to use. Defaults to MPI.COMM_WORLD.
-            root (int, optional): Rank which should hold the data. Default 0.
+        Parameters:
+        -----------
+        dense_array : np.ndarray)
+            The dense array to convert. Will only read in data on the root rank.
+        shape_out : list, optional: 
+            Outer shape that defines the ND array layout. If None, inferred from dense_array.
+        shape_in : list, optional: 
+            Inner shape that defines the ND array layout. If None, inferred from dense_array.
+        comm : mpi4py.MPI.Comm, optional: 
+            MPI communicator to use. Defaults to MPI.COMM_WORLD.
+        root : int, optional: 
+            Rank which should hold the data. Default 0.
         Returns:
+        --------
             SparseNDArray: The resulting sparse ND array.
         """
         if shape_out is None:
