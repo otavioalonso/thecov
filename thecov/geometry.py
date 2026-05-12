@@ -253,9 +253,9 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         self._kmax = kmax
 
         self.window_matrix = None
+        self.window_matrix_error = None
 
         self._resume_file = None
-
         self._randoms = mockfactory.Catalog(randoms) if not isinstance(randoms, mockfactory.Catalog) else randoms
 
         # Check if the randoms have weights, otherwise set them to 1
@@ -574,6 +574,11 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             'mixed_term': np.zeros(3*[pk_ellmax//2+1] + 2*[self.kbins]),
             'shotnoise': np.zeros(2*[pk_ellmax//2+1] + 2*[self.kbins]),
         }
+        window_matrix_error = {
+            'cosmic_variance': np.zeros(4*[pk_ellmax//2+1] + 2*[self.kbins]),
+            'mixed_term': np.zeros(3*[pk_ellmax//2+1] + 2*[self.kbins]),
+            'shotnoise': np.zeros(2*[pk_ellmax//2+1] + 2*[self.kbins]),
+        }
 
         profiling['shared_memory_setup'] = time.time() - phase_start
         self.logger.info(f'[PROFILING] Shared memory setup: {profiling["shared_memory_setup"]:.2f}s')
@@ -645,17 +650,22 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                             if len(chunk) > 0:
                                 all_tasks.append((i, chunk.tolist(), k1_bin_index))
                     
+                    # Track chunk sizes per bin for block variance estimator
+
                     # Process all tasks for this batch in parallel
-                    # Accumulate results per bin
+                    # Accumulate results per bin: store both the total sum and per-chunk results for error estimation
                     bin_results = {i: {
                         'cosmic_variance': np.zeros((pk_ellmax//2+1,) * 4 + (self.kbins,)),
                         'mixed_term': np.zeros((pk_ellmax//2+1,) * 3 + (self.kbins,)),
                         'shotnoise': np.zeros((pk_ellmax//2+1,) * 2 + (self.kbins,)),
-                        'k1_bin_index': int(i + self.kmin // self.dk)
+                        'k1_bin_index': int(i + self.kmin // self.dk),
+                        'chunks': [],  # list of (n_modes, cv_chunk, mt_chunk, sn_chunk)
                     } for i in batch_bins}
                     
                     for result in pool.imap_unordered(_process_modes, all_tasks):
-                        i, k1_bin_index, cosmic_variance, mixed_term, shotnoise, timers, memory_profile = result
+                        i, k1_bin_index, n_chunk, cosmic_variance, mixed_term, shotnoise, timers, memory_profile = result
+                        # Store raw chunk sum and its mode count for block variance estimation
+                        bin_results[i]['chunks'].append((n_chunk, cosmic_variance.copy(), mixed_term.copy(), shotnoise.copy()))
                         bin_results[i]['cosmic_variance'] += cosmic_variance
                         bin_results[i]['mixed_term'] += mixed_term
                         bin_results[i]['shotnoise'] += shotnoise
@@ -668,12 +678,36 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                                 memory_stats[key].append(memory_profile[key])
                         n_tasks_profiled += 1
                     
-                    # Add batch results to window matrix
+                    # Add batch results to window matrix and accumulate block variance
                     for i in batch_bins:
                         k1_idx = bin_results[i]['k1_bin_index']
                         window_matrix['cosmic_variance'][..., k1_idx, :] += bin_results[i]['cosmic_variance']
                         window_matrix['mixed_term'][..., k1_idx, :] += bin_results[i]['mixed_term']
                         window_matrix['shotnoise'][..., k1_idx, :] += bin_results[i]['shotnoise']
+
+                        # Block variance estimator: SE = sqrt(1/(K*(K-1)) * sum_j (W_j -w W_mean)^2)
+                        # where W_j = S_j / N_j is each chunk's per-mode mean
+                        chunks = bin_results[i]['chunks']
+                        K = len(chunks)
+                        if K > 1:
+                            N_total = sum(c[0] for c in chunks)
+                            W_mean_cv = bin_results[i]['cosmic_variance'] / N_total
+                            W_mean_mt = bin_results[i]['mixed_term'] / N_total
+                            W_mean_sn = bin_results[i]['shotnoise'] / N_total
+                            sq_cv = np.zeros_like(W_mean_cv)
+                            sq_mt = np.zeros_like(W_mean_mt)
+                            sq_sn = np.zeros_like(W_mean_sn)
+                            for n_j, cv_j, mt_j, sn_j in chunks:
+                                W_j_cv = cv_j / n_j
+                                W_j_mt = mt_j / n_j
+                                W_j_sn = sn_j / n_j
+                                sq_cv += (W_j_cv - W_mean_cv) ** 2
+                                sq_mt += (W_j_mt - W_mean_mt) ** 2
+                                sq_sn += (W_j_sn - W_mean_sn) ** 2
+                            # SE on the full-bin mean (W_mean * N_total / N_total = W_mean)
+                            window_matrix_error['cosmic_variance'][..., k1_idx, :] += np.sqrt(sq_cv / (K * (K - 1)))
+                            window_matrix_error['mixed_term'][..., k1_idx, :] += np.sqrt(sq_mt / (K * (K - 1)))
+                            window_matrix_error['shotnoise'][..., k1_idx, :] += np.sqrt(sq_sn / (K * (K - 1)))
 
                     modes_processed += batch_modes
                     batch_elapsed = time.time() - batch_time
@@ -703,11 +737,25 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         phase_start = time.time()
         self.logger.info('Applying normalization...')
         norm = (4*np.pi)**2 / self.normalization(2, 2)**2
-        for i, Nm in enumerate(Nmodes):
+
+        # The window matrix accumulates:
+        #   sum_{k1' in sampled} sum_{k2' in all grid} (...)
+        # To get the shell average in both k dimensions:
+        #   k1 axis: MC-sampled  -> divide by n_sampled[i]  (MC estimator of 1/Nm * sum_all)
+        #   k2 axis: exhaustive  -> divide by Nm[j]         (exact shell average)
+        # So the full per-(k1,k2) factor is norm / (n_sampled[i] * Nm[j]).
+        # We apply the k2 factor as a broadcast over the last axis first, then the k1 factor per slice.
+        Nm_arr = np.array(Nmodes, dtype=np.float64)  # shape (kbins,)
+
+        for i in range(len(Nmodes)):
             k_bin_index = int(i + self.kmin // self.dk)
-            window_matrix['cosmic_variance'][..., k_bin_index, :] *= norm / Nm
-            window_matrix['mixed_term'][..., k_bin_index, :] *= norm / Nm
-            window_matrix['shotnoise'][..., k_bin_index, :] *= norm / Nm
+            n_sampled = len(kmodes[i])
+            k1_factor = norm / n_sampled  # scalar for this k1 bin
+            # Divide k2 axis by Nm[j]: broadcast Nm_arr over all leading dimensions
+            for key in window_matrix:
+                window_matrix[key][..., k_bin_index, :] *= k1_factor / Nm_arr
+            for key in window_matrix_error:
+                window_matrix_error[key][..., k_bin_index, :] *= k1_factor / Nm_arr
 
         profiling['normalization'] = time.time() - phase_start
         profiling['memory_stats'] = memory_stats
@@ -752,27 +800,43 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         # Memory profiling breakdown
         if profiling.get('memory_stats') and any(profiling['memory_stats'].values()):
             ms = profiling['memory_stats']
-            self.logger.info('')
-            self.logger.info('WORKER MEMORY PROFILING (MB per worker)')
-            self.logger.info('=' * 60)
-            for key in ['baseline', 'after_ylm1', 'after_ik2', 'after_bin_matrix', 'after_ylm2', 
-                        'peak_cosmic_variance', 'peak_mixed_term', 'peak_shotnoise', 'final']:
-                values = ms.get(key, [])
-                if values:
-                    self.logger.info(f'  {key:24s}: min={min(values):7.1f}  max={max(values):7.1f}  avg={sum(values)/len(values):7.1f}')
-            # Calculate memory deltas to identify hotspots
-            self.logger.info('-' * 60)
-            self.logger.info('MEMORY HOTSPOTS (max increase from baseline)')
-            baseline_avg = sum(ms.get('baseline', [0])) / max(len(ms.get('baseline', [0])), 1)
-            for key in ['peak_cosmic_variance', 'peak_mixed_term', 'peak_shotnoise']:
-                values = ms.get(key, [])
-                if values:
-                    delta = max(values) - baseline_avg
-                    self.logger.info(f'  {key:24s}: +{delta:7.1f} MB from baseline')
-            self.logger.info('=' * 60)
+            all_peaks = [v for key in ['peak_cosmic_variance', 'peak_mixed_term', 'peak_shotnoise']
+                         for v in ms.get(key, [])]
+            baseline_vals = ms.get('baseline', [0])
+            max_per_worker = max(all_peaks) if all_peaks else 0
+            baseline_avg = sum(baseline_vals) / max(len(baseline_vals), 1)
+            self.logger.info(f'  Worker memory: max per worker={max_per_worker:.0f} MB  '
+                             f'(+{max_per_worker - baseline_avg:.0f} MB above baseline)')
 
         self.window_matrix = window_matrix
+        self.window_matrix_error = window_matrix_error
         self._profiling = profiling  # Store for later analysis
+
+        # ==================== MC ERROR SUMMARY ====================
+        self.logger.info('')
+        self.logger.info('=' * 60)
+        self.logger.info('MONTE CARLO INTEGRATION ERROR SUMMARY')
+        self.logger.info('=' * 60)
+
+        for term in ['cosmic_variance', 'mixed_term', 'shotnoise']:
+            W = window_matrix[term]
+            SE = window_matrix_error[term]
+            # k-diagonal: last two axes are (k1, k2), take the diagonal over them
+            W_diag = np.diagonal(W, axis1=-2, axis2=-1)   # shape: (..., kbins)
+            SE_diag = np.diagonal(SE, axis1=-2, axis2=-1)
+
+            self.logger.info(f'  {term}:')
+
+            # Aggregate over all k-diagonal elements
+            nonzero_all = np.abs(W_diag) > 0
+            if nonzero_all.any():
+                rel_err_all = SE_diag[nonzero_all] / np.abs(W_diag[nonzero_all])
+                self.logger.info(f'    '
+                                 f'P95={np.percentile(rel_err_all, 95)*100:.3f}%  '
+                                 f'MAX={np.max(rel_err_all)*100:.3f}%  '
+                                 f'MAX ABS={np.max(SE_diag):.3e}')
+
+        self.logger.info('=' * 60)
 
         return self.window_matrix
 
@@ -800,22 +864,14 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
             gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
-            for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
-                for la in np.arange(np.abs(l1-l4), min(l1+l4, mask_ellmax)+1, 2):
-                    for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
-                        for ma, mb in itt.product(*[np.arange(-l, l+1) for l in (la, lb)]):
+            tasks = [(l1, l2, l3, l4, m1, m2, m3, m4, mask_ellmax, pk_ellmax)
+                     for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4)]
 
-                            value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
-                                                sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
-                            if value != 0.:
-                                gaunt_coefficients[l1//2,l2//2,
-                                                    l3//2,l4//2,
-                                                    m1+l1,m2+l2,
-                                                    m3+l3,m4+l4,
-                                                    la//2,lb//2,
-                                                    ma+la,mb+lb] += value
+            with Pool(processes=min(cpu_count(), max(1, len(tasks)))) as pool:
+                for res in pool.imap_unordered(_gaunt_first_worker, tasks):
+                    for idx, val in res:
+                        gaunt_coefficients[idx] += val
 
-            
             logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
             logger.info(f'Saving first cosmic variance Gaunt coefficients to: {filename}')
             gaunt_coefficients.save(filename)
@@ -845,20 +901,14 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
             gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
-            for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
-                for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                    for la in np.arange(np.abs(lc-l4), min(lc+l4, mask_ellmax)+1, 2):
-                        for ma, mc in itt.product(*[np.arange(-l, l+1) for l in (la, lc)]):
-                            value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                sympy.physics.wigner.gaunt(lc,l4,la,mc,m4,ma))
-                            lb, mb = l3, m3
-                            if value != 0.:
-                                gaunt_coefficients[l1//2,l2//2,
-                                                    l3//2,l4//2,
-                                                    m1+l1,m2+l2,
-                                                    m3+l3,m4+l4,
-                                                    la//2,lb//2,
-                                                    ma+la,mb+lb] += value
+            tasks = [(l1, l2, l3, l4, m1, m2, m3, m4, mask_ellmax, pk_ellmax)
+                     for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4)]
+
+            with Pool(processes=min(cpu_count(), max(1, len(tasks)))) as pool:
+                for res in pool.imap_unordered(_gaunt_second_worker, tasks):
+                    for idx, val in res:
+                        gaunt_coefficients[idx] += val
+
             logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
             logger.info(f'Saving second cosmic variance Gaunt coefficients to: {filename}')
             gaunt_coefficients.save(filename)
@@ -887,43 +937,14 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
             gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
-            for l1, l2, l3, m1, m2, m3 in utils.ellmiter(pk_ellmax, 3):
+            tasks = [(l1, l2, l3, m1, m2, m3, mask_ellmax, pk_ellmax)
+                     for l1, l2, l3, m1, m2, m3 in utils.ellmiter(pk_ellmax, 3)]
 
-                lb, mb = l1, m1
-                if lb <= mask_ellmax:
-                    for la in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
-                        for ma in np.arange(-la, la+1):
-                            value = np.float64(sympy.physics.wigner.gaunt(l2,l3,la,m2,m3,ma))
-                            if value != 0:
-                                gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
+            with Pool(processes=min(cpu_count(), max(1, len(tasks)))) as pool:
+                for res in pool.imap_unordered(_gaunt_mixed_worker, tasks):
+                    for idx, val in res:
+                        gaunt_coefficients[idx] += val
 
-                lb, mb = l2, m2
-                if lb <= mask_ellmax:
-                    for la in np.arange(np.abs(l1-l3), min(l1+l3, mask_ellmax)+1, 2):
-                        for ma in np.arange(-la, la+1):
-                            value = np.float64(sympy.physics.wigner.gaunt(l1,l3,la,m1,m3,ma))
-                            if value != 0:
-                                gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
-
-                la, ma = l3, m3
-                if la <= mask_ellmax:
-                    for lb in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                        for mb in np.arange(-lb, lb+1):
-
-                            value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lb,m1,m2,mb))
-                            if value != 0:
-                                gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
-
-                lb, mb = 0,0
-                for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                    for la in range(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
-                        for ma in np.arange(-la, la+1):
-                            for mc in range(-lc, lc+1):
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                   sympy.physics.wigner.gaunt(lc,l3,la,mc,m3,ma))
-                                if value != 0:
-                                    gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
-                                    
             logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
             logger.info(f'Saving mixed Gaunt coefficients to: {filename}')
             gaunt_coefficients.save(filename)
@@ -952,18 +973,13 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
             gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
-            for l1, l2, m1, m2 in utils.ellmiter(pk_ellmax, 2):
+            tasks = [(l1, l2, m1, m2, mask_ellmax, pk_ellmax)
+                     for l1, l2, m1, m2 in utils.ellmiter(pk_ellmax, 2)]
 
-                la, ma = l1,m1
-                lb, mb = l2,m2
-                gaunt_coefficients[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += 1
-
-                lb,mb = 0,0
-                for la in range(np.abs(l1-l2), min(l1+l2+1, mask_ellmax), 2):
-                    for ma in range(-la, la+1):
-                        value = np.float64(sympy.physics.wigner.gaunt(l1,l2,la,m1,m2,ma))
-                        if value != 0:
-                            gaunt_coefficients[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += value
+            with Pool(processes=min(cpu_count(), max(1, len(tasks)))) as pool:
+                for res in pool.imap_unordered(_gaunt_shot_worker, tasks):
+                    for idx, val in res:
+                        gaunt_coefficients[idx] += val
 
             logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
             logger.info(f'Saving shotnoise Gaunt coefficients to: {filename}')
@@ -1014,6 +1030,105 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         '''Clean window matrix.'''
         self.window_matrix = None
         self.window_matrix_error = None
+
+
+# ============================================================================
+# Module-level Gaunt coefficient workers (must be at module level for pickling)
+# ============================================================================
+
+def _gaunt_first_worker(task):
+    import sympy.physics.wigner as wigner
+    l1, l2, l3, l4, m1, m2, m3, m4, mask_lmax, pk_lmax = task
+    out = []
+    for la in np.arange(np.abs(l1-l4), min(l1+l4, mask_lmax)+1, 2):
+        for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_lmax)+1, 2):
+            for ma, mb in itt.product(*[np.arange(-l, l+1) for l in (la, lb)]):
+                val = np.float64(wigner.real_gaunt(l1,l4,la,m1,m4,ma) *
+                                  wigner.real_gaunt(l2,l3,lb,m2,m3,mb))
+                if val != 0.:
+                    out.append(((l1//2, l2//2, l3//2, l4//2,
+                                 m1+l1, m2+l2, m3+l3, m4+l4,
+                                 la//2, lb//2, ma+la, mb+lb), val))
+    return out
+
+
+def _gaunt_second_worker(task):
+    import sympy.physics.wigner as wigner
+    l1, l2, l3, l4, m1, m2, m3, m4, mask_lmax, pk_lmax = task
+    out = []
+    for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_lmax)+1, 2):
+        for la in np.arange(np.abs(lc-l4), min(lc+l4, mask_lmax)+1, 2):
+            for ma, mc in itt.product(*[np.arange(-l, l+1) for l in (la, lc)]):
+                val = np.float64(wigner.real_gaunt(l1,l2,lc,m1,m2,mc) *
+                                  wigner.real_gaunt(lc,l4,la,mc,m4,ma))
+                lb, mb = l3, m3
+                if val != 0.:
+                    out.append(((l1//2, l2//2, l3//2, l4//2,
+                                 m1+l1, m2+l2, m3+l3, m4+l4,
+                                 la//2, lb//2, ma+la, mb+lb), val))
+    return out
+
+
+def _gaunt_mixed_worker(task):
+    import sympy.physics.wigner as wigner
+    l1, l2, l3, m1, m2, m3, mask_lmax, pk_lmax = task
+    out = []
+
+    lb, mb = l1, m1
+    if lb <= mask_lmax:
+        for la in np.arange(np.abs(l2-l3), min(l2+l3, mask_lmax)+1, 2):
+            for ma in np.arange(-la, la+1):
+                val = np.float64(wigner.real_gaunt(l2,l3,la,m2,m3,ma))
+                if val != 0:
+                    out.append(((l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3,
+                                 la//2, lb//2, ma+la, mb+lb), val))
+
+    lb, mb = l2, m2
+    if lb <= mask_lmax:
+        for la in np.arange(np.abs(l1-l3), min(l1+l3, mask_lmax)+1, 2):
+            for ma in np.arange(-la, la+1):
+                val = np.float64(wigner.real_gaunt(l1,l3,la,m1,m3,ma))
+                if val != 0:
+                    out.append(((l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3,
+                                 la//2, lb//2, ma+la, mb+lb), val))
+
+    la, ma = l3, m3
+    if la <= mask_lmax:
+        for lb in np.arange(np.abs(l1-l2), min(l1+l2, mask_lmax)+1, 2):
+            for mb in np.arange(-lb, lb+1):
+                val = np.float64(wigner.real_gaunt(l1,l2,lb,m1,m2,mb))
+                if val != 0:
+                    out.append(((l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3,
+                                 la//2, lb//2, ma+la, mb+lb), val))
+
+    lb, mb = 0, 0
+    for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_lmax)+1, 2):
+        for la in range(np.abs(lc-l3), min(lc+l3, mask_lmax)+1, 2):
+            for ma in np.arange(-la, la+1):
+                for mc in range(-lc, lc+1):
+                    val = np.float64(wigner.real_gaunt(l1,l2,lc,m1,m2,mc) *
+                                     wigner.real_gaunt(lc,l3,la,mc,m3,ma))
+                    if val != 0:
+                        out.append(((l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3,
+                                     la//2, lb//2, ma+la, mb+lb), val))
+    return out
+
+
+def _gaunt_shot_worker(task):
+    import sympy.physics.wigner as wigner
+    l1, l2, m1, m2, mask_lmax, pk_lmax = task
+    out = []
+    # diagonal term
+    la, ma, lb, mb = l1, m1, l2, m2
+    out.append(((l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb), np.float64(1.0)))
+
+    lb, mb = 0, 0
+    for la in range(np.abs(l1-l2), min(l1+l2+1, mask_lmax), 2):
+        for ma in range(-la, la+1):
+            val = np.float64(wigner.real_gaunt(l1,l2,la,m1,m2,ma))
+            if val != 0:
+                out.append(((l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb), val))
+    return out
 
 
 # ============================================================================
@@ -1091,6 +1206,7 @@ def _process_modes(task):
     import time
     
     i, kmodes, k1_bin_index = task
+    n_chunk = len(kmodes)  # number of modes in this chunk
 
     global _worker_data
     window_data = _worker_data['window_data']
@@ -1134,7 +1250,7 @@ def _process_modes(task):
     kmodes = np.array(kmodes)  # shape (n_modes, 4)
     
     if kmodes.shape[0] == 0:
-        return i, k1_bin_index, cosmic_variance, mixed_term, shotnoise, timers, memory_profile
+        return i, k1_bin_index, n_chunk, cosmic_variance, mixed_term, shotnoise, timers, memory_profile
     
     # Grid size
     grid_shape = delta_ik.shape[1:]  # (nmesh, nmesh, nmesh)
@@ -1156,12 +1272,13 @@ def _process_modes(task):
     Ylm_funcs = {(l, m): math.get_real_Ylm(l, m) for l, m in utils.ellmiter(pk_ellmax, 1)}
     
     # Precompute Yk1 for all modes: dict -> flat array for Numba
-    # Layout: Yk1_all[mode_idx, l*(2*lmax+1) + m+lmax]
+    # Layout: Yk1_all[mode_idx, (l//2)*(2*lmax+1) + m+lmax]  (only even ells stored)
     n_modes = kmodes.shape[0]
-    n_lm = (lmax + 1) * (2 * lmax + 1)
+    n_ell = lmax // 2 + 1
+    n_lm = n_ell * (2 * lmax + 1)
     Yk1_all = np.zeros((n_modes, n_lm), dtype=np.float64)
     for l, m in utils.ellmiter(pk_ellmax, 1):
-        Yk1_all[:, l*(2*lmax + 1) + m + lmax] = Ylm_funcs[l, m](kmodes[:, 0], kmodes[:, 1], kmodes[:, 2])
+        Yk1_all[:, (l//2)*(2*lmax + 1) + m + lmax] = Ylm_funcs[l, m](kmodes[:, 0], kmodes[:, 1], kmodes[:, 2])
     
     timers['ylm1_setup'] = time.perf_counter() - t0
     memory_profile['after_ylm1'] = max(memory_profile['after_ylm1'], _get_memory_mb())
@@ -1183,11 +1300,11 @@ def _process_modes(task):
         timers['bin_matrix'] += time.perf_counter() - t0
         memory_profile['after_bin_matrix'] = max(memory_profile['after_bin_matrix'], _get_memory_mb())
         
-        # Precompute Yk2 as 3D array for Numba: (lmax+1, 2*lmax+1, n_grid)
+        # Precompute Yk2 as 3D array for Numba: (lmax//2+1, 2*lmax+1, n_grid)  (only even ells stored)
         t0 = time.perf_counter()
-        Yk2_3d = np.zeros((lmax + 1, 2 * lmax + 1, n_grid), dtype=np.float64)
+        Yk2_3d = np.zeros((lmax // 2 + 1, 2 * lmax + 1, n_grid), dtype=np.float64)
         for l, m in utils.ellmiter(pk_ellmax, 1):
-            Yk2_3d[l, m + lmax, :] = np.broadcast_to(Ylm_funcs[l, m](*ik2), grid_shape).ravel()
+            Yk2_3d[l//2, m + lmax, :] = np.broadcast_to(Ylm_funcs[l, m](*ik2), grid_shape).ravel()
         timers['ylm2_computation'] += time.perf_counter() - t0
         memory_profile['after_ylm2'] = max(memory_profile['after_ylm2'], _get_memory_mb())
 
@@ -1247,7 +1364,7 @@ def _process_modes(task):
     memory_profile['final'] = _get_memory_mb()
     
     # Return profiling info with results
-    return i, k1_bin_index, cosmic_variance, mixed_term, shotnoise, timers, memory_profile
+    return i, k1_bin_index, n_chunk, cosmic_variance, mixed_term, shotnoise, timers, memory_profile
 
 
 
@@ -1261,8 +1378,8 @@ def _compute_cosmic_variance_first(
     valid_mask,         # (n_grid,) - boolean mask for valid grid points
     window_product,     # (n_nonzero, n_grid) - window product values
     coeff_indices,      # (n_nonzero, 8) - l1/2, l2/2, l3/2, l4/2, m1+l1, m2+l2, m3+l3, m4+l4
-    Yk1_flat,           # (n_lm,) - Ylm values for k1 at this mode, indexed as l*(2*lmax+1) + m+lmax
-    Yk2_3d,             # (lmax+1, 2*lmax+1, n_grid) - Ylm values for all k2 grid points
+    Yk1_flat,           # (n_lm,) - Ylm values for k1 at this mode, indexed as (l//2)*(2*lmax+1) + m+lmax
+    Yk2_3d,             # (lmax//2+1, 2*lmax+1, n_grid) - Ylm values for all k2 grid points
     pk_ellmax,          # Maximum ell
     kbins               # Number of k-bins
 ):
@@ -1294,8 +1411,8 @@ def _compute_cosmic_variance_first(
         m4 = coeff_indices[i, 7] - l4
         
         # First term: Yk1[l1,m1] * Yk1[l2,m2] for k1
-        Yk1_l1m1 = Yk1_flat[l1 * (2*lmax + 1) + m1 + lmax]
-        Yk1_l2m2 = Yk1_flat[l2 * (2*lmax + 1) + m2 + lmax]
+        Yk1_l1m1 = Yk1_flat[l1_half * (2*lmax + 1) + m1 + lmax]
+        Yk1_l2m2 = Yk1_flat[l2_half * (2*lmax + 1) + m2 + lmax]
         Yk1_term = Yk1_l1m1 * Yk1_l2m2
         
         # Accumulate over grid points into k-bins
@@ -1303,8 +1420,8 @@ def _compute_cosmic_variance_first(
             if valid_mask[j]:
                 k2_bin = bin_indices[j]
                 # Yk2[l3,m3] * Yk2[l4,m4] for k2
-                Yk2_l3m3 = Yk2_3d[l3, m3 + lmax, j]
-                Yk2_l4m4 = Yk2_3d[l4, m4 + lmax, j]
+                Yk2_l3m3 = Yk2_3d[l3_half, m3 + lmax, j]
+                Yk2_l4m4 = Yk2_3d[l4_half, m4 + lmax, j]
                 contrib = window_product[i, j] * Yk1_term * Yk2_l3m3 * Yk2_l4m4
                 result[l1_half, l2_half, l3_half, l4_half, k2_bin] += contrib
     
@@ -1318,7 +1435,7 @@ def _compute_cosmic_variance_second(
     window_values,      # (n_nonzero, n_grid)
     coeff_indices,      # (n_nonzero, 8) - l1/2, l2/2, l3/2, l4/2, m1+l1, m2+l2, m3+l3, m4+l4
     Yk1_flat,           # (n_lm,)
-    Yk2_3d,             # (lmax+1, 2*lmax+1, n_grid)
+    Yk2_3d,             # (lmax//2+1, 2*lmax+1, n_grid)
     pk_ellmax,
     kbins
 ):
@@ -1345,16 +1462,16 @@ def _compute_cosmic_variance_second(
         m4 = coeff_indices[idx, 7] - l4
         
         # Second term: Yk1[l1,m1] * Yk1[l3,m3] for k1
-        Yk1_l1m1 = Yk1_flat[l1 * (2*lmax + 1) + m1 + lmax]
-        Yk1_l3m3 = Yk1_flat[l3 * (2*lmax + 1) + m3 + lmax]
+        Yk1_l1m1 = Yk1_flat[l1_half * (2*lmax + 1) + m1 + lmax]
+        Yk1_l3m3 = Yk1_flat[l3_half * (2*lmax + 1) + m3 + lmax]
         Yk1_term = Yk1_l1m1 * Yk1_l3m3
         
         for i in range(n_grid):
             if valid_mask[i]:
                 k2_bin = bin_indices[i]
                 # Yk2[l2,m2] * Yk2[l4,m4] for k2
-                Yk2_l2m2 = Yk2_3d[l2, m2 + lmax, i]
-                Yk2_l4m4 = Yk2_3d[l4, m4 + lmax, i]
+                Yk2_l2m2 = Yk2_3d[l2_half, m2 + lmax, i]
+                Yk2_l4m4 = Yk2_3d[l4_half, m4 + lmax, i]
                 contrib = window_values[idx, i] * Yk1_term * Yk2_l2m2 * Yk2_l4m4
                 result[l1_half, l2_half, l3_half, l4_half, k2_bin] += contrib
     
@@ -1368,7 +1485,7 @@ def _compute_mixed_term_contribution(
     window_values,      # (n_nonzero, n_grid)
     coeff_indices,      # (n_nonzero, 6) - l1/2, l2/2, l3/2, m1+l1, m2+l2, m3+l3
     Yk1_flat,           # (n_lm,)
-    Yk2_3d,             # (lmax+1, 2*lmax+1, n_grid)
+    Yk2_3d,             # (lmax//2+1, 2*lmax+1, n_grid)
     pk_ellmax,
     kbins
 ):
@@ -1389,13 +1506,13 @@ def _compute_mixed_term_contribution(
         m2 = coeff_indices[idx, 4] - l2
         m3 = coeff_indices[idx, 5] - l3
         
-        Yk1_l1m1 = Yk1_flat[l1 * (2*lmax + 1) + m1 + lmax]
+        Yk1_l1m1 = Yk1_flat[l1_half * (2*lmax + 1) + m1 + lmax]
         
         for i in range(n_grid):
             if valid_mask[i]:
                 k2_bin = bin_indices[i]
-                Yk2_l2m2 = Yk2_3d[l2, m2 + lmax, i]
-                Yk2_l3m3 = Yk2_3d[l3, m3 + lmax, i]
+                Yk2_l2m2 = Yk2_3d[l2_half, m2 + lmax, i]
+                Yk2_l3m3 = Yk2_3d[l3_half, m3 + lmax, i]
                 contrib = window_values[idx, i] * Yk1_l1m1 * Yk2_l2m2 * Yk2_l3m3
                 result[l1_half, l2_half, l3_half, k2_bin] += contrib
     
@@ -1409,7 +1526,7 @@ def _compute_shotnoise_contribution(
     window_values,      # (n_nonzero, n_grid)
     coeff_indices,      # (n_nonzero, 4) - l1/2, l2/2, m1+l1, m2+l2
     Yk1_flat,           # (n_lm,)
-    Yk2_3d,             # (lmax+1, 2*lmax+1, n_grid)
+    Yk2_3d,             # (lmax//2+1, 2*lmax+1, n_grid)
     pk_ellmax,
     kbins
 ):
@@ -1428,12 +1545,12 @@ def _compute_shotnoise_contribution(
         m1 = coeff_indices[idx, 2] - l1
         m2 = coeff_indices[idx, 3] - l2
         
-        Yk1_l1m1 = Yk1_flat[l1 * (2*lmax + 1) + m1 + lmax]
+        Yk1_l1m1 = Yk1_flat[l1_half * (2*lmax + 1) + m1 + lmax]
         
         for i in range(n_grid):
             if valid_mask[i]:
                 k2_bin = bin_indices[i]
-                Yk2_l2m2 = Yk2_3d[l2, m2 + lmax, i]
+                Yk2_l2m2 = Yk2_3d[l2_half, m2 + lmax, i]
                 contrib = window_values[idx, i] * Yk1_l1m1 * Yk2_l2m2
                 result[l1_half, l2_half, k2_bin] += contrib
     
