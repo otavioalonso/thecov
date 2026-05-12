@@ -1554,6 +1554,51 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         if self._ells1 and self._ells2:
             self._initialize_cov()
 
+    # Alias
+    set_kbins = set_linear_kbins
+
+    # ---- Proxy properties delegating to kbin1 ----
+
+    @property
+    def kbins(self):
+        '''Number of k-bins (proxy for kbin1.kbins).'''
+        return self.kbin1.kbins
+
+    @property
+    def kmin(self):
+        '''Minimum k value (proxy for kbin1.kmin).'''
+        return self.kbin1.kmin
+
+    @property
+    def kmax(self):
+        '''Maximum k value (proxy for kbin1.kmax).'''
+        return self.kbin1.kmax
+
+    @property
+    def dk(self):
+        '''k-bin width (proxy for kbin1.dk).'''
+        return self.kbin1.dk
+
+    @property
+    def kmid(self):
+        '''k-bin midpoints (proxy for kbin1.kmid).'''
+        return self.kbin1.kmid
+
+    @property
+    def kedges(self):
+        '''k-bin edges (proxy for kbin1.kedges).'''
+        return self.kbin1.kedges
+
+    @property
+    def nmodes(self):
+        '''Number of modes per k-bin (proxy for kbin1.nmodes).'''
+        return self.kbin1.nmodes
+
+    @property
+    def is_kbins_set(self):
+        '''Whether k-bins have been configured (proxy for kbin1.is_set).'''
+        return self.kbin1 is not None and self.kbin1.is_set
+
 class SparseNDArray:
     """
     A class to represent a sparse ND array using scipy.sparse.csr_matrix.

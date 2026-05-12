@@ -51,6 +51,17 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
         self.pk_renorm = 1
 
     @property
+    def ells(self):
+        '''Returns the list of multipoles (first axis only).
+
+        Returns
+        -------
+        list
+            Sorted list of multipole values.
+        '''
+        return self._ells1
+
+    @property
     def alpha(self):
         '''The value of alpha. This is the alpha used in the Pk measurements.
            It can be different from the alpha used in the geometry object.
@@ -107,7 +118,7 @@ class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
             Shotnoise value.'''
         
         if isinstance(self.geometry, geometry.SurveyGeometry):
-            return self.pk_renorm * (1 + self.alpha) * self.geometry.I('12')/self.geometry.I('22')
+            return self.pk_renorm * (1 + self.alpha) * self.geometry.normalization(1,2)/self.geometry.normalization(2,2)
         elif isinstance(self.geometry, geometry.BoxGeometry):
             return self.pk_renorm * self.geometry.shotnoise
 
@@ -355,7 +366,8 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         n_ell = W_cv.shape[0]
         pks = np.zeros((n_ell, self.kbins))
         for ell in self.ells:
-            pks[ell // 2] = 4 * np.pi / (2*ell + 1) * self.get_pk(ell, force_return=0.0)
+            if ell // 2 < n_ell:
+                pks[ell // 2] = 4 * np.pi / (2*ell + 1) * self.get_pk(ell, force_return=0.0)
 
         cosmic_variance = np.einsum('abcdxy,cx,dy->abxy', W_cv, pks, pks)
 
@@ -380,7 +392,8 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         )
 
         for l1, l2 in utils.elliter(max(self.ells), 2):
-            self.set_ell_cov(l1, l2, covariance[l1//2, l2//2, :, :])
+            if l1 // 2 < n_ell and l2 // 2 < n_ell:
+                self.set_ell_cov(l1, l2, covariance[l1//2, l2//2, :, :])
 
         self._diagnose_covariance()
 
