@@ -1989,7 +1989,12 @@ class SparseNDArray:
 
 
 def cache(func):
-    """Cache decorator for instance methods. Excludes 'self' from the cache key."""
+    """Cache decorator for instance methods.
+    
+    The cache key includes id(self) so each instance has its own cache,
+    and also includes all arguments so repeated calls with the same args
+    on the same instance are fast.
+    """
     from functools import wraps
     import inspect
     func.cached = {}
@@ -2000,8 +2005,12 @@ def cache(func):
         # Bind arguments to get a consistent cache key
         bound = sig.bind(self, *args, **kwargs)
         bound.apply_defaults()
-        # Exclude 'self' from cache key
-        cache_key = tuple(bound.arguments.items())[1:]  # Skip 'self'
+        # Include id(self) so different instances don't share cached results.
+        # Without this, a second instance with the same args gets a cached
+        # return value but self.window_matrix (set as a side-effect) is never
+        # assigned, leaving it as None.
+        args_key = tuple(bound.arguments.items())[1:]  # Skip 'self'
+        cache_key = (id(self), args_key)
         try:
             return wrapper.cached[cache_key]
         except KeyError:
