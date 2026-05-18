@@ -451,6 +451,7 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                 mesh_cache[params] = result
         
         profiling['mesh_computation'] = time.time() - phase_start
+        profiling['n_unique_meshes'] = len(unique_mesh_params)
         self.logger.info(f'[PROFILING] Mesh computation: {profiling["mesh_computation"]:.2f}s')
 
         # ==================== PHASE 3: GAUNT COEFFICIENT LOADING ====================
@@ -479,8 +480,9 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             'shotnoise': ((1, 2), (1, 2)),
         }
 
-        # Track per-term timing
+        # Track per-term timing and nonzero counts
         term_timings = {}
+        n_nonzero_per_term = {}
 
         # Process each term separately to limit memory
         for term_name, coeff in coefficients.items():
@@ -510,12 +512,14 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             window_product[term_name] = coeff @ product
 
             del product
+            n_nonzero_per_term[term_name] = n_nonzero
             term_timings[term_name] = time.time() - term_start
             self.logger.info(f'  {term_name}: {n_nonzero} products, {term_timings[term_name]:.2f}s')
             
         del mesh_cache
 
         profiling['gaunt_contraction'] = time.time() - phase_start
+        profiling['n_nonzero_per_term'] = n_nonzero_per_term
         self.logger.info(f'[PROFILING] Gaunt contraction: {profiling["gaunt_contraction"]:.2f}s')
 
         # ==================== PHASE 5: SHARED MEMORY SETUP ====================
@@ -552,6 +556,9 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         # Also share delta_ik
         delta_ik_shm = _create_shared_ndarray(delta_ik)
         all_shm_handles.append(delta_ik_shm['handle'])
+
+        # Track exact bytes committed to shared memory (used later for memory report)
+        shm_total_bytes = sum(shm.size for shm in all_shm_handles)
 
         # Prepare worker arguments (only small data, no large arrays)
         worker_args = {
@@ -598,6 +605,8 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         self.logger.info(f'  {bins_parallel} bins in parallel')
         self.logger.info(f'  {workers_per_bin} workers per bin')
         self.logger.info(f'  {avg_modes / workers_per_bin:.0f} modes per worker (avg)')
+        profiling['workers_per_bin'] = workers_per_bin
+        profiling['bins_parallel']   = bins_parallel
 
         # Worker profiling aggregation
         worker_timers = {
@@ -722,11 +731,20 @@ class SurveyGeometry(Geometry, base.LinearBinning):
                 resource_monitor.summary()
                 resource_monitor.plot('window_matrix_resources.png')
             
-            # Cleanup shared memory
+            # Cleanup shared memory.
+            # Must happen AFTER the Pool context manager has exited (workers joined),
+            # which is guaranteed because the 'with Pool(...) as pool:' block is
+            # inside this try block and completes before finally runs.
             self.logger.info('Cleaning up shared memory...')
             for shm in all_shm_handles:
-                shm.close()
-                shm.unlink()
+                try:
+                    shm.close()
+                except Exception:
+                    pass
+                try:
+                    shm.unlink()
+                except Exception:
+                    pass
 
         profiling['mode_integration'] = time.time() - phase_start
         profiling['worker_timers'] = worker_timers
@@ -803,10 +821,118 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             all_peaks = [v for key in ['peak_cosmic_variance', 'peak_mixed_term', 'peak_shotnoise']
                          for v in ms.get(key, [])]
             baseline_vals = ms.get('baseline', [0])
-            max_per_worker = max(all_peaks) if all_peaks else 0
+            max_per_worker_rss = max(all_peaks) if all_peaks else 0
             baseline_avg = sum(baseline_vals) / max(len(baseline_vals), 1)
-            self.logger.info(f'  Worker memory: max per worker={max_per_worker:.0f} MB  '
-                             f'(+{max_per_worker - baseline_avg:.0f} MB above baseline)')
+
+            N = self.nmesh ** 3
+            float_dtype_size = np.dtype(float_dtype).itemsize
+
+            # ── Phase 2 peak: all FFT meshes live simultaneously ──────────────
+            n_unique_meshes = profiling.get('n_unique_meshes', 0)
+            mesh_cache_MB = (n_unique_meshes * N * 16) / 1024**2   # complex128
+
+            # ── Phase 4 peak: mesh_cache + largest single-term product array ──
+            # product has shape (n_nonzero, N) in float_dtype; mesh_cache still alive
+            n_nonzero_per_term = profiling.get('n_nonzero_per_term', {})
+            max_n_nonzero = max(n_nonzero_per_term.values()) if n_nonzero_per_term else 0
+            product_MB = (max_n_nonzero * N * float_dtype_size) / 1024**2
+            phase4_peak_MB = mesh_cache_MB + product_MB
+
+            # ── Phase 5+ peak: shared memory + parallel worker allocations ────
+            # The pool has n_workers processes, but only bins_parallel×workers_per_bin
+            # tasks are submitted per batch, so at most that many workers run at once.
+            # At larger nmesh kbins grows, so this can eventually saturate at n_workers.
+            shm_MB = shm_total_bytes / 1024**2
+            n_pk_ell = pk_ellmax // 2 + 1
+            n_pk_m   = 2 * pk_ellmax + 1
+            worker_private_bytes_per_voxel = (
+                n_pk_ell * n_pk_m * 8   # Yk2_3d (float64)
+                + 3 * 8                  # ik2     (int64)
+                + 4                      # k2_bin_index (int32)
+                + 1                      # valid_mask (bool)
+            )
+            # Concurrent workers this run (actual)
+            _wpb = profiling.get('workers_per_bin', 1)
+            _bpl = profiling.get('bins_parallel', n_workers)
+            n_concurrent = min(n_workers, _wpb * _bpl)
+            worker_private_MB = worker_private_bytes_per_voxel * N * n_concurrent / 1024**2
+            phase5_peak_MB = shm_MB + worker_private_MB
+
+            total_peak_MB = max(mesh_cache_MB, phase4_peak_MB, phase5_peak_MB)
+            limiting_phase = (
+                'Phase 2 (mesh cache)'        if total_peak_MB == mesh_cache_MB else
+                'Phase 4 (Gaunt contraction)' if total_peak_MB == phase4_peak_MB else
+                'Phase 5+ (worker parallel)'
+            )
+
+            # System memory info
+            available_MB = total_MB = None
+            try:
+                import psutil
+                vm = psutil.virtual_memory()
+                total_MB     = vm.total     / 1024**2
+                available_MB = vm.available / 1024**2
+            except ImportError:
+                try:
+                    mem_info = {}
+                    with open('/proc/meminfo') as fh:
+                        for line in fh:
+                            k, v = line.split(':')
+                            mem_info[k.strip()] = int(v.split()[0]) / 1024
+                    total_MB     = mem_info.get('MemTotal')
+                    available_MB = mem_info.get('MemAvailable')
+                except Exception:
+                    pass
+
+            self.logger.info('')
+            self.logger.info('=' * 60)
+            self.logger.info('MEMORY USAGE SUMMARY')
+            self.logger.info('=' * 60)
+            self.logger.info(f'  nmesh = {self.nmesh}   (N = {N:,} voxels)')
+            self.logger.info(f'  Phase 2  mesh cache ({n_unique_meshes} grids × 16B):  {mesh_cache_MB:>8.1f} MB')
+            self.logger.info(f'  Phase 4  product ({max_n_nonzero} rows × {float_dtype_size}B) + cache:  {phase4_peak_MB:>8.1f} MB')
+            self.logger.info(f'  Phase 5+ shared mem + {n_concurrent} concurrent workers:  {phase5_peak_MB:>8.1f} MB')
+            self.logger.info(f'           (shared {shm_MB:.1f} MB + workers {worker_private_MB:.1f} MB)')
+            self.logger.info(f'           (pool size {n_workers}; {_bpl} bins × {_wpb} workers/bin = {n_concurrent} concurrent)')
+            self.logger.info(f'  ─────────────────────────────────────────')
+            self.logger.info(f'  Estimated total peak:    {total_peak_MB:>8.1f} MB  ({total_peak_MB/1024:.2f} GiB)')
+            self.logger.info(f'  Limiting phase:          {limiting_phase}')
+            if total_MB is not None:
+                pct_total = 100.0 * total_peak_MB / total_MB
+                self.logger.info(f'  Node total RAM:          {total_MB:>8.1f} MB  ({total_MB/1024:.0f} GiB)')
+                self.logger.info(f'  % of total RAM used:     {pct_total:>8.1f} %')
+            if available_MB is not None:
+                pct_avail = 100.0 * total_peak_MB / (available_MB + total_peak_MB)
+                self.logger.info(f'  Available RAM (now):     {available_MB:>8.1f} MB  ({available_MB/1024:.0f} GiB)')
+                self.logger.info(f'  % of available consumed: {pct_avail:>8.1f} %')
+
+            # ── Max nmesh estimate ────────────────────────────────────────────
+            # bytes_per_voxel for each phase (from actual measured values / N)
+            bpv_phase2 = (n_unique_meshes * 16)
+            bpv_phase4 = (n_unique_meshes * 16) + (max_n_nonzero * float_dtype_size)
+            # For max-nmesh, use full pool size (n_workers): as nmesh grows, kbins grows
+            # so n_concurrent eventually saturates at n_workers — conservative/safe bound.
+            bpv_phase5 = (shm_total_bytes / N) + (worker_private_bytes_per_voxel * n_workers)
+
+            if total_MB is not None:
+                budget_bytes = 0.80 * total_MB * 1024**2
+                max_nmesh_p2 = int((budget_bytes / bpv_phase2) ** (1/3)) if bpv_phase2 > 0 else 9999
+                max_nmesh_p4 = int((budget_bytes / bpv_phase4) ** (1/3)) if bpv_phase4 > 0 else 9999
+                max_nmesh_p5 = int((budget_bytes / bpv_phase5) ** (1/3)) if bpv_phase5 > 0 else 9999
+                max_nmesh_overall = min(max_nmesh_p2, max_nmesh_p4, max_nmesh_p5)
+                self.logger.info(f'  ─────────────────────────────────────────')
+                self.logger.info(f'  Max safe nmesh @ 80% total RAM:')
+                self.logger.info(f'    Phase 2 limit:  {max_nmesh_p2}')
+                self.logger.info(f'    Phase 4 limit:  {max_nmesh_p4}')
+                self.logger.info(f'    Phase 5 limit:  {max_nmesh_p5}')
+                self.logger.info(f'    Overall:        {max_nmesh_overall}  ← binding limit: {limiting_phase}')
+            if available_MB is not None:
+                budget_bytes_avail = 0.80 * (available_MB + total_peak_MB) * 1024**2
+                max_nmesh_p2a = int((budget_bytes_avail / bpv_phase2) ** (1/3)) if bpv_phase2 > 0 else 9999
+                max_nmesh_p4a = int((budget_bytes_avail / bpv_phase4) ** (1/3)) if bpv_phase4 > 0 else 9999
+                max_nmesh_p5a = int((budget_bytes_avail / bpv_phase5) ** (1/3)) if bpv_phase5 > 0 else 9999
+                self.logger.info(f'  Max safe nmesh @ 80% available RAM:  {min(max_nmesh_p2a, max_nmesh_p4a, max_nmesh_p5a)}')
+            self.logger.info('=' * 60)
 
         self.window_matrix = window_matrix
         self.window_matrix_error = window_matrix_error
@@ -1148,6 +1274,7 @@ def _create_shared_ndarray(arr):
 def _init_worker(args):
     """Initialize worker with shared memory references."""
     import os
+    import atexit
     from multiprocessing import shared_memory
     
     # Limit NumPy/BLAS threading to 1 per worker to prevent thread contention
@@ -1193,6 +1320,18 @@ def _init_worker(args):
         delta_info['shape'], dtype=delta_info['dtype'], buffer=delta_shm.buf
     )
     _worker_data['_shm_refs'].append(delta_shm)
+
+    # Register atexit to close worker-side shared memory handles on process exit.
+    # Without this, handles leak until the OS cleans them up, which can delay
+    # the main process's unlink() and cause the next Pool to see stale segments.
+    def _worker_cleanup():
+        for shm in _worker_data.get('_shm_refs', []):
+            try:
+                shm.close()
+            except Exception:
+                pass
+
+    atexit.register(_worker_cleanup)
 
 def _get_memory_mb():
     """Get current process memory usage in MB."""
