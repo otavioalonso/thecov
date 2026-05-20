@@ -41,8 +41,7 @@ class SurveyWindow(base.BaseClass):
     """
 
     def __init__(self, randoms1, alpha1, randoms2=None, alpha2=None, mpi_comm=MPI.COMM_WORLD,
-                 nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmin=0.0, kmax=0.02, 
-                 dk=None, binning_type="linear"):
+                 nmesh=None, cellsize=None, boxsize=None, boxpad=2., k_binning=None):
         """Initialize the SurveyWindow object.
         
         Parameters
@@ -65,12 +64,8 @@ class SurveyWindow(base.BaseClass):
             Size of the box for the mesh. If not provided, it will be determined based on the positions of the randoms. Default is None.
         boxpad : float, optional
             Padding factor to apply to the boxsize determined from the randoms. Default is 2.0.
-        kmin : float, optional
-            Minimum wavenumber for the window function. Default is 0.0.
-        kmax : float, optional
-            Maximum wavenumber for the window function. Default is 0.02.
-        dk : float, optional
-            Width of the k-bins for the window function. If not provided, it will be determined based on the kmax parameter. Default is None.
+        k_binning : binning.Binning, optional
+            Binning object for the wavenumbers. If not provided, a linear binning will be used. Default is None.
         binning_type : str, optional
             Type of binning to use for the k-bins. Must be either "linear" or "log". Default is "linear".
         """
@@ -80,18 +75,12 @@ class SurveyWindow(base.BaseClass):
         self.rank = mpi_comm.Get_rank()
         self.size = mpi_comm.Get_size()
 
-        if binning_type == "linear":
-            self.k_binning = binning.LinearBinning(kmin, kmax, dk)
-        elif binning_type == "log":
-            self.k_binning = binning.LogBinning(kmin, kmax, dk)
-        else:
-            raise ValueError("binning_type must be either 'linear' or 'log'")
+        self.k_binning = k_binning
 
         self.logger = logging.getLogger('SurveyWindow')
         self.logger.setLevel(logging.INFO)
         self.tqdm = shell_tqdm
 
-        self.dk = dk
         self.nmesh = nmesh
         self.cellsize = cellsize
         self.boxsize = boxsize
@@ -118,13 +107,13 @@ class SurveyWindow(base.BaseClass):
             self.logger.info(f'Fundamental wavenumber of window meshes = {self.kfun}.')
             self.logger.info(f'Nyquist wavenumber of window meshes = {self.knyquist}.')
 
-            if kmax is not None and self.knyquist < kmax:
-                self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {kmax}.')
+            if self.k_binning.kmax is not None and self.knyquist < self.k_binning.kmax:
+                self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {self.k_binning.kmax}.')
 
             self.logger.info(f'Average of {self.mesh1.data_size / self.nmesh**3} objects per voxel.')
 
         # Initialize rebin parameters
-        self._rebin_parameters(dk, kmax)
+        self._rebin_parameters(self.k_binning.dk, self.k_binning.kmax)
 
     def _create_mesh(self, randoms):
         """Parse the randoms into a mesh, filling in missing information as needed."""        
@@ -227,7 +216,9 @@ class SurveyWindow(base.BaseClass):
 
         # Trim the mesh to achieve the target boxsize
         trim_to_nmesh = int(np.ceil(target_boxsize/self.boxsize * self.nmesh))
-        
+        if trim_to_nmesh % 2 != 0: # <- enfore even trim to avoid issues with FFT symmetries
+            trim_to_nmesh += 1
+
         # Rebin mesh to obtain the target nmesh
         rebin_factor = trim_to_nmesh//target_nmesh
 
@@ -342,8 +333,8 @@ class SurveyWindow(base.BaseClass):
 
         # trim mesh to desired size and rebin if needed
         if self.rank == 0:
-            if self.dk is not None and self.k_binning.kmax is not None:
-                trim_to_nmesh, rebin_factor = self._rebin_parameters(self.dk, self.k_binning.kmax)
+            if self.k_binning.dk is not None and self.k_binning.kmax is not None:
+                trim_to_nmesh, rebin_factor = self._rebin_parameters(self.k_binning.dk, self.k_binning.kmax)
 
                 if trim_to_nmesh <= self.nmesh and self.kboxsize <= self.boxsize:
                     result_combined = utils.trim_fourier_mesh(result_combined, self.nmesh, trim_to_nmesh)
@@ -359,6 +350,7 @@ class SurveyWindow(base.BaseClass):
                 result_combined[np.abs(result_combined) < threshold] = 0
 
         if self.rank == 0: self.logger.info(f"Mesh computation with Ylm ({ell}, {m}) done in {time.time() - time_start:.2f} seconds")
+        self.comm.Barrier()
         return result_combined
 
     
@@ -603,8 +595,8 @@ class SurveyGeometry(base.BaseClass):
     def __init__(self,
                  randoms:list=None, alphas:list=None,
                  nmesh=None, boxsize=None, boxpad=2.,
-                 kmin=0, kmax=0.2, dk=None, binning_type="linear", mask_ellmax=12, pk_ellmax=4,
-                 sample_mode="monte-carlo", lebedev_degree=25, cache_dir=None, comm=MPI.COMM_WORLD):
+                 k_binning=None, mask_ellmax=12, pk_ellmax=4,
+                 lebedev_degree=25, cache_dir=None, comm=MPI.COMM_WORLD):
 
         # set's k-binning
         super().__init__()
@@ -619,7 +611,6 @@ class SurveyGeometry(base.BaseClass):
                 
         self.mask_ellmax = mask_ellmax
         self.pk_ellmax = pk_ellmax
-        self.sample_mode = sample_mode
         self.lebedev_degree = lebedev_degree
         self.window_matrix = {}
 
@@ -633,9 +624,11 @@ class SurveyGeometry(base.BaseClass):
         self.comm.Barrier()
 
         self.set_resume_file(os.path.join(self.cache_dir, "survey_geometry.npy"))
+        if k_binning is not None:
+            self.set_kbins(k_binning)
         self._init_randoms(randoms, alphas)
         self.comm.Barrier()
-        self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, kmin=kmin, kmax=kmax, dk=dk, binning_type=binning_type)
+        self._init_survey_windows(nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, k_binning=k_binning)
         self.comm.Barrier()
         self._init_I_factors()
         del self.randoms
@@ -713,6 +706,15 @@ class SurveyGeometry(base.BaseClass):
         if not isinstance(randoms, mockfactory.Catalog):
             randoms = mockfactory.Catalog(randoms)
 
+        # Normalize relevant column names to uppercase
+        _relevant = {'WEIGHT', 'WEIGHT_FKP', 'NZ', 'POSITION'}
+        for col in list(randoms.columns()):
+            upper = col.upper()
+            if upper in _relevant and col != upper:
+                if self.rank == 0: self.logger.debug(f"Renaming column '{col}' -> '{upper}'.")
+                randoms[upper] = randoms[col]
+                del randoms[col]
+
         # Check if the randoms have weights, otherwise set them to 1
         for name in ['WEIGHT', 'WEIGHT_FKP']:
             if name not in randoms: 
@@ -739,15 +741,20 @@ class SurveyGeometry(base.BaseClass):
 
         return randoms
 
-    def _init_survey_windows(self, **kwargs):
+    def _init_survey_windows(self, nmesh, boxsize, boxpad, k_binning):
         
+        if boxsize is not None:
+            min_nmesh = utils.get_minimum_mesh_size(self.k_binning.dk, self.k_binning.kmax, boxsize)
+            if nmesh is not None and nmesh < min_nmesh:
+                if self.rank == 0: self.logger.warning(f"Provided nmesh ({nmesh}) is smaller than the minimum required mesh size ({min_nmesh})! Setting to minimum required size.")
+                nmesh = min_nmesh
+
         self.windows = {}
         for (t1, t2) in itt.product(range(self.num_tracers), repeat=2):
-            if t2 > t1: continue
-
-            self.windows[(t1, t2)] = SurveyWindow(self.randoms[t1], self.alphas[t1], 
-                                                  self.randoms[t2], self.alphas[t2], **kwargs)
-
+            self.windows[(t1, t2)] = SurveyWindow(self.randoms[t1], self.alphas[t1],
+                                                  self.randoms[t2], self.alphas[t2],
+                                                  nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, k_binning=k_binning,
+                                                  mpi_comm=self.comm)
 
     def _init_I_factors(self):
         """Initializes all relavent I factors from the random meshes, rather than the randoms directly.
@@ -789,52 +796,6 @@ class SurveyGeometry(base.BaseClass):
                 if self.rank == 0: 
                     pbar.close() 
                     np.savez(filename, I=self._I)
-
-    def _init_I_factors_from_randoms(self):
-        """initializes all relavent I factors from the input randoms"""
-
-        self.I_LABELS = ['12', '22', '10', '24', '14', '34', '44', '32']
-        self._I = np.full((len(self.I_LABELS), self.num_tracers, self.num_tracers), 1.0)
-        for t1, t2 in itt.product(range(self.num_tracers), repeat=2):
-
-            if t2 > t1: continue
-            if self.randoms[t1] is not None and self.randoms[t2] is not None:
-                if self.rank == 0: 
-                    self.logger.info(f"Initializing I factors from randoms {t1} and {t2}...")
-                    pbar = self.tqdm(total=len(self.I_LABELS), desc=f"I factors for tracers {t1} and {t2}")
-
-                for i, label in enumerate(self.I_LABELS):
-                    nbar_power = int(label[0])
-                    fkp_power = int(label[1])
-                    if label == "22":   
-                        W_A = self.randoms[t1]["WEIGHT"]  # factor of n(z) summed over
-                        if t1 == t2:
-                            W_B = self.randoms[t2]["NZ"] * self.randoms[t2]["WEIGHT"]
-                        else:
-                            # n̄_B * w_B evaluated at positions of t1 randoms via distance interpolation
-                            # NOTE: This aproach may break down when the footprints are very different
-                            dist_t1 = np.sqrt(np.sum(self.randoms[t1]['POSITION']**2, axis=-1))
-                            dist_t2 = np.sqrt(np.sum(self.randoms[t2]['POSITION']**2, axis=-1))
-                            sort_t2 = np.argsort(dist_t2)
-                            W_B = np.interp(dist_t1, dist_t2[sort_t2],
-                                            (self.randoms[t2]["NZ"] * self.randoms[t2]["WEIGHT"])[sort_t2])
-                        I_sub = (W_A * W_B).sum().item()
-
-                    elif t1 == t2: # <- PLACEHOLDER, we haven't fully thought through non-Gaussian I factors for multi-tracer yet!
-                        I_sub = (self.randoms[t1]['NZ']**(nbar_power-1) * \
-                                self.randoms[t2]['WEIGHT']**fkp_power).sum().item()
-                    else:
-                        I_sub = 0.
-                    I = self.comm.allreduce(I_sub, op=MPI.SUM)
-
-                    # if self.rank == 0:
-                    #     self.logger.info(f"I_{label} for tracers {t1} and {t2}: {I:.3e}")
-
-                    self._I[i, t1, t2] = I
-                    if self.rank == 0: pbar.update(1)
-
-                if self.rank == 0: pbar.close()
-    
 
 
     def I(self, tracer1:int, tracer2:int, nbar_power_1:int, fkp_power_1:int, nbar_power_2:int=0, fkp_power_2:int=0, apply_alpha=False):
@@ -1073,30 +1034,35 @@ class SurveyGeometry(base.BaseClass):
             # shape_in =  la, lb, ma, mb
             shape_out = 4*[pk_ellmax//2 + 1] + 4*[2*pk_ellmax + 1]
             shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
-            gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
-            # TODO: upgrade loop to use multiple ranks
+            size = comm.Get_size()
+            gaunt_coefficients_rank = np.zeros(shape_out + shape_in, dtype=np.float64)
+            gaunt_coefficients = np.zeros_like(gaunt_coefficients_rank)
             if rank == 0:
                 logger.info(f'Computing first cosmic variance Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
                 pbar = shell_tqdm(desc="Computing first cosmic variance Gaunt coefficients", total=((pk_ellmax//2 + 1) * (pk_ellmax + 1))**4)
 
-                for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
-                    for la in np.arange(np.abs(l1-l4), min(l1+l4, mask_ellmax)+1, 2):
-                        for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
-                            for ma, mb in itt.product(*[np.arange(-l, l+1, 1) for l in (la, lb)]):
+            for l1, l2, l3, l4, m1, m2, m3, m4 in utils.mpi_ellmiter(pk_ellmax, 4, comm):
+                for la in np.arange(np.abs(l1-l4), min(l1+l4, mask_ellmax)+1, 2):
+                    for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
+                        for ma, mb in itt.product(*[np.arange(-l, l+1, 1) for l in (la, lb)]):
 
-                                value = np.float64(math.get_real_gaunt(l1,l4,la,m1,m4,ma)*\
-                                                   math.get_real_gaunt(l2,l3,lb,m2,m3,mb))
-                                if value != 0.:
-                                    gaunt_coefficients[l1//2,l2//2,
-                                                        l3//2,l4//2,
-                                                        m1+l1,m2+l2,
-                                                        m3+l3,m4+l4,
-                                                        la//2,lb//2,
-                                                        ma+la,mb+lb] += value
-                
-                    pbar.update(1)
+                            value = np.float64(math.get_real_gaunt(l1,l4,la,m1,m4,ma)*\
+                                               math.get_real_gaunt(l2,l3,lb,m2,m3,mb))
+                            if value != 0.:
+                                gaunt_coefficients_rank[l1//2,l2//2,
+                                                    l3//2,l4//2,
+                                                    m1+l1,m2+l2,
+                                                    m3+l3,m4+l4,
+                                                    la//2,lb//2,
+                                                    ma+la,mb+lb] += value
+                if rank == 0:
+                    pbar.update(size)
 
+            comm.Barrier()
+            comm.Reduce(gaunt_coefficients_rank, gaunt_coefficients, op=MPI.SUM, root=0)
+            if rank == 0:
                 pbar.close()
+                gaunt_coefficients = base.SparseNDArray.from_dense(gaunt_coefficients, shape_in=shape_in, shape_out=shape_out)
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving first cosmic variance Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
@@ -1122,30 +1088,39 @@ class SurveyGeometry(base.BaseClass):
                 logger.info(f'Computing second cosmic variance Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
                 pbar = shell_tqdm(desc="Computing second cosmic variance Gaunt coefficients", total=((pk_ellmax//2 + 1) * (pk_ellmax + 1))**4)
 
-                # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
-                # shape_in =  la, lb, ma, mb  (a for W22 and b for W12)
-                shape_out = 4*[pk_ellmax//2 + 1] + 4*[2*pk_ellmax + 1]
-                shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
-                gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
-                for l1, l2, l3, l4, m1, m2, m3, m4 in utils.ellmiter(pk_ellmax, 4):
-                    for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                        for la in np.arange(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
-                            for ma, mc in itt.product(*[np.arange(-l, l+1, 1) for l in (la, lc)]):
-                                value = np.float64(math.get_real_gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                   math.get_real_gaunt(lc,l3,la,mc,m3,ma))
-                                lb, mb = l4, m4 # <- for indexing into W_BD later
-                            
-                                if value != 0.:
-                                    gaunt_coefficients[l1//2,l2//2,
+            # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
+            # shape_in =  la, lb, ma, mb  (a for W22 and b for W12)
+            shape_out = 4*[pk_ellmax//2 + 1] + 4*[2*pk_ellmax + 1]
+            shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
+            size = comm.Get_size()
+            gaunt_coefficients_rank = np.zeros(shape_out + shape_in, dtype=np.float64)
+            gaunt_coefficients = np.zeros_like(gaunt_coefficients_rank)
+
+            for l1, l2, l3, l4, m1, m2, m3, m4 in utils.mpi_ellmiter(pk_ellmax, 4, comm):
+                for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
+                    for la in np.arange(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
+                        for ma, mc in itt.product(*[np.arange(-l, l+1, 1) for l in (la, lc)]):
+                            value = np.float64(math.get_real_gaunt(l1,l2,lc,m1,m2,mc)*\
+                                               math.get_real_gaunt(lc,l3,la,mc,m3,ma))
+                            lb, mb = l4, m4 # <- for indexing into W_BD later
+                        
+                            if value != 0.:
+                                gaunt_coefficients_rank[l1//2,l2//2,
                                                         l3//2,l4//2,
                                                         m1+l1,m2+l2,
                                                         m3+l3,m4+l4,
                                                         la//2,lb//2,
                                                         ma+la,mb+lb] += value
-                
-                    pbar.update(1)
+            
+                if rank == 0:
+                    pbar.update(size)
+            
+            comm.Barrier()
+            comm.Reduce(gaunt_coefficients_rank, gaunt_coefficients, op=MPI.SUM, root=0)
+            if rank == 0:
                 pbar.close()
+                gaunt_coefficients = base.SparseNDArray.from_dense(gaunt_coefficients, shape_in=shape_in, shape_out=shape_out)
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving second cosmic variance Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
@@ -1169,59 +1144,69 @@ class SurveyGeometry(base.BaseClass):
             if rank == 0:
                 logger.info(f'Computing mixed Gaunt coefficients (term= {term}, pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
                 pbar = shell_tqdm(desc=f"Computing {term} mixed Gaunt coefficients", total=((pk_ellmax//2 + 1) * (pk_ellmax + 1))**3)
-                # shape_out = l1, l2, l3, m1, m2, m3
-                # shape_in =  la, ma, lb, mb
-                # Only including positive m values, as -m is equivalent to m
-                # when Ylm is real and m is even
-                shape_out = 3*[pk_ellmax//2 + 1] + 3*[2*pk_ellmax + 1]
-                shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
-                gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
-                for l1, l2, l3, m1, m2, m3 in utils.ellmiter(pk_ellmax, 3):
+            # shape_out = l1, l2, l3, m1, m2, m3
+            # shape_in =  la, ma, lb, mb
+            # Only including positive m values, as -m is equivalent to m
+            # when Ylm is real and m is even
+            shape_out = 3*[pk_ellmax//2 + 1] + 3*[2*pk_ellmax + 1]
+            shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
+            size = comm.Get_size()
+            gaunt_coefficients_rank = np.zeros(shape_out + shape_in, dtype=np.float64)
+            gaunt_coefficients = np.zeros_like(gaunt_coefficients_rank)
 
-                    if term == "first":
-                        la, ma = l1, m1 # <- for indexing S_A
-                        if la > mask_ellmax: continue
-                        for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
-                            for mb in np.arange(-lb, lb+1, 1):
-                                value = np.float64(math.get_real_gaunt(l2,l3,lb,m2,m3,mb))
-                                if value != 0:
-                                    gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
+            for l1, l2, l3, m1, m2, m3 in utils.mpi_ellmiter(pk_ellmax, 3, comm):
 
-                    if term == "second":
-                        lb, mb = l2, m2 # <- for indexing S_B
-                        if lb > mask_ellmax: continue
-                        for la in np.arange(np.abs(l1-l3), min(l1+l3, mask_ellmax)+1, 2):
+                if term == "first":
+                    la, ma = l1, m1 # <- for indexing S_A
+                    if la > mask_ellmax: continue
+                    for lb in np.arange(np.abs(l2-l3), min(l2+l3, mask_ellmax)+1, 2):
+                        for mb in np.arange(-lb, lb+1, 1):
+                            value = np.float64(math.get_real_gaunt(l2,l3,lb,m2,m3,mb))
+                            if value != 0:
+                                gaunt_coefficients_rank[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
+
+                if term == "second":
+                    lb, mb = l2, m2 # <- for indexing S_B
+                    if lb > mask_ellmax: continue
+                    for la in np.arange(np.abs(l1-l3), min(l1+l3, mask_ellmax)+1, 2):
+                        for ma in np.arange(-la, la+1, 1):
+                            value = np.float64(math.get_real_gaunt(l1,l3,la,m1,m3,ma))
+                            if value != 0:
+                                gaunt_coefficients_rank[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
+
+                if term == "third":
+                    lb, mb = l3, m3 # <- for indexing W_CD
+                    if lb > mask_ellmax: continue
+                    for la in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
+                        for ma in np.arange(-la, la+1, 1):
+                            value = np.float64(math.get_real_gaunt(l1,l2,la,m1,m2,ma))
+                            if value != 0:
+                                gaunt_coefficients_rank[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
+                                
+                if term == "fourth":
+                    lb, mb = 0, 0 # <- no l,m dependence for S_B in this term
+                    for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
+                        for la in range(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
                             for ma in np.arange(-la, la+1, 1):
-                                value = np.float64(math.get_real_gaunt(l1,l3,la,m1,m3,ma))
-                                if value != 0:
-                                    gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
+                                for mc in range(-lc, lc+1, 1):
+                                    value = np.float64(math.get_real_gaunt(l1,l2,lc,m1,m2,mc)*\
+                                                        math.get_real_gaunt(lc,l3,la,mc,m3,ma))
+                                    if value != 0:
+                                        gaunt_coefficients_rank[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
 
-                    if term == "third":
-                        lb, mb = l3, m3 # <- for indexing W_CD
-                        if lb > mask_ellmax: continue
-                        for la in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                            for ma in np.arange(-la, la+1, 1):
-                                value = np.float64(math.get_real_gaunt(l1,l2,la,m1,m2,ma))
-                                if value != 0:
-                                    gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
-                                    
-                    if term == "fourth":
-                        lb, mb = 0, 0 # <- no l,m dependence for S_B in this term
-                        for lc in np.arange(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                            for la in range(np.abs(lc-l3), min(lc+l3, mask_ellmax)+1, 2):
-                                for ma in np.arange(-la, la+1, 1):
-                                    for mc in range(-lc, lc+1, 1):
-                                        value = np.float64(math.get_real_gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                           math.get_real_gaunt(lc,l3,la,mc,m3,ma))
-                                        if value != 0:
-                                            gaunt_coefficients[l1//2, l2//2, l3//2, m1+l1, m2+l2, m3+l3, la//2, lb//2, ma+la, mb+lb] += value
+                if rank == 0:
+                    pbar.update(size)
 
-                    pbar.update(1)
-                pbar.close()                        
+            comm.Barrier()
+            comm.Reduce(gaunt_coefficients_rank, gaunt_coefficients, op=MPI.SUM, root=0)
+            if rank == 0:
+                pbar.close()
+                gaunt_coefficients = base.SparseNDArray.from_dense(gaunt_coefficients, shape_in=shape_in, shape_out=shape_out)                     
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving mixed Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
+
         comm.Barrier()
         return base.SparseNDArray.load(filename)
         
@@ -1239,31 +1224,40 @@ class SurveyGeometry(base.BaseClass):
             if rank == 0:
                 logger.info(f'Computing shotnoise Gaunt coefficients...')
                 pbar = shell_tqdm(desc="Computing shotnoise Gaunt coefficients", total=((pk_ellmax//2 + 1) * (pk_ellmax + 1))**2)
-                # shape_out = l1, l2, m1, m2
-                # shape_in =  la, lb, ma, mb
-                # Only including positive m values, as -m is equivalent to m
-                # when Ylm is real and m is even
-                shape_out = 2*[pk_ellmax//2 + 1] + 2*[2*pk_ellmax + 1]
-                shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
-                gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
-                for l1, l2, m1, m2 in utils.ellmiter(pk_ellmax, 2):
+            # shape_out = l1, l2, m1, m2
+            # shape_in =  la, lb, ma, mb
+            # Only including positive m values, as -m is equivalent to m
+            # when Ylm is real and m is even
+            shape_out = 2*[pk_ellmax//2 + 1] + 2*[2*pk_ellmax + 1]
+            shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
+            size = comm.Get_size()
+            gaunt_coefficients_rank = np.zeros(shape_out + shape_in, dtype=np.float64)
+            gaunt_coefficients = np.zeros_like(gaunt_coefficients_rank)
 
-                    # FIRST TERM : G = 1 for S_A * conj(S_B)
-                    la, ma = l1,m1 # <- for indexing S_A
-                    lb, mb = l2,m2 # <- for indexing conj(S_B)
-                    gaunt_coefficients[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += 1
+            for l1, l2, m1, m2 in utils.mpi_ellmiter(pk_ellmax, 2, comm):
 
-                    # SECOND TERM: G = gaunt(l1,l2,la) for S_A * conj(S_B)
-                    lb,mb = 0,0
-                    for la in range(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
-                        for ma in range(-la, la+1, 1):
-                            value = np.float64(math.get_real_gaunt(l1,l2,la,m1,m2,ma))
-                            if value != 0:
-                                gaunt_coefficients[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += value
+                # FIRST TERM : G = 1 for S_A * conj(S_B)
+                la, ma = l1,m1 # <- for indexing S_A
+                lb, mb = l2,m2 # <- for indexing conj(S_B)
+                gaunt_coefficients_rank[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += 1
 
-                    pbar.update(1)
+                # SECOND TERM: G = gaunt(l1,l2,la) for S_A * conj(S_B)
+                lb,mb = 0,0
+                for la in range(np.abs(l1-l2), min(l1+l2, mask_ellmax)+1, 2):
+                    for ma in range(-la, la+1, 1):
+                        value = np.float64(math.get_real_gaunt(l1,l2,la,m1,m2,ma))
+                        if value != 0:
+                            gaunt_coefficients_rank[l1//2, l2//2, m1+l1, m2+l2, la//2, lb//2, ma+la, mb+lb] += value
+
+                if rank == 0:
+                    pbar.update(size)
+
+            comm.Barrier()
+            comm.Reduce(gaunt_coefficients_rank, gaunt_coefficients, op=MPI.SUM, root=0)
+            if rank == 0:
                 pbar.close()
+                gaunt_coefficients = base.SparseNDArray.from_dense(gaunt_coefficients, shape_in=shape_in, shape_out=shape_out)                    
                 logger.info(f'Computed {gaunt_coefficients._matrix.nnz} non-zero Gaunt coefficients')
                 logger.info(f'Saving shotnoise Gaunt coefficients to: {filename}')
                 gaunt_coefficients.save(filename)
@@ -1306,7 +1300,7 @@ class SurveyGeometry(base.BaseClass):
 
         if self.rank == 0:
             self.logger.info('='*60)
-            self.logger.info('Computing window matrices')
+            self.logger.info(f'Computing window matrices for tracer combination A={A}, B={B}, C={C}, D={D}')
             self.logger.info(f'pk_ellmax={self.pk_ellmax}, mask_ellmax={self.mask_ellmax}')
             self.logger.info('='*60 + '\n')
 
@@ -1333,20 +1327,6 @@ class SurveyGeometry(base.BaseClass):
 
             assert len(kmodes) == self.k_binning.kbins and len(Nmodes) == self.k_binning.kbins, \
                 f'Error in thecov.utils.sample_kmodes: results should have length {self.k_binning.kbins}, but had {len(kmodes)}. Parameters were kmin={self.k_binning.kmin},kmax={self.k_binning.kmax},dk={self.k_binning.dk},boxsize={self.boxsize},max_modes={kmodes_sampled},k_shell_approx={k_shell_approx}.'
-
-        # # Clear caches and objects we don't need anymore
-        # self.get_cosmic_variance_window.cache_clear()
-        # self.get_mixed_window.cache_clear()
-        # self.get_shotnoise_window.cache_clear()
-
-        # for (t1, t2) in itt.product(range(self.num_tracers), repeat=2):
-        #     if t2 > t1: continue
-        #     if hasattr(self.windows[t1, t2], 'nz1'):
-        #         self.windows[t1, t1].nz1 = None
-        #     if hasattr(self.windows[t1, t2], 'nz2'):
-        #         self.windows[t1, t2].nz2 = None
-        #     if t1 != 0 and t2 != 0:
-        #         self.windows[t1, t2] = None
         
         self.comm.Barrier()
 
@@ -1406,7 +1386,9 @@ class SurveyGeometry(base.BaseClass):
                 self.logger.info(f"Memory usage for {key}: {(window_product._matrix.data.nbytes + window_product._matrix.indices.nbytes + window_product._matrix.indptr.nbytes) / (1024**3):0.2f} GB")
                 pbar = self.tqdm(desc=f"Processing {key}", total=self.k_binning.kbins)
 
+            survey_window.free_shared_memory()
             survey_window = None
+            coefficients.free_shared_memory()
             coefficients = None
             window_product = window_product.to_shared_memory()
             self.comm.Barrier()
@@ -1492,6 +1474,9 @@ class SurveyGeometry(base.BaseClass):
                 if self.rank == 0:
                     pbar.update(1)
 
+            self.comm.Barrier()
+            window_product.free_shared_memory()
+
         self.comm.Barrier()
         # Sum contributions from all ranks
         window_matrix_combined = {}
@@ -1519,6 +1504,14 @@ class SurveyGeometry(base.BaseClass):
         self.window_matrix[f"cosmic_variance_{A}{B}{C}{D}"] = window_matrix_combined['cosmic_variance']
         self.window_matrix[f"mixed_term_{A}{B}{C}{D}"]      = window_matrix_combined['mixed_term']
         self.window_matrix[f"shotnoise_{A}{B}"]             = window_matrix_combined['shotnoise']
+
+        # Clear caches and objects we don't need anymore
+        self.get_cosmic_variance_window.cache_clear()
+        self.get_mixed_window.cache_clear()
+        self.get_shotnoise_window.cache_clear()
+        # NOTE: This line saves memory, but also adds some redundant computation
+        # Since we're severely memory-limited, it should be worth it.
+        SurveyWindow.compute_mesh.cache_clear()
 
         if self.rank == 0:
             self.logger.info('Window matrix computation completed successfully!')

@@ -85,6 +85,19 @@ def ellmiter(lmax, n):
         for ms in itt.product(*[range(-l, l+1, 1) for l in ls]):
             yield ls + ms
 
+def mpi_ellmiter(lmax, n, comm):
+    """Like ellmiter, but each MPI rank yields only its assigned subset of (l, m) tuples.
+
+    Distributes the outer ell-tuple loop round-robin across ranks so that
+    heavy (high-ell) blocks are spread evenly.
+    """
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    for i, ls in enumerate(itt.product(range(0, lmax + 1, 2), repeat=n)):
+        if i % size == rank:
+            for ms in itt.product(*[range(-l, l+1, 1) for l in ls]):
+                yield ls + ms
+                
 def elliter(lmax, n):
     """Creates generator over all combinations of ell up to lmax for n tracers."""
     for ls in itt.product(range(0, lmax + 1, 2), repeat=n):

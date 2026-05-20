@@ -3,7 +3,7 @@ import pytest
 import os
 
 from mockfactory.make_survey import RandomBoxCatalog
-from thecov import covariance, geometry
+from thecov import covariance, geometry, binning
 
 def get_cache_dir():
 	return os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache/")
@@ -24,15 +24,15 @@ def test_set_galaxy_pk_multipole_stores_symmetric_keys():
 	
 	randoms = create_basic_randoms(num_tracers=3)
 	alpha = [0.1, 0.1, 0.1]
-	kmax = 0.05
+	k_binning = binning.LinearBinning(0.001, 0.05, 0.005)
 	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.3,
-							    kmin=0.001, kmax=kmax, dk=0.005,
+							    k_binning=k_binning,
 								cache_dir=get_cache_dir())
 	cov = covariance.GaussianCovariance(geometry=g)
 
 	# provide a k-binning stub matching pk length
-	cov.set_kbins(0.001, kmax, 0.005)
+	cov.set_kbins(0.001, k_binning.kmax, 0.005)
 	pk = np.arange(cov.k_binning.kbins)
 
 	ell = 0
@@ -58,13 +58,13 @@ def test_set_galaxy_pk_multipole_stores_symmetric_keys():
 def test_get_tracer_cov_labels(num_tracers, tracer1, tracer2, expected):
 	randoms = create_basic_randoms(num_tracers)
 	alpha = [0.1, 0.1, 0.1, 0.1]
-	kmax = 0.05
+	k_binning = binning.LinearBinning(0.001, 0.05, 0.005)
 	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
-							    kmin=0.001, kmax=kmax, dk=0.005,
+							    k_binning=k_binning,
 								cache_dir=get_cache_dir())
 	cov = covariance.PowerSpectrumCovariance(geometry=g)
-	cov.set_kbins(0.001, kmax, 0.005)
+	cov.set_kbins(0.001, k_binning.kmax, 0.005)
 	for t1 in range(num_tracers):
 		for t2 in range(num_tracers):
 			cov.set_ell_tracer_cov(0, 0, t1, t2, np.zeros((cov.k_binning.kbins, cov.k_binning.kbins))+ (t1 + t2))
@@ -85,10 +85,10 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 	TRACER_LABELS = ["A", "B", "C", "D"]
 	randoms = create_basic_randoms(num_tracers=2)
 	alpha = [0.1, 0.1]
-	kmax = 0.05
+	k_binning = binning.LinearBinning(0.001, 0.05, 0.005)
 	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
-							    kmin=0.001, kmax=kmax, dk=0.005,
+							    k_binning=k_binning,
 								cache_dir=get_cache_dir())
 
 	cov = covariance.PowerSpectrumCovariance(geometry=g)
@@ -108,10 +108,10 @@ def test_shotnoise_computation_uses_geometry_I_and_alphas_and_pk_renorm():
 def test_load_npy_file_raises_on_wrong_dimensions(tmp_path):
 	randoms = create_basic_randoms(num_tracers=2)
 	alpha = [0.1, 0.1, 0.1]
-	kmax = 0.05
+	k_binning = binning.LinearBinning(0.001, 0.05, 0.005)
 	g = geometry.SurveyGeometry(randoms, alpha,
 							    nmesh=32, boxpad=1.2,
-							    kmin=0.001, kmax=kmax, dk=0.005,
+							    k_binning=k_binning,
 								cache_dir=get_cache_dir())
 	cov = covariance.GaussianCovariance(geometry=g)
 

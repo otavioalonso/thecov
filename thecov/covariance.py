@@ -118,7 +118,7 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
             self.geometry.set_kbins(self.k_binning)
 
         # has shape [tracer, tracer, ell, ell, k, k]
-        cov = np.zeros((self.num_tracers, self.num_tracers, 3, 3, self.k_binning.kbins, self.k_binning.kbins))
+        cov = np.zeros((self.num_spectra, self.num_spectra, 3, 3, self.k_binning.kbins, self.k_binning.kbins))
         n_AB = 0
         for idx_A, idx_B in itt.product(range(self.num_tracers), repeat=2):
             if idx_B < idx_A: continue

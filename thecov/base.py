@@ -821,6 +821,7 @@ class SparseNDArray:
         except Exception:
             self.rank = 0
         self.in_shared_memory = False
+        self._shm_wins = []
 
 
     def _nd_to_2d_indices(self, *indices):
@@ -957,6 +958,15 @@ class SparseNDArray:
     def __sizeof__(self):
         return self._matrix.data.nbytes + self._matrix.indptr.nbytes + self._matrix.indices.nbytes
     
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            # MPI.Win handles can't be copied; the copy doesn't own shared memory
+            setattr(result, k, [] if k == '_shm_wins' else copy.deepcopy(v, memo))
+        return result
+
     def save(self, filename:str):
         """
         Save the sparse matrix to a file.
@@ -1157,10 +1167,24 @@ class SparseNDArray:
         self.comm.Barrier()
         # Build CSR on all ranks from the shared-memory buffers
         window_shared = self.from_arrays(window_data, window_indicies, window_indptr,
-                                         shape_out=shape_out, shape_in=shape_in, 
+                                         shape_out=shape_out, shape_in=shape_in,
                                          comm=self.comm, root=0, shared_memory=True)
-        
+        # Keep Win handles alive — the numpy arrays above are views into the
+        # memory owned by these windows, so they must not be freed until we're
+        # done with the array. Call free_shared_memory() to release them.
+        window_shared._shm_wins = [win_data, win_indices, win_indptr]
         return window_shared
+
+    def free_shared_memory(self):
+        """Collectively free MPI shared memory windows.
+
+        Must be called on all MPI ranks simultaneously. After this call the
+        underlying data arrays are invalid; do not access them afterwards.
+        """
+        for win in self._shm_wins:
+            win.Free()
+        self._shm_wins = []
+        self.in_shared_memory = False
 
     # def outer(self, other):
     #     """
