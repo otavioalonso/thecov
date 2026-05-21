@@ -387,7 +387,7 @@ class MultipoleMultiTracerCovariance(Covariance):
         super().__init__() # <- calls Covariance.__init__()
         self._multipole_tracer_covariance = {}
         self._symmetric = symmetric
-        self.num_tracers = 1
+        self.num_tracer_combos = 1
         self._ells1 = []
         self._ells2 = []
 
@@ -413,8 +413,8 @@ class MultipoleMultiTracerCovariance(Covariance):
         if l1 > l2:
             return self.set_ell_tracer_cov(l2, l1, t1, t2, cov.T if cov is not None else None)
 
-        if t1 + 1 > self.num_tracers or t2 + 1 > self.num_tracers:
-            self.num_tracers = max(t1 + 1, t2 + 1)
+        if t1 + 1 > self.num_tracer_combos or t2 + 1 > self.num_tracer_combos:
+            self.num_tracer_combos = max(t1 + 1, t2 + 1)
 
         # NOTE: This assumes that each block has the same shape
         if self._mshape == (0, 0):
@@ -429,6 +429,8 @@ class MultipoleMultiTracerCovariance(Covariance):
 
         cov = cov if isinstance(cov, cls) else cls(cov)
         self._multipole_tracer_covariance[l1, l2, t1, t2] = cov
+        if t1 != t2 and (l1, l2, t2, t1) not in self._multipole_tracer_covariance:
+            self._multipole_tracer_covariance[l1, l2, t2, t1] = cov.T
 
         return cov
 
@@ -542,10 +544,10 @@ class MultipoleMultiTracerCovariance(Covariance):
         '''
 
         ells1, ells2 = self.ells
-        cov_return = np.zeros(np.array(self._mshape)*self.num_tracers*len(ells1))
+        cov_return = np.zeros(np.array(self._mshape)*self.num_tracer_combos*len(ells1))
 
         for (i, l1), (j, l2) in itt.product(enumerate(ells1), enumerate(ells2)):
-            for (t1, t2) in itt.product(range(self.num_tracers), repeat=2):
+            for (t1, t2) in itt.product(range(self.num_tracer_combos), repeat=2):
                 row_start = (t1 * len(ells1) + i) * self._mshape[0]
                 row_end   = row_start + self._mshape[0]
                 col_start = (t2 * len(ells2) + j) * self._mshape[1]
@@ -578,13 +580,14 @@ class MultipoleMultiTracerCovariance(Covariance):
         size1 = cov.shape[0]//len(ells1)
         size2 = cov.shape[1]//len(ells2)
 
+        num_spectra = self.num_tracers * (self.num_tracers + 1) // 2
         for (i, l1), (j, l2) in itt.product(enumerate(ells1), enumerate(ells2)):
-            for (t1, t2) in itt.product(range(self.num_tracers), repeat=2):
+            for (t1, t2) in itt.product(range(num_spectra), repeat=2):
                 row_start = (t1 * len(ells1) + i) * self._mshape[0]
                 row_end   = row_start + self._mshape[0]
                 col_start = (t2 * len(ells2) + j) * self._mshape[1]
                 col_end   = col_start + self._mshape[1]
-  
+
                 self.set_ell_tracer_cov(l1, l2, t1, t2, cov[row_start:row_end, col_start:col_end])
 
 

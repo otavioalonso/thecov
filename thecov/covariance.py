@@ -139,8 +139,9 @@ class PowerSpectrumCovariance(base.MultipoleFourierCovariance):
     def _set_survey_covariance(self, cov_array):
 
         ell1 = self.ells[0]
+        num_spectra = self.num_tracers * (self.num_tracers + 1) // 2
         for l1, l2 in itt.product(ell1, repeat=2):
-            for t1, t2 in itt.product(range(self.num_tracers), repeat=2):
+            for t1, t2 in itt.product(range(num_spectra), repeat=2):
                 if t2 < t1: continue
                 #ell_idx = (l1 * len(self.ells[1]) + l2) // 2
                 self.set_ell_tracer_cov(l1, l2, t1, t2, cov_array[t1, t2, l1//2, l2//2, :, :])

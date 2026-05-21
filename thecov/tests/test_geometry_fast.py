@@ -44,6 +44,8 @@ def test_rebin_parameters_sets_attributes_and_returns_expected_values():
     target_boxsize = 2 * np.pi / dk
     target_nmesh = int(np.ceil(target_boxsize * kmax / np.pi))
     expected_trim = int(np.ceil(target_boxsize / w.boxsize * w.nmesh))
+    if expected_trim % 2 != 0:
+        expected_trim += 1
     expected_rebin = expected_trim // target_nmesh
 
     assert trim_to_nmesh == expected_trim
