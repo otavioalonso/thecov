@@ -242,13 +242,11 @@ class BoxGeometry(Geometry):
 
 class SurveyGeometry(Geometry, base.LinearBinning):
 
-    def __init__(self, randoms, alpha, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, **kwargs):
+    def __init__(self, randoms_pos, randoms_nz=None, randoms_nz_weight=None, randoms_weight=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, **kwargs):
 
         base.LinearBinning.__init__(self)
 
         self.logger = logging.getLogger('SurveyGeometry')
-
-        self._alpha = alpha
 
         self._kmax = kmax
 
@@ -256,34 +254,44 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         self.window_matrix_error = None
 
         self._resume_file = None
-        self._randoms = mockfactory.Catalog(randoms) if not isinstance(randoms, mockfactory.Catalog) else randoms
+        self._randoms_pos = randoms_pos
 
-        # Check if the randoms have weights, otherwise set them to 1
-        if 'WEIGHT' not in self._randoms:
-            self.logger.warning(f'WEIGHT column not found in randoms. Setting it to 1.')
-            self._randoms['WEIGHT'] = np.ones(self._randoms.size, dtype='f8')
+        # Set randoms_nz_weight (replaces WEIGHT), defaulting to 1 if not provided
+        if randoms_nz_weight is None:
+            self.logger.warning('randoms_nz_weight not provided. Setting it to 1.')
+            self._randoms_nz_weight = np.ones(len(self._randoms_pos), dtype='f8')
+        else:
+            self._randoms_nz_weight = randoms_nz_weight
 
-        # Check if the randoms have a number density column, otherwise estimate it using RedshiftDensityInterpolator
-        if 'NZ' not in self._randoms:
-            self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
+        # Set randoms_weight (replaces WEIGHT_FKP), defaulting to 1 if not provided
+        if randoms_weight is None:
+            self._randoms_weight = np.ones(len(self._randoms_pos), dtype='f8')
+        else:
+            self._randoms_weight = randoms_weight
+
+        # Set randoms_nz (number density), estimating it if not provided
+        if randoms_nz is None:
+            self.logger.warning('randoms_nz not provided. Estimating it with RedshiftDensityInterpolator.')
             import healpy as hp
             nside = 512
-            distance = np.sqrt(np.sum(self._randoms['POSITION']**2, axis=-1))
-            xyz = self._randoms['POSITION'] / distance[:, None]
+            distance = np.sqrt(np.sum(self._randoms_pos**2, axis=-1))
+            xyz = self._randoms_pos / distance[:, None]
             hpixel = hp.vec2pix(nside, *xyz.T)
             unique_hpixels = np.unique(hpixel)
             fsky = len(unique_hpixels) / hp.nside2npix(nside)
             self.logger.warning(f'fsky = {fsky:.3f}')
             self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
-            nbar = mockfactory.RedshiftDensityInterpolator(z=distance, fsky=fsky)
-            self._randoms['NZ'] = alpha * nbar(distance)
+            nbar = mockfactory.RedshiftDensityInterpolator(z=distance, weights=self._randoms_nz_weight, fsky=fsky)
+            self._randoms_nz = nbar(distance)
+        else:
+            self._randoms_nz = randoms_nz
 
         # Check if the randoms have nmesh and cellsize, otherwise set them using the kmax parameter
         if nmesh is None and cellsize is None:
             # Pick value that will give at least k_mask = kmax_window in the FFTs
             cellsize = np.pi / kmax / (1. + 1e-9)
 
-        self._mesh = CatalogMesh(data_positions=self._randoms['POSITION'], data_weights=self._randoms['WEIGHT']*alpha,
+        self._mesh = CatalogMesh(data_positions=self._randoms_pos, data_weights=self._randoms_nz_weight,
                                 position_type='pos', nmesh=nmesh, cellsize=cellsize, boxsize=boxsize, boxpad=boxpad,
                                 dtype='c16', **{'interlacing': 3, 'resampler': 'tsc', **kwargs})
         
@@ -335,8 +343,8 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         start = time.time()
 
         result = self._mesh.copy(
-            data_positions=self._randoms['POSITION'],
-            data_weights=self._randoms['NZ']**(nbar_power-1)*self._randoms['WEIGHT']**(weight_power) * self.alpha * Ylm(*self._randoms['POSITION'].T),
+            data_positions=self._randoms_pos,
+            data_weights=self._randoms_nz_weight * self._randoms_nz**(nbar_power-1)*self._randoms_weight**(weight_power) * Ylm(*self._randoms_pos.T),
             position_type='pos',
         ).to_mesh(compensate=True).r2c().value * self.nmesh**3
 
@@ -1113,9 +1121,9 @@ class SurveyGeometry(Geometry, base.LinearBinning):
             return gaunt_coefficients
 
     def normalization(self, nbar_power, weight_power):
-        return (self._randoms['NZ']**(nbar_power-1) * \
-                self._randoms['WEIGHT']**(weight_power) * \
-                self.alpha).sum().tolist()
+        return (self._randoms_nz**(nbar_power-1) * \
+                self._randoms_weight**(weight_power) * \
+                self._randoms_nz_weight).sum().tolist()
 
     @property
     def knyquist(self):
@@ -1124,10 +1132,6 @@ class SurveyGeometry(Geometry, base.LinearBinning):
     @property
     def kfun(self):
         return 2 * np.pi / self.boxsize
-    
-    @property
-    def alpha(self):
-        return self._alpha
     
     @property
     def ikgrid(self):
