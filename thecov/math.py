@@ -159,3 +159,121 @@ def get_real_Ylm(ell, m, modules=None):
     Ylm.l = ell
     Ylm.m = m
     return Ylm
+
+def double_spherical_bessel(xbins, W, kedges, l1=0, l2=0, nq=16):
+    from scipy.special import spherical_jn
+    
+    xbins = np.asarray(xbins, float)
+    x = (xbins[1:] + xbins[:-1])/2
+    
+    W = np.asarray(W, float)
+    kedges = np.asarray(kedges, float)
+
+    u, w = np.polynomial.legendre.leggauss(nq)
+    nb = len(kedges) - 1
+    out = np.zeros((nb, nb))
+
+    wx = np.diff(xbins) * x**2 * W
+
+    for i in range(nb):
+        a1, b1 = kedges[i], kedges[i + 1]
+        k1q = 0.5 * (b1 - a1) * u + 0.5 * (a1 + b1)
+        w1 = 0.5 * (b1 - a1) * w
+        j1 = spherical_jn(l1, np.outer(k1q, x))   # (nq, nx)
+
+        for j in range(nb):
+            a2, b2 = kedges[j], kedges[j + 1]
+            k2q = 0.5 * (b2 - a2) * u + 0.5 * (a2 + b2)
+            w2 = 0.5 * (b2 - a2) * w
+            j2 = spherical_jn(l2, np.outer(k2q, x))   # (nq, nx)
+
+            vals = np.einsum('ax,bx,x->ab', j1, j2, wx)   # integral over x
+            out[i, j] = np.sum(np.outer(w1, w2) * vals) / ((b1 - a1) * (b2 - a2))
+
+    return out
+
+from functools import lru_cache
+from sympy.physics.wigner import real_gaunt
+
+@lru_cache(maxsize=None)
+def gaunt(ells, ms, ellmax=12):
+    """
+    Generalized Gaunt coefficient: integral of N real spherical harmonics.
+    Computed recursively by contracting the first two legs with a 3-point
+    real_gaunt, summing over the intermediate (ell, m).
+
+    Parameters
+    ----------
+    ells : tuple of int
+    ms   : tuple of int, same length as ells
+    ellmax : int, maximum ell in the intermediate sum
+    """
+    assert len(ells) == len(ms), "ells and ms must have the same length"
+
+    if len(ells) == 3:
+        return float(real_gaunt(*ells, *ms))
+
+    if len(ells) < 3:
+        raise ValueError("Need at least 3 harmonics")
+
+    result = 0.0
+    ell1, ell2 = ells[0], ells[1]
+    m1,   m2   = ms[0],   ms[1]
+
+    for ell in range(ellmax + 1):
+        for m in range(-ell, ell + 1):
+            g3 = float(real_gaunt(ell1, ell2, ell, m1, m2, m))
+            if g3 == 0.0:
+                continue  # skip: real_gaunt has hard selection rules
+            rest = gaunt(
+                (ell,) + ells[2:],
+                (m,)   + ms[2:],
+                ellmax,
+            )
+            result += g3 * rest
+
+    return result
+
+def bin(r, mesh, rbins=None):
+
+    # build adaptive rbins if not supplied
+    if rbins is None:
+        order    = np.argsort(r)
+        r_sorted = r[order]
+        w_sorted = mesh[order]
+
+        nrbins = max(10, 1.5*len(r)**(1/3))
+        min_weight = 0.1*mesh.sum() / nrbins
+
+        # Minimum bin width: r_max / nrbins, i.e. the width of a uniform bin
+        # across the full radial range. This prevents the peak from being
+        # over-resolved relative to a simple uniform grid with the same nrbins.
+        min_dr = r_sorted[-1] / nrbins
+
+        # Greedy forward pass: cut only when *both* the weight threshold is met
+        # *and* the bin is at least min_dr wide. This smooths the peak (where
+        # weight builds up fast) without widening the already-wide tail bins.
+        edges = [0.0]
+        cumw  = 0.0
+        for i in range(len(r_sorted)):
+            cumw += w_sorted[i]
+            bin_width = r_sorted[i] - edges[-1]
+            if cumw >= min_weight and bin_width >= min_dr and i < len(r_sorted) - 1:
+                edges.append(0.5 * (r_sorted[i] + r_sorted[i + 1]))
+                cumw = 0.0
+        edges.append(r_sorted[-1] * (1.0 + 1e-9))
+        rbins = np.array(edges)
+        
+    rbins = np.array(rbins, dtype=float)
+    rbins[0]  = 0.0
+    rbins[-1] = r.max() * (1.0 + 1e-9)
+
+    # np.digitize returns 1-based indices; subtract 1 → 0-based, then clip
+    # to guarantee indices lie in [0, len(rbins)-2] (i.e. N = len(rbins)-1 bins)
+    d = np.clip(np.digitize(r, rbins) - 1, 0, len(rbins) - 2)
+    W = np.bincount(d, weights=mesh, minlength=len(rbins) - 1)
+
+    # Normalise by bin width so W is comparable across adaptive bins
+    W = W / np.diff(rbins)
+
+    return W, rbins

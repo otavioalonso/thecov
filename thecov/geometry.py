@@ -305,53 +305,65 @@ class SurveyGeometry(Geometry, base.LinearBinning):
 
         self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
-    def compute_mesh(self, nbar_power, weight_power, ell, m):
-        """Compute the Fourier transform of nbar**nbar_power * weight**weight_power * Ylm
+    @base.cache
+    def compute_window_profile(self, nbar_power, weight_power, ell, m, rbins=None):
+        """Compute the window radial profile for nbar**nbar_power * weight**weight_power * Y_lm.
+
+        Build a mesh from the random catalog weighted by nbar and weight powers and
+        multiplied by the real spherical harmonic Y_lm(r̂). The mesh is compensated
+        after gridding and collapsed into a radial profile by binning |mesh| on
+        spherical shells.
 
         Parameters
         ----------
+        nbar_power : int
+            Exponent applied to the local number density (randoms_nz).
+        weight_power : int
+            Exponent applied to the randoms weight (randoms_weight).
         ell : int
             Degree of the spherical harmonic.
-
         m : int
             Order of the spherical harmonic.
-
-        shotnoise : bool, optional
-            If True, the shotnoise mesh is used instead of the original mesh. Default is False.
-
-        fourier : bool, optional
-            If True, the Fourier transform of the mesh is returned. Default is False.
+        rbins : array_like, optional
+            Radial bin edges used to accumulate the profile. If None, a default
+            set of bins is created adaptively using a greedy minimum-weight scheme
+            with an automatically determined minimum bin width.
 
         Returns
         -------
-        mesh
-            Resulting mesh after computation.
+        W : ndarray
+            Radial profile (binned sum of |mesh|) evaluated on rbins.
+        rbins : ndarray
+            The radial bin edges used to compute W.
         """
 
         assert ell >= 0, "ell must be non-negative"
         assert abs(m) <= ell, "m must be less than or equal to ell"
 
-        # get_real_Ylm returns a vectorized function (scipy.lpmv or numexpr)
-        # that releases the GIL - no need for np.vectorize!
         Ylm = math.get_real_Ylm(ell, m)
 
         self.logger.info(f'Computing mesh nbar^{nbar_power} * weight^{weight_power} (ell={ell}, m={m})')
         start = time.time()
 
-        result = self._mesh.copy(
+        mesh = self._mesh.copy(
             data_positions=self._randoms_pos,
             data_weights=self._randoms_nz_weight * self._randoms_nz**(nbar_power-1)*self._randoms_weight**(weight_power) * Ylm(*self._randoms_pos.T),
             position_type='pos',
-        ).to_mesh(compensate=True).r2c().value * self.nmesh**3
-
-        # if threshold is not None:
-        #     # Convert the result to a sparse array to save memory
-        #     result[np.abs(result) < threshold] = 0
-        #     result = base.SparseNDArray.from_dense(result, shape_in=(self.nmesh,self.nmesh), shape_out=self.nmesh)
+        ).to_mesh(compensate=True)
 
         self.logger.info(f'Mesh computed in {time.time() - start:.0f} seconds.')
+        
+        start = time.time()
+        self.logger.info(f'Binning power...')
 
-        return result
+        W, rbins = math.bin(
+            r=np.sqrt(sum((x.real**2 for x in mesh.x))).ravel(),
+            mesh=np.abs(mesh.value).ravel(),
+            rbins=rbins)
+
+        self.logger.info(f'Power binned in {time.time() - start:.0f} seconds.')
+
+        return W, rbins
 
     @base.cache
     def compute_window_matrix(self, pk_ellmax=PK_ELL_MAX, mask_ellmax=MASK_ELL_MAX):
