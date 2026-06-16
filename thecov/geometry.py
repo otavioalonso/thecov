@@ -11,15 +11,13 @@ SurveyGeometry
 """
 
 import os, time
-import itertools as itt
 import logging
 
 import numpy as np
 
 import mockfactory
-from pypower import CatalogMesh
 
-from . import base, utils, math
+from . import base
 
 
 __all__ = ['BoxGeometry',
@@ -236,158 +234,143 @@ class BoxGeometry(Geometry):
         self._cosmo = cosmo
 
 
-class SurveyGeometry(Geometry, base.LinearBinning):
+class Randoms():
+    def __init__(self, pos, nz=None, nz_weight=1, weight=1):
+        self.logger = logging.getLogger('Randoms')
 
-    def __init__(self, randoms_pos, randoms_nz=None, randoms_nz_weight=None, randoms_weight=None, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax=0.02, **kwargs):
+        self.pos = pos
+        self.nz = nz
+        self.nz_weight = nz_weight
+        self.weight = weight
 
-        base.LinearBinning.__init__(self)
-
-        self.logger = logging.getLogger('SurveyGeometry')
-
-        self._kmax = kmax
-
-        self.window_matrix = None
-        self.window_matrix_error = None
-
-        self._resume_file = None
-        self._randoms_pos = randoms_pos
-
-        # Set randoms_nz_weight (replaces WEIGHT), defaulting to 1 if not provided
-        if randoms_nz_weight is None:
-            self.logger.warning('randoms_nz_weight not provided. Setting it to 1.')
-            self._randoms_nz_weight = np.ones(len(self._randoms_pos), dtype='f8')
-        else:
-            self._randoms_nz_weight = randoms_nz_weight
-
-        # Set randoms_weight (replaces WEIGHT_FKP), defaulting to 1 if not provided
-        if randoms_weight is None:
-            self._randoms_weight = np.ones(len(self._randoms_pos), dtype='f8')
-        else:
-            self._randoms_weight = randoms_weight
-
-        # Set randoms_nz (number density), estimating it if not provided
-        if randoms_nz is None:
-            self.logger.warning('randoms_nz not provided. Estimating it with RedshiftDensityInterpolator.')
+        # Set nz (number density), estimating it if not provided
+        if nz is None:
+            self.logger.warning('nz not provided. Estimating it with RedshiftDensityInterpolator.')
             import healpy as hp
             nside = 512
-            distance = np.sqrt(np.sum(self._randoms_pos**2, axis=-1))
-            xyz = self._randoms_pos / distance[:, None]
+            distance = np.sqrt(np.sum(self.pos**2, axis=-1))
+            xyz = self.pos / distance[:, None]
             hpixel = hp.vec2pix(nside, *xyz.T)
             unique_hpixels = np.unique(hpixel)
             fsky = len(unique_hpixels) / hp.nside2npix(nside)
             self.logger.warning(f'fsky = {fsky:.3f}')
             self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
-            nbar = mockfactory.RedshiftDensityInterpolator(z=distance, weights=self._randoms_nz_weight, fsky=fsky)
-            self._randoms_nz = nbar(distance)
-        else:
-            self._randoms_nz = randoms_nz
+            nbar = mockfactory.RedshiftDensityInterpolator(z=distance, weights=self.nz_weight, fsky=fsky)
+            nz = nbar(distance)
 
-        # Check if the randoms have nmesh and cellsize, otherwise set them using the kmax parameter
-        if nmesh is None and cellsize is None:
-            # Pick value that will give at least k_mask = kmax_window in the FFTs
-            cellsize = np.pi / kmax / (1. + 1e-9)
+        self.nz = nz
 
-        self._mesh = CatalogMesh(data_positions=self._randoms_pos, data_weights=self._randoms_nz_weight,
-                                position_type='pos', nmesh=nmesh, cellsize=cellsize, boxsize=boxsize, boxpad=boxpad,
-                                dtype='c16', **{'interlacing': 3, 'resampler': 'tsc', **kwargs})
+    def __getitem__(self, index):
+        def _idx(x):
+            return x[index] if isinstance(x, np.ndarray) else x
+        return Randoms(pos=self.pos[index],
+                       nz=self.nz[index] if self.nz is not None else None,
+                       nz_weight=_idx(self.nz_weight),
+                       weight=_idx(self.weight))
+
+    # This method allows len() to work on your object
+    def __len__(self):
+        return self.pos.shape[0]
+
+
+class SurveyGeometry(Geometry, base.LinearBinning):
+
+    def __init__(self, randoms_pos, randoms_nz=None, randoms_nz_weight=1, randoms_weight=1, pk_ellmax=4, mask_ellmax=4):
+
+        base.LinearBinning.__init__(self)
+
+        self.logger = logging.getLogger('SurveyGeometry')
+
+        self.randoms = Randoms(pos=randoms_pos,
+                               nz=randoms_nz,
+                               nz_weight=randoms_nz_weight,
+                               weight=randoms_weight)
         
-        self.boxsize = self._mesh.boxsize[0]
-        self.nmesh = self._mesh.nmesh[0]
+        self.pk_ellmax = pk_ellmax
+        self.mask_ellmax = mask_ellmax
 
-        self.logger.info(f'Using box size {self._mesh.boxsize}, box center {self._mesh.boxcenter} and nmesh {self._mesh.nmesh}.')
-    
+        self.window_matrix = None
 
-        self.logger.info(f'Fundamental wavenumber of window FFTs = {self.kfun}.')
-        self.logger.info(f'Nyquist wavenumber of window FFTs = {self.knyquist}.')
-
-        if kmax is not None and self.knyquist < kmax:
-            self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required window kmax = {kmax}.')
-
-        self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
-
-    @base.cache
-    def compute_window_profile(self, nbar_power, weight_power, ell, m, rbins=None):
-        """Compute the window radial profile for nbar**nbar_power * weight**weight_power * Y_lm.
-
-        Build a mesh from the random catalog weighted by nbar and weight powers and
-        multiplied by the real spherical harmonic Y_lm(r̂). The mesh is compensated
-        after gridding and collapsed into a radial profile by binning |mesh| on
-        spherical shells.
-
-        Parameters
-        ----------
-        nbar_power : int
-            Exponent applied to the local number density (randoms_nz).
-        weight_power : int
-            Exponent applied to the randoms weight (randoms_weight).
-        ell : int
-            Degree of the spherical harmonic.
-        m : int
-            Order of the spherical harmonic.
-        rbins : array_like, optional
-            Radial bin edges used to accumulate the profile. If None, a default
-            set of bins is created adaptively using a greedy minimum-weight scheme
-            with an automatically determined minimum bin width.
-
-        Returns
-        -------
-        W : ndarray
-            Radial profile (binned sum of |mesh|) evaluated on rbins.
-        rbins : ndarray
-            The radial bin edges used to compute W.
-        """
-
-        assert ell >= 0, "ell must be non-negative"
-        assert abs(m) <= ell, "m must be less than or equal to ell"
-
-        Ylm = math.get_real_Ylm(ell, m)
-
-        self.logger.info(f'Computing mesh nbar^{nbar_power} * weight^{weight_power} (ell={ell}, m={m})')
-        start = time.time()
-
-        mesh = self._mesh.copy(
-            data_positions=self._randoms_pos,
-            data_weights=self._randoms_nz_weight * self._randoms_nz**(nbar_power-1)*self._randoms_weight**(weight_power) * Ylm(*self._randoms_pos.T),
-            position_type='pos',
-        ).to_mesh(compensate=True)
-
-        self.logger.info(f'Mesh computed in {time.time() - start:.0f} seconds.')
+    def compute_window_kernels(self):
         
-        start = time.time()
-        self.logger.info(f'Binning power...')
+        # window matrix: [power_configs, ellm, nu1, nu2, k1, k2]
+        # window product: a1, a2, lma, b1, b2, lmb
+        product = np.einsum('abcij,xyzij->bcayzxij', self.window_matrix[0], self.window_matrix[0])
+        coefficients = self.get_cosmic_variance_gaunt_coefficients(pk_ellmax=self.pk_ellmax, mask_ellmax=self.mask_ellmax)
+        
+        # shape_out = l1, l2, L1, L2
+        self.window_kernel = coefficients @ product
+        
 
-        W, rbins = math.bin(
-            r=np.sqrt(sum((x.real**2 for x in mesh.x))).ravel(),
-            mesh=np.abs(mesh.value).ravel(),
-            rbins=rbins)
+    def compute_window_matrix(self, nchunks=4, nthreads=None):
+        order  = np.random.permutation(len(self.randoms.nz))
+        chunks = [self.randoms[idx] for idx in np.array_split(order, nchunks)]
 
-        self.logger.info(f'Power binned in {time.time() - start:.0f} seconds.')
+        self.logger.info(f"Computing window matrices using {len(chunks)} chunks of {len(chunks[0])} randoms processed by {nthreads} threads.")
 
-        return W, rbins
+        import multiprocessing
+        from functools import partial
+        from tqdm import tqdm
 
-    @base.cache
-    def compute_window_matrix(self, pk_ellmax=PK_ELL_MAX, mask_ellmax=MASK_ELL_MAX):
-        '''Computes the window matrix using multiprocessing with shared memory.
+        with multiprocessing.get_context('spawn').Pool(processes=nthreads) as pool:
+            all_chunks = np.stack(list(tqdm(
+                pool.imap_unordered(
+                    partial(self._compute_window_matrix, self.kedges, ellmax=self.pk_ellmax), chunks),
+                total=nchunks, desc='Window matrix chunks')))
 
-        Parameters
-        ----------
-        pk_ellmax : int, optional
-            Maximum ell for the power spectrum multipoles. Default is PK_ELL_MAX.
-        mask_ellmax : int, optional
-            Maximum ell for the mask multipoles. Default is MASK_ELL_MAX.'''
+        result         = all_chunks.sum(axis=0)
+        relative_error = (np.sqrt(nchunks) * all_chunks.std(axis=0) /
+                          np.abs(result).clip(1e-30))
 
-        self.get_first_cosmic_variance_gaunt_coefficients()
+        self.logger.info(f'Max relative error: {relative_error.max():.3e}')
+
+        self.window_matrix = result
+
+        return result, relative_error
+
+    # Computes all window matrix elements for a given array of randoms.
+    # Can be run with a subset of randoms and aggregated
+    @staticmethod
+    def _compute_window_matrix(kedges, randoms, ellmax=4):
+        import os
+        os.environ.setdefault('JAX_PLATFORMS', 'cpu')
+        from thecov.math import get_real_Ylm, spherical_bessel
+
+        power_configs = [(2, 2)]  #, (1, 2)]
+        nus   = list(range(0, ellmax + 1, 2))
+        ellms = [(ell, m) for ell in range(0, ellmax + 1, 2) for m in range(-ell, ell + 1)]
+
+        r2      = (randoms.pos**2).sum(axis=1)                                            # [N]
+        bessels = 4*np.pi *  np.stack([spherical_bessel(nu, r2, kedges) * np.real((- 1j)**(nu)) for nu in nus])      # [nu, k, N]
+        Ylm     = np.stack([get_real_Ylm(ell, m)(*randoms.pos.T) for ell, m in ellms])    # [ellm, N]
+
+
+        # Compute all outer-product sums at once.
+        # out[c, i_ellm, a, b, i, j] = Σ_p  w_c[p] · Y[i_ellm,p] · B[a,i,p] · B[b,j,p]
+        results = np.stack([
+            np.stack([
+                np.einsum('aip,bjp->abij',
+                          bessels * (randoms.nz_weight * randoms.nz**(nbar_power-1) * randoms.weight**weight_power * Ylm[i_ellm])[None, None, :],
+                          bessels)
+                for i_ellm in range(len(ellms))
+            ])
+            for nbar_power, weight_power in power_configs
+        ])
+        # shape: [power_configs, ellm, nu1, nu2, k1, k2]
+        return results
 
     @staticmethod
-    def get_first_cosmic_variance_gaunt_coefficients(mask_ellmax=MASK_ELL_MAX, pk_ellmax=PK_ELL_MAX, cache_dir=None):
-        """Calculates all relavent Gaunt coefficients for the cosmic variance term, or loads them from file"""
+    def get_cosmic_variance_gaunt_coefficients(mask_ellmax=MASK_ELL_MAX, pk_ellmax=PK_ELL_MAX, cache_dir=None):
+        """Calculates all relevant Gaunt coefficients for the cosmic variance term, or loads them from file"""
+
+        logger = logging.getLogger('SurveyGeometry')
 
         # Load mask coupling Gaunt coefficients if cache exists, otherwise compute them
         if cache_dir is None:
             cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
-        filename = os.path.join(cache_dir, f"first_cosmic_variance_coefficients_{pk_ellmax:d}_{mask_ellmax:d}.npz")
+            logger.info(f'Using cache directory: {cache_dir}')
 
-        logger = logging.getLogger('SurveyGeometry')
+        filename = os.path.join(cache_dir, f"cosmic_variance_coefficients_{pk_ellmax:d}_{mask_ellmax:d}.npz")
 
         if os.path.exists(filename):
             logger.info(f'Loading first cosmic variance Gaunt coefficients from cache: {filename}')
@@ -395,39 +378,46 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         else:
             logger.info(f'Computing first cosmic variance Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
 
-            # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
-            # shape_in =  la, lb, ma, mb
-            shape_out = 4*[pk_ellmax//2 + 1] + 4*[2*pk_ellmax + 1]
-            shape_in = 2*[mask_ellmax//2 + 1] + 2*[2*mask_ellmax + 1]
+            from thecov.utils import ellmiter, elliter, n_ellm
+            from multiprocessing import Pool, cpu_count
+            from tqdm import tqdm
+
+            # shape_out = l1, l2, L1, L2
+            # shape_in =  a1, a2, lma, b1, b2, lmb
+            shape_out = 4*[pk_ellmax//2 + 1]
+            shape_in = (2*[mask_ellmax//2+1] + [n_ellm(mask_ellmax)] +
+                        2*[mask_ellmax//2+1] + [n_ellm(mask_ellmax)])
+            
             gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
 
+            outer_args = [
+                (l1, l2, L1, L2, a1, a2, la, ma, b1, b2, lb, mb, mask_ellmax)
+                for l1, l2, L1, L2 in elliter(pk_ellmax, 4)
+                for a1, a2, b1, b2 in elliter(mask_ellmax, 4)
+                for la, lb, ma, mb in ellmiter(mask_ellmax, 2)
+            ]
+            n = len(outer_args)
+            chunksize = max(1, n // (cpu_count() * 20))
+
+            logger.info(f'Computing Gaunt coefficients: {n:,} tasks across {cpu_count()} CPUs '
+                        f'(chunksize={chunksize})...')
+
+            with Pool() as pool:
+                for result in tqdm(pool.imap_unordered(_gaunt_row_worker, outer_args, chunksize=chunksize),
+                                   total=n, desc='Gaunt coefficients'):
+                    if result is not None:
+                        index, val = result
+                        gaunt_coefficients[index] = val
+
+            gaunt_coefficients.save(filename)
+
+            return gaunt_coefficients
 
     def normalization(self, nbar_power, weight_power):
         return (self._randoms_nz**(nbar_power-1) * \
                 self._randoms_weight**(weight_power) * \
                 self._randoms_nz_weight).sum().tolist()
 
-    @property
-    def knyquist(self):
-        return np.pi * self.nmesh / self.boxsize
-    
-    @property
-    def kfun(self):
-        return 2 * np.pi / self.boxsize
-    
-    @property
-    def ikgrid(self):
-        """Grid of wavenumber indices."""
-        ikgrid = []
-        for _ in range(3):
-            iik = np.arange(self.nmesh)
-            iik[iik >= self.nmesh // 2] -= self.nmesh
-            ikgrid.append(iik)
-        return ikgrid
-    
-    @property
-    def delta_k_max(self):
-        return self.nmesh // 2 - 1
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -443,3 +433,35 @@ class SurveyGeometry(Geometry, base.LinearBinning):
         self.window_matrix = None
         self.window_matrix_error = None
 
+
+def _gaunt_row_worker(args):
+    """Compute one Gaunt coefficient entry.
+
+    Performs the m-sum for a single (l1,l2,L1,L2, a1,a2,la,ma, b1,b2,lb,mb)
+    combination. Returns (index, val) if non-zero, else None.
+    Must be at module level to be picklable by multiprocessing.
+    """
+    l1, l2, L1, L2, a1, a2, la, ma, b1, b2, lb, mb, mask_ellmax = args
+    from thecov.utils import ellm_to_index, miter
+    from thecov.math import gaunt
+
+    val = 0.0
+    for m1, m2, M1, M2, nu1, nu2, rho1, rho2 in miter(l1, l2, L1, L2, a1, a2, b1, b2):
+        val += (gaunt((l2, L1, a1, a2, la), (m2, M1, nu1, nu2, ma)) *
+                gaunt((l1, L2, b1, b2, lb), (m1, M2, rho1, rho2, mb)) *
+                gaunt((l1, L1, a1, b1), (m1, M1, nu1, rho1)) *
+                gaunt((l2, L2, a2, b2), (m2, M2, nu2, rho2)) +
+                \
+                gaunt((L1, a1, a2, la), (M1, nu1, nu2, ma)) *
+                gaunt((l1, l2, L2, b1, b2, lb), (m1, m2, M2, rho1, rho2, mb)) *
+                gaunt((l1, L1, a1, b1), (m1, M1, nu1, rho1)) *
+                gaunt((l2, L2, a2, b2), (m2, M2, nu2, rho2)))
+
+    if val == 0.0:
+        return None
+
+    index = (l1//2, l2//2, L1//2, L2//2,
+             a1//2, a2//2, ellm_to_index(la, ma, mask_ellmax),
+             b1//2, b2//2, ellm_to_index(lb, mb, mask_ellmax))
+    
+    return index, val
