@@ -887,12 +887,6 @@ class LinearBinning(Binning, BaseClass):
         '''
         return None not in (self.dk, self.kmin, self.kmax)
 
-    # Alias for backward compatibility
-    @property
-    def is_kbins_set(self):
-        '''Alias for is_set for backward compatibility.'''
-        return self.is_set
-
     @property
     def bins(self):
         '''Returns the total number of k-bins.

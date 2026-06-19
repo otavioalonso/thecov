@@ -1,24 +1,11 @@
 """This module contains math functions for the covariance calculation
 """
 import numpy as np
+import sympy as sp
 
-def cov2cor(covariance):
-    '''Compute the correlation matrix from the covariance matrix.
-
-    Parameters
-    ----------
-    covariance : array_like
-        Covariance matrix.
-
-    Returns
-    -------
-    array_like
-        Correlation matrix.'''
-    v = np.sqrt(np.diag(covariance))
-    outer_v = np.outer(v, v)
-    correlation = covariance / outer_v
-    correlation[covariance == 0] = 0
-    return correlation
+from functools import lru_cache
+from sympy.physics.wigner import real_gaunt
+from . import utils
 
 def fgrowth(Omega_m, z):
     '''Estimates the growth rate at redshift z.
@@ -40,7 +27,52 @@ def fgrowth(Omega_m, z):
     return (1. + 6*(Omega_m-1)*hyp2f1(4/3., 2, 17/6., (1-1/Omega_m)/(1+z)**3) / \
           (11*Omega_m*(1+z)**3*hyp2f1(1/3., 1, 11/6., (1-1/Omega_m)/(1+z)**3) ))
 
-def get_real_Ylm(ell, m):
+
+
+
+@lru_cache(maxsize=None)
+def gaunt(ells, ms=None, ellmax=12):
+    """
+    Generalized Gaunt coefficient: integral of N real spherical harmonics.
+    Computed recursively by contracting the first two legs with a 3-point
+    real_gaunt, summing over the intermediate (ell, m).
+
+    Parameters
+    ----------
+    ells : tuple of int
+    ms   : tuple of int, same length as ells
+    ellmax : int, maximum ell in the intermediate sum
+    """
+    if ms is None:
+        ells, ms = utils.index_to_ellm(ells, ellmax=ellmax)
+
+    assert len(ells) == len(ms), "ells and ms must have the same length"
+
+    if len(ells) == 3:
+        return float(real_gaunt(*ells, *ms))
+
+    if len(ells) < 3:
+        raise ValueError("Need at least 3 harmonics")
+
+    result = 0.0
+    ell1, ell2 = ells[0], ells[1]
+    m1,   m2   = ms[0],   ms[1]
+
+    for ell in range(ellmax + 1):
+        for m in range(-ell, ell + 1):
+            g3 = float(real_gaunt(ell1, ell2, ell, m1, m2, m))
+            if g3 == 0.0:
+                continue  # skip: real_gaunt has hard selection rules
+            rest = gaunt(
+                (ell,) + ells[2:],
+                (m,)   + ms[2:],
+                ellmax,
+            )
+            result += g3 * rest
+
+    return result
+
+def Ylm(ell, m):
     """Return a JAX-traceable function that computes the real spherical harmonic Y_ell^m(x, y, z).
 
     Uses sympy to expand the associated Legendre polynomial into a pure polynomial
@@ -60,7 +92,6 @@ def get_real_Ylm(ell, m):
         Function of (x, y, z) — unnormalised Cartesian coordinates — returning Y_ell^m
         evaluated on the corresponding unit vectors. Returns 0 at the origin.
     """
-    import sympy as sp
 
     ell = int(ell)
     m   = int(m)
@@ -104,125 +135,6 @@ def get_real_Ylm(ell, m):
     Ylm.l = ell
     Ylm.m = m
     return Ylm
-
-
-def double_spherical_bessel_transform(xbins, W, kedges, l1=0, l2=0, nq=16):
-    from scipy.special import spherical_jn
-    
-    xbins = np.asarray(xbins, float)
-    x = (xbins[1:] + xbins[:-1])/2
-    
-    W = np.asarray(W, float)
-    kedges = np.asarray(kedges, float)
-
-    u, w = np.polynomial.legendre.leggauss(nq)
-    nb = len(kedges) - 1
-    out = np.zeros((nb, nb))
-
-    wx = np.diff(xbins) * x**2 * W
-
-    for i in range(nb):
-        a1, b1 = kedges[i], kedges[i + 1]
-        k1q = 0.5 * (b1 - a1) * u + 0.5 * (a1 + b1)
-        w1 = 0.5 * (b1 - a1) * w
-        j1 = spherical_jn(l1, np.outer(k1q, x))   # (nq, nx)
-
-        for j in range(nb):
-            a2, b2 = kedges[j], kedges[j + 1]
-            k2q = 0.5 * (b2 - a2) * u + 0.5 * (a2 + b2)
-            w2 = 0.5 * (b2 - a2) * w
-            j2 = spherical_jn(l2, np.outer(k2q, x))   # (nq, nx)
-
-            vals = np.einsum('ax,bx,x->ab', j1, j2, wx)   # integral over x
-            out[i, j] = np.sum(np.outer(w1, w2) * vals) / ((b1 - a1) * (b2 - a2))
-
-    return out
-
-from functools import lru_cache
-from sympy.physics.wigner import real_gaunt
-
-@lru_cache(maxsize=None)
-def gaunt(ells, ms, ellmax=12):
-    """
-    Generalized Gaunt coefficient: integral of N real spherical harmonics.
-    Computed recursively by contracting the first two legs with a 3-point
-    real_gaunt, summing over the intermediate (ell, m).
-
-    Parameters
-    ----------
-    ells : tuple of int
-    ms   : tuple of int, same length as ells
-    ellmax : int, maximum ell in the intermediate sum
-    """
-    assert len(ells) == len(ms), "ells and ms must have the same length"
-
-    if len(ells) == 3:
-        return float(real_gaunt(*ells, *ms))
-
-    if len(ells) < 3:
-        raise ValueError("Need at least 3 harmonics")
-
-    result = 0.0
-    ell1, ell2 = ells[0], ells[1]
-    m1,   m2   = ms[0],   ms[1]
-
-    for ell in range(ellmax + 1):
-        for m in range(-ell, ell + 1):
-            g3 = float(real_gaunt(ell1, ell2, ell, m1, m2, m))
-            if g3 == 0.0:
-                continue  # skip: real_gaunt has hard selection rules
-            rest = gaunt(
-                (ell,) + ells[2:],
-                (m,)   + ms[2:],
-                ellmax,
-            )
-            result += g3 * rest
-
-    return result
-
-def bin(r, mesh, rbins=None):
-
-    # build adaptive rbins if not supplied
-    if rbins is None:
-        order    = np.argsort(r)
-        r_sorted = r[order]
-        w_sorted = mesh[order]
-
-        nrbins = max(10, 1.5*len(r)**(1/3))
-        min_weight = 0.1*mesh.sum() / nrbins
-
-        # Minimum bin width: r_max / nrbins, i.e. the width of a uniform bin
-        # across the full radial range. This prevents the peak from being
-        # over-resolved relative to a simple uniform grid with the same nrbins.
-        min_dr = r_sorted[-1] / nrbins
-
-        # Greedy forward pass: cut only when *both* the weight threshold is met
-        # *and* the bin is at least min_dr wide. This smooths the peak (where
-        # weight builds up fast) without widening the already-wide tail bins.
-        edges = [0.0]
-        cumw  = 0.0
-        for i in range(len(r_sorted)):
-            cumw += w_sorted[i]
-            bin_width = r_sorted[i] - edges[-1]
-            if cumw >= min_weight and bin_width >= min_dr and i < len(r_sorted) - 1:
-                edges.append(0.5 * (r_sorted[i] + r_sorted[i + 1]))
-                cumw = 0.0
-        edges.append(r_sorted[-1] * (1.0 + 1e-9))
-        rbins = np.array(edges)
-        
-    rbins = np.array(rbins, dtype=float)
-    rbins[0]  = 0.0
-    rbins[-1] = r.max() * (1.0 + 1e-9)
-
-    # np.digitize returns 1-based indices; subtract 1 → 0-based, then clip
-    # to guarantee indices lie in [0, len(rbins)-2] (i.e. N = len(rbins)-1 bins)
-    d = np.clip(np.digitize(r, rbins) - 1, 0, len(rbins) - 2)
-    W = np.bincount(d, weights=mesh, minlength=len(rbins) - 1)
-
-    # Normalise by bin width so W is comparable across adaptive bins
-    W = W / np.diff(rbins)
-
-    return W, rbins
 
 def spherical_bessel(nu, r, kedges, averaged=True):
     from jax.scipy.special import sici as _sici
@@ -288,3 +200,182 @@ def spherical_bessel(nu, r, kedges, averaged=True):
             raise ValueError("Unsupported nu value for spherical Bessel function")
 
         return jnp.where(mask, limit, result)
+
+
+def get_gaunt_coefficients(term, mask_ellmax=4, pk_ellmax=4, cache_dir=None):
+    """Calculates all relevant Gaunt coefficients for the given term, or loads them from file"""
+
+    import logging, os, multiprocessing
+    from tqdm import tqdm
+    from thecov.utils import ellmiter, elliter, n_ellm
+    from thecov import base
+
+    logger = logging.getLogger('SurveyGeometry')
+
+    # Load mask coupling Gaunt coefficients if cache exists, otherwise compute them
+    if cache_dir is None:
+        cache_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cache")
+        logger.info(f'Using cache directory: {cache_dir}')
+
+    filename = os.path.join(cache_dir, f"gaunts_{term}_{pk_ellmax:d}_{mask_ellmax:d}.npz")
+
+    if os.path.exists(filename):
+        logger.info(f'Loading {term} Gaunt coefficients from cache: {filename}')
+        return base.SparseNDArray.load(filename)
+    else:
+        logger.info(f'Computing {term} Gaunt coefficients (pk_ellmax={pk_ellmax}, mask_ellmax={mask_ellmax})...')
+
+        shape_in = (2*[mask_ellmax//2+1] + [n_ellm(mask_ellmax)] +
+                    2*[mask_ellmax//2+1] + [n_ellm(mask_ellmax)])
+        
+        if term.startswith('cosmic_variance_'):
+            sub_term = term.split('_')[-1]
+            shape_out = 4*[pk_ellmax//2 + 1]
+            outer_args = [
+                (l1, l2, L1, L2, a1, a2, la, ma, b1, b2, lb, mb, mask_ellmax, sub_term)
+                for l1, l2, L1, L2 in elliter(pk_ellmax, 4)
+                for a1, a2, b1, b2 in elliter(mask_ellmax, 4)
+                for la, lb, ma, mb in ellmiter(mask_ellmax, 2)
+            ]
+            worker_func = _gaunt_cv_worker
+        elif term.startswith('mixed_'):
+            sub_term = term.split('_')[-1]
+            shape_out = 3*[pk_ellmax//2 + 1]
+            outer_args = [
+                (l1, l2, L, a1, a2, la, ma, b1, b2, lb, mb, mask_ellmax, sub_term)
+                for l1, l2, L in elliter(pk_ellmax, 3)
+                for a1, a2, b1, b2 in elliter(mask_ellmax, 4)
+                for la, lb, ma, mb in ellmiter(mask_ellmax, 2)
+            ]
+            worker_func = _gaunt_mixed_worker
+        elif term.startswith('shotnoise_'):
+            sub_term = term.split('_')[-1]
+            shape_out = 2*[pk_ellmax//2 + 1]
+            outer_args = [
+                (l1, l2, a1, a2, la, ma, b1, b2, lb, mb, mask_ellmax, sub_term)
+                for l1, l2 in elliter(pk_ellmax, 2)
+                for a1, a2, b1, b2 in elliter(mask_ellmax, 4)
+                for la, lb, ma, mb in ellmiter(mask_ellmax, 2)
+            ]
+            worker_func = _gaunt_shotnoise_worker
+        else:
+            raise ValueError(f"Unknown term: {term}")
+
+        gaunt_coefficients = base.SparseNDArray(shape_out=shape_out, shape_in=shape_in)
+        n = len(outer_args)
+        chunksize = max(1, n // (multiprocessing.cpu_count() * 20))
+
+        logger.info(f'Computing Gaunt coefficients: {n:,} tasks across {multiprocessing.cpu_count()} CPUs '
+                    f'(chunksize={chunksize})...')
+
+        with multiprocessing.Pool() as pool:
+            for result in tqdm(pool.imap_unordered(worker_func, outer_args, chunksize=chunksize),
+                               total=n, desc='Gaunt coefficients'):
+                if result is not None:
+                    index, val = result
+                    gaunt_coefficients[index] = val
+
+        # save to cache
+        os.makedirs(cache_dir, exist_ok=True)
+        gaunt_coefficients.save(filename)
+
+        return gaunt_coefficients
+
+
+def _gaunt_cv_worker(args):
+    """Compute one Gaunt coefficient entry for cosmic variance terms."""
+    l1, l2, L1, L2, a1, a2, la, ma, b1, b2, lb, mb, mask_ellmax, sub_term = args
+    from thecov.utils import ellm_to_index, miter
+    from thecov.math import gaunt
+
+    val = 0.0
+    for m1, m2, M1, M2, nu1, nu2, rho1, rho2 in miter(l1, l2, L1, L2, a1, a2, b1, b2):
+        base_val = gaunt((l1, L1, a1, b1), (m1, M1, nu1, rho1)) * gaunt((l2, L2, a2, b2), (m2, M2, nu2, rho2))
+        
+        if sub_term == 'ACBD':
+            val += base_val * gaunt((L1, a1, a2, la), (M1, nu1, nu2, ma)) * gaunt((l1, l2, L2, b1, b2, lb), (m1, m2, M2, rho1, rho2, mb))
+        elif sub_term == 'ADBC':
+            val += base_val * gaunt((l2, L1, a1, a2, la), (m2, M1, nu1, nu2, ma)) * gaunt((l1, L2, b1, b2, lb), (m1, M2, rho1, rho2, mb))
+
+    if val == 0.0:
+        return None
+
+    index = (l1//2, l2//2, L1//2, L2//2,
+             a1//2, a2//2, ellm_to_index(la, ma, mask_ellmax),
+             b1//2, b2//2, ellm_to_index(lb, mb, mask_ellmax))
+    
+    return index, val
+
+
+def _gaunt_mixed_worker(args):
+    """Compute one Gaunt coefficient entry for mixed terms."""
+    l1, l2, L, a1, a2, la, ma, b1, b2, lb, mb, mask_ellmax, sub_term = args
+    from thecov.utils import ellm_to_index, miter
+    from thecov.math import gaunt
+
+    val = 0.0
+    for m1, m2, M, nu1, nu2, rho1, rho2 in miter(l1, l2, L, a1, a2, b1, b2):
+        base_val = gaunt(l1, 0, a1, b1, m1, 0, nu1, rho1) * gaunt(l2, L, a2, b2, m2, 0, nu2, rho2)
+        
+        if sub_term == 'ACBD':
+            val += base_val * gaunt((l1, l2, a1, a2, la), (m1, m2, nu1, nu2, ma)) * gaunt((0,  L, b1, b2, lb), (0,  M, rho1, rho2, mb))
+        elif sub_term == 'ADBC':
+            val += base_val * gaunt((l1,  0, a1, a2, la), (m1,  0, nu1, nu2, ma)) * gaunt((l2, L, b1, b2, lb), (m2, M, rho1, rho2, mb))
+        elif sub_term == 'BCAD':
+            val += base_val * gaunt((l2,  0, a1, a2, la), (m2,  0, nu1, nu2, ma)) * gaunt((l1, L, b1, b2, lb), (m1, M, rho1, rho2, mb))
+        elif sub_term == 'BDAC':
+            val += base_val * gaunt((0, a1, a2, la), (0, nu1, nu2, ma)) * gaunt((l1, l2, L, b1, b2, lb), (m1, m2, M, rho1, rho2, mb))
+
+    if val == 0.0:
+        return None
+
+    index = (l1//2, l2//2, L//2,
+             a1//2, a2//2, ellm_to_index(la, ma, mask_ellmax),
+             b1//2, b2//2, ellm_to_index(lb, mb, mask_ellmax))
+    
+    return index, val
+
+
+def _gaunt_shotnoise_worker(args):
+    """Compute one Gaunt coefficient entry for shotnoise terms."""
+    l1, l2, a1, a2, la, ma, b1, b2, lb, mb, mask_ellmax, sub_term = args
+    from thecov.utils import ellm_to_index, miter
+    from thecov.math import gaunt
+
+    val = 0.0
+    for m1, m2, nu1, nu2, rho1, rho2 in miter(l1, l2, a1, a2, b1, b2):
+        base_val = gaunt(l1, 0, a1, b1, m1, 0, nu1, rho1) * gaunt(l2, 0, a2, b2, m2, 0, nu2, rho2)
+        
+        if sub_term == 'ACBD':
+            val += base_val * gaunt((l1, l2, a1, a2, la), (m1, m2, nu1, nu2, ma)) * gaunt((0, 0, b1, b2, lb), (0, 0, rho1, rho2, mb))
+        elif sub_term == 'ADBC':
+            val += base_val * gaunt((l1,  0, a1, a2, la), (m1,  0, nu1, nu2, ma)) * gaunt((l2, 0, b1, b2, lb), (m2, 0, rho1, rho2, mb))
+
+    if val == 0.0:
+        return None
+
+    index = (l1//2, l2//2,
+             a1//2, a2//2, ellm_to_index(la, ma, mask_ellmax),
+             b1//2, b2//2, ellm_to_index(lb, mb, mask_ellmax))
+    
+    return index, val
+
+
+def double_spherical_bessel_transform(xbins, W, kedges, l1=0, l2=0, averaged=True):
+
+    xbins = np.asarray(xbins, float)
+    x = (xbins[1:] + xbins[:-1])/2
+    
+    W = np.asarray(W, float)
+    kedges = np.asarray(kedges, float)
+    
+    # 1. Compute integration weights over x
+    wx = np.diff(xbins) * x**2 * W
+    
+    # 2. Get the pre-averaged bessel functions for all k-bins and all x at once
+    # spherical_bessel returns shape (nbins, nx)
+    j1 = spherical_bessel(l1, x, kedges, averaged=averaged)
+    j2 = spherical_bessel(l2, x, kedges, averaged=averaged) if l2 != l1 else j1
+    
+    # 3. Contract the spatial dimension
+    return np.einsum('kx,qx,x->kq', j1, j2, wx)

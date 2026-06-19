@@ -172,8 +172,8 @@ def index_to_ellm(idx, ellmax, even_only=True, only_positive_m=False):
 
     Parameters
     ----------
-    idx : int
-        Flat index in [0, n_ellm(ellmax, even_only, only_positive_m)).
+    idx : int or array_like
+        Flat index (or array of indices) in [0, n_ellm(ellmax, even_only, only_positive_m)).
     ellmax : int
     even_only : bool, optional
         If True (default), only even ells are used.
@@ -182,22 +182,78 @@ def index_to_ellm(idx, ellmax, even_only=True, only_positive_m=False):
 
     Returns
     -------
-    (ell, m) : tuple of int
+    (ell, m) : tuple of int (or tuple of array_like)
     """
-    step = 2 if even_only else 1
-    ms = list(range(0, ellmax + 1))
-    if not only_positive_m:
-        ms += list(range(-1, -ellmax - 1, -1))
+    import numpy as np
 
-    count = 0
-    for mm in ms:
-        ell_min = abs(mm)
-        if even_only and ell_min % 2 != 0:
-            ell_min += 1
-        for ll in range(ell_min, ellmax + 1, step):
-            if count == idx:
-                return ll, mm
-            count += 1
-    raise IndexError(f'Index {idx} out of range for ellmax={ellmax}, '
-                     f'even_only={even_only}, only_positive_m={only_positive_m} '
-                     f'(max index is {count - 1})')
+    def _single_index_to_ellm(single_idx):
+        step = 2 if even_only else 1
+        ms = list(range(0, ellmax + 1))
+        if not only_positive_m:
+            ms += list(range(-1, -ellmax - 1, -1))
+
+        count = 0
+        for mm in ms:
+            ell_min = abs(mm)
+            if even_only and ell_min % 2 != 0:
+                ell_min += 1
+            for ll in range(ell_min, ellmax + 1, step):
+                if count == single_idx:
+                    return ll, mm
+                count += 1
+        raise IndexError(f'Index {single_idx} out of range for ellmax={ellmax}, '
+                         f'even_only={even_only}, only_positive_m={only_positive_m} '
+                         f'(max index is {count - 1})')
+
+    if isinstance(idx, (int, np.integer)):
+        return _single_index_to_ellm(idx)
+    
+    idx_array = np.asarray(idx)
+    vectorized_func = np.vectorize(_single_index_to_ellm, otypes=[int, int])
+    lls, mms = vectorized_func(idx_array)
+    return lls, mms
+
+def bin(r, mesh, rbins=None):
+    import numpy as np
+
+    # build adaptive rbins if not supplied
+    if rbins is None:
+        order    = np.argsort(r)
+        r_sorted = r[order]
+        w_sorted = mesh[order]
+
+        nrbins = max(10, 1.5*len(r)**(1/3))
+        min_weight = 0.1*mesh.sum() / nrbins
+
+        # Minimum bin width: r_max / nrbins, i.e. the width of a uniform bin
+        # across the full radial range. This prevents the peak from being
+        # over-resolved relative to a simple uniform grid with the same nrbins.
+        min_dr = r_sorted[-1] / nrbins
+
+        # Greedy forward pass: cut only when *both* the weight threshold is met
+        # *and* the bin is at least min_dr wide. This smooths the peak (where
+        # weight builds up fast) without widening the already-wide tail bins.
+        edges = [0.0]
+        cumw  = 0.0
+        for i in range(len(r_sorted)):
+            cumw += w_sorted[i]
+            bin_width = r_sorted[i] - edges[-1]
+            if cumw >= min_weight and bin_width >= min_dr and i < len(r_sorted) - 1:
+                edges.append(0.5 * (r_sorted[i] + r_sorted[i + 1]))
+                cumw = 0.0
+        edges.append(r_sorted[-1] * (1.0 + 1e-9))
+        rbins = np.array(edges)
+        
+    rbins = np.array(rbins, dtype=float)
+    rbins[0]  = 0.0
+    rbins[-1] = r.max() * (1.0 + 1e-9)
+
+    # np.digitize returns 1-based indices; subtract 1 → 0-based, then clip
+    # to guarantee indices lie in [0, len(rbins)-2] (i.e. N = len(rbins)-1 bins)
+    d = np.clip(np.digitize(r, rbins) - 1, 0, len(rbins) - 2)
+    W = np.bincount(d, weights=mesh, minlength=len(rbins) - 1)
+
+    # Normalise by bin width so W is comparable across adaptive bins
+    W = W / np.diff(rbins)
+
+    return W, rbins
