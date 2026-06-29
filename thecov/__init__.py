@@ -10,5 +10,6 @@ __version__ = "0.1.0"
 __author__ = 'Otavio Alves'
 __credits__ = 'Dark Energy Spectroscopic Instrument'
 
-from .geometry import BoxGeometry, SurveyGeometry
-from .covariance import GaussianCovariance
+from .geometry import SingleTracerSurveyGeometry, MultiTracerSurveyGeometry
+from .covariance import SingleTracerGaussianCovariance, MultiTracerGaussianCovariance
+from .base import LinearBinning, LogarithmicBinning

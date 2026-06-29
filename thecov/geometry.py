@@ -53,12 +53,24 @@ class Randoms():
                        nz_weight=np.concatenate([self.nz_weight, other.nz_weight]),
                        weight=np.concatenate([self.weight, other.weight]))
 
-class SurveyGeometry(base.LinearBinning):
+    @property
+    def shape(self):
+        return self.pos.shape[0]
+    
+class SurveyGeometry:
 
-    def __init__(self):
-        base.LinearBinning.__init__(self)
+    def __init__(self, binning=None):
+        if binning is None:
+            self.binning = base.LinearBinning()
+        else:
+            self.binning = binning
 
         self.logger = logging.getLogger('SurveyGeometry')
+
+    def __getattr__(self, name):
+        if hasattr(self.binning, name):
+            return getattr(self.binning, name)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -76,9 +88,9 @@ class SurveyGeometry(base.LinearBinning):
 
 class SingleTracerSurveyGeometry(SurveyGeometry):
 
-    def __init__(self, randoms_pos, randoms_nz=None, randoms_nz_weight=1, randoms_weight=1, ellmax=4):
+    def __init__(self, randoms_pos, randoms_nz=None, randoms_nz_weight=1, randoms_weight=1, ellmax=4, binning=None):
 
-        SurveyGeometry.__init__(self)
+        SurveyGeometry.__init__(self, binning=binning)
 
         self.randoms = Randoms(pos=randoms_pos,
                                nz=randoms_nz,
@@ -98,10 +110,10 @@ class SingleTracerSurveyGeometry(SurveyGeometry):
         return self._window_matrix[0]
 
     def compute_window_matrix(self, nchunks=4, nthreads=None):
-        order  = np.random.permutation(self.randoms.pos.shape[1])
+        order  = np.random.permutation(self.randoms.shape)
         chunks = [self.randoms[idx] for idx in np.array_split(order, nchunks)]
 
-        self.logger.info(f"Computing window matrices using {len(chunks)} chunks of {len(chunks[0])} randoms processed by {nthreads} threads.")
+        self.logger.info(f"Computing window matrices using {len(chunks)} chunks of {chunks[0].shape} randoms processed by {nthreads} threads.")
 
         import multiprocessing
         from functools import partial
@@ -128,9 +140,10 @@ class SingleTracerSurveyGeometry(SurveyGeometry):
     def _compute_window_matrix(kedges, randoms, ellmax=4):
         power_configs = [(2, 2), (1, 2)]
         nus   = list(range(0, ellmax + 1, 2))
-        ellms = [(ell, m) for ell in range(0, ellmax + 1, 2) for m in range(-ell, ell + 1)]
 
-        r2      = (randoms.pos**2).sum(axis=1)                                            # [N]
+        ellms = [utils.index_to_ellm(i, ellmax=ellmax) for i in range(utils.n_ellm(ellmax))]
+
+        r2      = (randoms.pos**2).sum(axis=1)**0.5                                   # [N]
         bessels = 4*np.pi *  np.stack([math.spherical_bessel(nu, r2, kedges) * np.real((- 1j)**(nu)) for nu in nus])      # [nu, k, N]
         Ylm     = np.stack([math.Ylm(ell, m)(*randoms.pos.T) for ell, m in ellms])    # [ellm, N]
 
@@ -150,9 +163,9 @@ class SingleTracerSurveyGeometry(SurveyGeometry):
         return results
 
     def normalization(self, nbar_power, weight_power):
-        return (self._randoms_nz**(nbar_power-1) * \
-                self._randoms_weight**(weight_power) * \
-                self._randoms_nz_weight).sum().tolist()
+        return (self.randoms.nz**(nbar_power-1) * \
+                self.randoms.weight**(weight_power) * \
+                self.randoms.nz_weight).sum().tolist()
 
 
 class MultiTracerSurveyGeometry(SurveyGeometry):
@@ -176,7 +189,7 @@ class MultiTracerSurveyGeometry(SurveyGeometry):
         self._window_matrix = None
 
     @lru_cache
-    def compute_window_profile(self, ell, m, nmesh=512, boxsize=None, boxpad=None):
+    def compute_window_profile(self, ell, m, nmesh=512, boxsize=None, boxpad=None, rbins=None):
         """Compute the window radial profile for nbar**nbar_power * weight**weight_power * Y_lm.
 
         Build a mesh from the random catalog weighted by nbar and weight powers and
@@ -236,7 +249,7 @@ class MultiTracerSurveyGeometry(SurveyGeometry):
 
         W, rbins = utils.bin(
             r=np.sqrt(sum((x.real**2 for x in mesh.x))).ravel(),
-            mesh=np.abs(mesh).ravel(),
+            mesh=mesh.real.ravel(),
             rbins=rbins)
 
         return W, rbins
@@ -248,7 +261,7 @@ class MultiTracerSurveyGeometry(SurveyGeometry):
 
         # output: [ellm, nu1, nu2, k1, k2]
         nus = list(range(0, self.ellmax + 1, 2))
-        ellms = [(ell, m) for ell in range(0, self.ellmax + 1, 2) for m in range(-ell, ell + 1)]
+        ellms = [utils.index_to_ellm(i, ellmax=self.ellmax) for i in range(utils.n_ellm(self.ellmax))]
         
         # Initialize output array
         # Shape: [ellm, nu1, nu2, k1, k2]
@@ -290,9 +303,25 @@ class MultiTracerSurveyGeometry(SurveyGeometry):
         for i_nu1, nu1 in enumerate(nus):
             for i_nu2, nu2 in enumerate(nus):
                 result[i_nu1, i_nu2] = \
-                    math.double_spherical_bessel(xbins=rbins, W=W, kedges=kedges, l1=nu1, l2=nu2)
-                
+                    math.double_spherical_bessel_transform(xbins=rbins, W=W, kedges=kedges, l1=nu1, l2=nu2)
+
         return i_ellm, result
+
+    def normalization(self):
+        """Cross FKP normalization I_AB for the two-tracer window.
+
+        Returns the geometric mean sqrt(I_AA * I_BB) of the two single-tracer
+        normalizations I_XX = sum(nbar_X * w_X^2 * w_sys_X), consistent with
+        SingleTracerSurveyGeometry.normalization(2, 2).
+
+        NOTE: the geometric mean is an approximation to the true cross
+        normalization int(nbar_A nbar_B w_A w_B d^3r), which requires both
+        number densities sampled on a common set of points. Validate against
+        the reference (cosmodesi/thecov) before using cross blocks for science.
+        """
+        I1 = (self.randoms1.nz * self.randoms1.weight**2 * self.randoms1.nz_weight).sum()
+        I2 = (self.randoms2.nz * self.randoms2.weight**2 * self.randoms2.nz_weight).sum()
+        return float(np.sqrt(I1 * I2))
 
     @property
     def window_matrix(self):

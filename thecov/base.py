@@ -830,7 +830,7 @@ class LinearBinning(Binning, BaseClass):
         The volume of the survey/box (used for nmodes calculation).
     '''
 
-    def __init__(self, kmin=None, kmax=None, dk=None, volume=None):
+    def __init__(self, kmin=None, kmax=None, dk=None, boxsize=None):
         '''Initialize a LinearBinning object.
         
         Parameters
@@ -841,14 +841,14 @@ class LinearBinning(Binning, BaseClass):
             The maximum value of the wavenumber k.
         dk : float, optional
             The spacing between k-bins.
-        volume : float, optional
-            The volume of the survey/box.
+        boxsize : float, optional
+            The size of the survey/box.
         '''
         super().__init__()
         self.kmin = kmin
         self.kmax = kmax
         self.dk = dk
-        self.volume = volume
+        self.boxsize = boxsize
 
     def __getstate__(self):
         '''Get state for pickling.'''
@@ -984,15 +984,15 @@ class LinearBinning(Binning, BaseClass):
         Raises
         ------
         ValueError
-            If volume is not set and nmodes was not manually set.
+            If boxsize is not set and nmodes was not manually set.
         '''
         if hasattr(self, '_nmodes') and self._nmodes is not None:
             return self._nmodes
-        
-        if self.volume is None:
-            raise ValueError("volume must be set to compute nmodes")
 
-        return math.nmodes(self.volume, self.edges[:-1], self.edges[1:])
+        if self.boxsize is None:
+            raise ValueError("boxsize must be set to compute nmodes")
+
+        return math.nmodes(self.boxsize, self.edges[:-1], self.edges[1:])
 
     @nmodes.setter
     def nmodes(self, nmodes):

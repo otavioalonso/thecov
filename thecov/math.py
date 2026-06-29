@@ -28,6 +28,68 @@ def fgrowth(Omega_m, z):
           (11*Omega_m*(1+z)**3*hyp2f1(1/3., 1, 11/6., (1-1/Omega_m)/(1+z)**3) ))
 
 
+def nmodes(boxsize, kmin, kmax, exact_threshold=100):
+    '''Compute the number of Fourier modes in a spherical k-shell.
+
+    For large shells, approaches the continuous limit: V/(6 pi^2) (kmax^3 - kmin^3).
+    For low k (dominated by box discreteness), counts exactly the number of modes
+    on the fundamental regular grid k_f = 2pi / L.
+
+    Parameters
+    ----------
+    boxsize : float or array_like
+        Side length(s) of the box. Can be a scalar for a cubic box, or an array of length 3.
+    kmin : float or array_like
+        Lower edge(s) of the shell.
+    kmax : float or array_like
+        Upper edge(s) of the shell.
+    exact_threshold : int, optional
+        Maximum radius in units of fundamental mode kf up to which exact 
+        discrete counting is performed. Bins above this use the continuous 
+        integral. Default is 100.
+
+    Returns
+    -------
+    float or ndarray
+        Number of modes in the shell.
+    '''
+    is_scalar = np.ndim(kmin) == 0
+    kmin_arr = np.atleast_1d(kmin)
+    kmax_arr = np.atleast_1d(kmax)
+    boxsize_arr = np.atleast_1d(boxsize)
+    
+    if len(boxsize_arr) == 1:
+        volume = boxsize_arr[0]**3
+        kfun = np.full(3, 2 * np.pi / boxsize_arr[0])
+    elif len(boxsize_arr) == 3:
+        volume = np.prod(boxsize_arr)
+        kfun = 2 * np.pi / boxsize_arr
+    else:
+        raise ValueError("boxsize must be a scalar or an array of length 3")
+        
+    continuous = volume / 3. / (2 * np.pi**2) * (kmax_arr**3 - kmin_arr**3)
+    modes = np.copy(continuous)
+    
+    kfun_min = np.min(kfun)
+    exact_mask = (kmax_arr / kfun_min) < exact_threshold
+    
+    if np.any(exact_mask):
+        R_max_grid = np.ceil(np.max(kmax_arr[exact_mask]) / kfun).astype(int)
+        nx = np.arange(-R_max_grid[0], R_max_grid[0] + 1) * kfun[0]
+        ny = np.arange(-R_max_grid[1], R_max_grid[1] + 1) * kfun[1]
+        nz = np.arange(-R_max_grid[2], R_max_grid[2] + 1) * kfun[2]
+        
+        r2 = nx[:, None, None]**2 + ny[None, :, None]**2 + nz[None, None, :]**2
+        r = np.sqrt(r2.ravel())
+        
+        for i in np.where(exact_mask)[0]:
+            modes[i] = np.sum((r >= kmin_arr[i]) & (r < kmax_arr[i]))
+            
+    if is_scalar:
+        return modes[0]
+    return modes
+
+
 
 
 @lru_cache(maxsize=None)
@@ -157,27 +219,36 @@ def spherical_bessel(nu, r, kedges, averaged=True):
     if averaged:
         norm = 3/(kmax**3 - kmin**3) # 1/Integrate[k^2, {k, kmin, kmax}]
 
-        # Result of ToString[FortranForm[Simplify[
-        #             Integrate[k^2 * SphericalBesselJ[nu, k*x], {k, kmin, kmax}],
-        #             Assumptions->Element[{k, x}, PositiveReals]]]]
-        if nu == 0:
-            result = (-(kmax*x*Cos(kmax*x)) + kmin*x*Cos(kmin*x) + Sin(kmax*x) - Sin(kmin*x))/x**3
-        elif nu == 1:
-            result = (-2*Cos(kmax*x) + 2*Cos(kmin*x) - kmax*x*Sin(kmax*x) + kmin*x*Sin(kmin*x))/x**3
-        elif nu == 2:
-            result = (kmax*x*Cos(kmax*x) - kmin*x*Cos(kmin*x) - 4*Sin(kmax*x) + 4*Sin(kmin*x) + 3*SinIntegral(kmax*x) - 3*SinIntegral(kmin*x))/x**3
-        elif nu == 3:
-            result = ((-15*Sin(kmax*x))/kmax + (15*Sin(kmin*x))/kmin + x*(7*Cos(kmax*x) - 7*Cos(kmin*x) + kmax*x*Sin(kmax*x) - kmin*x*Sin(kmin*x)))/x**4
-        elif nu == 4:
-            result = ((105*x*Cos(kmax*x))/kmax - 2*kmax*x**3*Cos(kmax*x) - (105*x*Cos(kmin*x))/kmin + 2*kmin*x**3*Cos(kmin*x) - (105*Sin(kmax*x))/kmax**2 + 22*x**2*Sin(kmax*x) + (105*Sin(kmin*x))/kmin**2 - 22*x**2*Sin(kmin*x) + 15*x**2*SinIntegral(kmax*x) - 15*x**2*SinIntegral(kmin*x))/(2.*x**5)
-        elif nu == 5:
-            result = (kmax*kmin**3*x*(315 - 16*kmax**2*x**2)*Cos(kmax*x) - kmin**3*(315 - 105*kmax**2*x**2 + kmax**4*x**4)*Sin(kmax*x) + kmax**3*(kmin*x*(-315 + 16*kmin**2*x**2)*Cos(kmin*x) + (315 - 105*kmin**2*x**2 + kmin**4*x**4)*Sin(kmin*x)))/(kmax**3*kmin**3*x**6)
-        elif nu == 6:
-            result = ((20790*x*Cos(kmax*x))/kmax**3 - (1575*x**3*Cos(kmax*x))/kmax + 8*kmax*x**5*Cos(kmax*x) - (20790*x*Cos(kmin*x))/kmin**3 + (1575*x**3*Cos(kmin*x))/kmin - 8*kmin*x**5*Cos(kmin*x) - (20790*Sin(kmax*x))/kmax**4 + (8505*x**2*Sin(kmax*x))/kmax**2 - 176*x**4*Sin(kmax*x) + (20790*Sin(kmin*x))/kmin**4 - (8505*x**2*Sin(kmin*x))/kmin**2 + 176*x**4*Sin(kmin*x) + 105*x**4*SinIntegral(kmax*x) - 105*x**4*SinIntegral(kmin*x))/(8.*x**7)
-        else:
-            raise ValueError("Unsupported nu value for averaged spherical Bessel function")
+        # Bin-averaged j_nu computed as norm * (H(kmax) - H(kmin)), where
+        #     H_nu(k, x) = Integrate[k'^2 SphericalBesselJ[nu, k' x], {k', 0, k}]
+        # is the antiderivative *normalised to vanish at k=0*. Evaluating each
+        # edge separately (instead of the combined kmin/kmax closed form) keeps
+        # the k_min=0 edge finite: the combined forms for nu>=3 carry spurious
+        # 1/kmin, 1/kmin**2 terms that cancel analytically but produce NaN when
+        # a bin starts at k=0. H is guarded so H(0)=0 exactly. Verified against
+        # scipy.integrate.quad for nu=0..6 including kmin=0.
+        def H(ke):
+            ks = jnp.where(ke == 0, 1.0, ke)  # guard bare-k denominators
+            kx = ks * x
+            if nu == 0:
+                h = (-kx*Cos(kx) + Sin(kx))/x**3
+            elif nu == 1:
+                h = (-kx*Sin(kx) - 2*Cos(kx) + 2)/x**3
+            elif nu == 2:
+                h = (kx*Cos(kx) - 4*Sin(kx) + 3*SinIntegral(kx))/x**3
+            elif nu == 3:
+                h = (ks**2*x**2*Sin(kx) + kx*(7*Cos(kx) + 8) - 15*Sin(kx))/(ks*x**4)
+            elif nu == 4:
+                h = (-2*ks**3*x**3*Cos(kx) + ks**2*x**2*(22*Sin(kx) + 15*SinIntegral(kx)) + 105*kx*Cos(kx) - 105*Sin(kx))/(2*ks**2*x**5)
+            elif nu == 5:
+                h = (-ks**4*x**4*Sin(kx) + 16*ks**3*x**3*(1 - Cos(kx)) + 105*ks**2*x**2*Sin(kx) + 315*kx*Cos(kx) - 315*Sin(kx))/(ks**3*x**6)
+            elif nu == 6:
+                h = (8*ks**5*x**5*Cos(kx) + ks**4*x**4*(-176*Sin(kx) + 105*SinIntegral(kx)) - 1575*ks**3*x**3*Cos(kx) + 8505*ks**2*x**2*Sin(kx) + 20790*kx*Cos(kx) - 20790*Sin(kx))/(8*ks**4*x**7)
+            else:
+                raise ValueError("Unsupported nu value for averaged spherical Bessel function")
+            return jnp.where(ke == 0, 0.0, h)
 
-        return jnp.where(mask, limit, norm * result)
+        return jnp.where(mask, limit, norm * (H(kmax) - H(kmin)))
 
     else:
         # Evaluate j_nu at the bin midpoint kmid = (kmin + kmax) / 2
@@ -315,8 +386,8 @@ def _gaunt_mixed_worker(args):
 
     val = 0.0
     for m1, m2, M, nu1, nu2, rho1, rho2 in miter(l1, l2, L, a1, a2, b1, b2):
-        base_val = gaunt(l1, 0, a1, b1, m1, 0, nu1, rho1) * gaunt(l2, L, a2, b2, m2, 0, nu2, rho2)
-        
+        base_val = gaunt((l1, 0, a1, b1), (m1, 0, nu1, rho1)) * gaunt((l2, L, a2, b2), (m2, 0, nu2, rho2))
+
         if sub_term == 'ACBD':
             val += base_val * gaunt((l1, l2, a1, a2, la), (m1, m2, nu1, nu2, ma)) * gaunt((0,  L, b1, b2, lb), (0,  M, rho1, rho2, mb))
         elif sub_term == 'ADBC':
@@ -344,8 +415,8 @@ def _gaunt_shotnoise_worker(args):
 
     val = 0.0
     for m1, m2, nu1, nu2, rho1, rho2 in miter(l1, l2, a1, a2, b1, b2):
-        base_val = gaunt(l1, 0, a1, b1, m1, 0, nu1, rho1) * gaunt(l2, 0, a2, b2, m2, 0, nu2, rho2)
-        
+        base_val = gaunt((l1, 0, a1, b1), (m1, 0, nu1, rho1)) * gaunt((l2, 0, a2, b2), (m2, 0, nu2, rho2))
+
         if sub_term == 'ACBD':
             val += base_val * gaunt((l1, l2, a1, a2, la), (m1, m2, nu1, nu2, ma)) * gaunt((0, 0, b1, b2, lb), (0, 0, rho1, rho2, mb))
         elif sub_term == 'ADBC':
@@ -369,13 +440,17 @@ def double_spherical_bessel_transform(xbins, W, kedges, l1=0, l2=0, averaged=Tru
     W = np.asarray(W, float)
     kedges = np.asarray(kedges, float)
     
-    # 1. Compute integration weights over x
+    # Compute integration weights over x
     wx = np.diff(xbins) * x**2 * W
-    
-    # 2. Get the pre-averaged bessel functions for all k-bins and all x at once
+
+    # Get the pre-averaged bessel functions for all k-bins and all x at once
     # spherical_bessel returns shape (nbins, nx)
     j1 = spherical_bessel(l1, x, kedges, averaged=averaged)
     j2 = spherical_bessel(l2, x, kedges, averaged=averaged) if l2 != l1 else j1
-    
-    # 3. Contract the spatial dimension
-    return np.einsum('kx,qx,x->kq', j1, j2, wx)
+
+    # Apply the plane-wave expansion prefactor 4*pi*(-i)^l per Bessel leg
+    fac1 = 4 * np.pi * np.real((-1j)**l1)
+    fac2 = 4 * np.pi * np.real((-1j)**l2)
+
+    # Contract the spatial dimension
+    return fac1 * fac2 * np.einsum('kx,qx,x->kq', j1, j2, wx)
