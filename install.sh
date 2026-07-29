@@ -4,6 +4,7 @@ set -e  # Exit on error
 OS=$(uname -s)
 ARCH=$(uname -m)
 
+export PYTHONNOUSERSITE=1
 ENVNAME="${1:-thecov}"
 echo ENVNAME="$ENVNAME"
 
@@ -29,8 +30,7 @@ elif [[ "$OS" == "Darwin" ]]; then
         export CPPFLAGS="-I${LIBOMP_PREFIX}/include ${CPPFLAGS:-}"
         export CFLAGS="-I${LIBOMP_PREFIX}/include ${CFLAGS:-}"
         export CXXFLAGS="-I${LIBOMP_PREFIX}/include ${CXXFLAGS:-}"
-        export LDFLAGS="-L${LIBOMP_PREFIX}/lib -Wl,-rpath,${LIBOMP_PREFIX}/lib ${LDFLAGS:-} -lfftw3_threads -lfftw3"
-        # -lfftw3_threads -lfftw3"
+        export LDFLAGS="-L${LIBOMP_PREFIX}/lib -Wl,-rpath,${LIBOMP_PREFIX}/lib ${LDFLAGS:-}"
 
         # Prefer Homebrew LLVM clang if installed (supports -fopenmp)
         if [ -x "$(brew --prefix llvm)/bin/clang" ]; then
@@ -74,8 +74,15 @@ echo "Creating new anaconda environment..."
 conda create -n "$ENVNAME" python=3.11 "numpy<2.0" -y --platform $PLATFORM
 conda activate "$ENVNAME"
 
-conda install -c conda-forge -y openmpi mpi4py matplotlib fftw jupyter
+export MPICC="$CONDA_PREFIX/bin/mpicc"   # don't depend on PATH order
+export OMPI_CC="${CC:-clang}"            # conda's wrapper wants arm64-apple-darwin20.0.0-clang
+export OMPI_CXX="${CXX:-clang++}"
+conda install -c conda-forge -y openmpi mpi4py matplotlib fftw jupyter pytest pytest-mpi
 
+if [[ "$PLATFORM" == "osx-arm64" ]]; then
+    echo "Installing pfft-python with CFLAGS to avoid OpenMP issues on macOS..."
+    env -u CFLAGS -u CC -u CXX python -m pip install pfft-python==0.1.24
+fi
 echo "Done! installing thecov..."
 python -m pip install -e .
 

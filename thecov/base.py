@@ -580,7 +580,7 @@ class MultipoleMultiTracerCovariance(Covariance):
         size1 = cov.shape[0]//len(ells1)
         size2 = cov.shape[1]//len(ells2)
 
-        num_spectra = self.num_tracers * (self.num_tracers + 1) // 2
+        num_spectra = self.num_tracer_combos * (self.num_tracer_combos + 1) // 2
         for (i, l1), (j, l2) in itt.product(enumerate(ells1), enumerate(ells2)):
             for (t1, t2) in itt.product(range(num_spectra), repeat=2):
                 row_start = (t1 * len(ells1) + i) * self._mshape[0]
@@ -596,11 +596,10 @@ class MultipoleMultiTracerCovariance(Covariance):
 
         cov = MultipoleMultiTracerCovariance(symmetric=self.symmetric and y.symmetric)
         ells1, ells2 = self.ells
-        print(ells1, ells2)
         for l1 in ells1:
             for l2 in ells2:
-                for t1 in range(self.num_tracers):
-                    for t2 in range(self.num_tracers):
+                for t1 in range(self.num_tracer_combos):
+                    for t2 in range(self.num_tracer_combos):
                         cov.set_ell_tracer_cov(l1,l2, t1, t2, self.get_ell_tracer_cov(l1,l2, t1, t2) + y.get_ell_tracer_cov(l1,l2, t1, t2))
         return cov
 
