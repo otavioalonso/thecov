@@ -59,12 +59,17 @@ class Tracer:
         r = d[:, -1]
         return self.alpha * k / (4.0 / 3.0 * np.pi * r ** 3)
 
+    def nbar_w_at(self, positions: np.ndarray):
+        """(nbar(x), w(x)) of this tracer at arbitrary positions (nearest random)."""
+        if positions is self.pos:
+            return self.nbar, self.w
+        _, idx = self.tree.query(positions, k=1)
+        return self.nbar[idx], self.w[idx]
+
     def nw_at(self, positions: np.ndarray) -> np.ndarray:
         """nbar(x) * w(x) of this tracer at arbitrary positions (nearest random)."""
-        if positions is self.pos:
-            return self.nbar * self.w
-        _, idx = self.tree.query(positions, k=1)
-        return self.nbar[idx] * self.w[idx]
+        nb, w = self.nbar_w_at(positions)
+        return nb * w
 
     def subsample_indices(self, n: int, seed: int = 0) -> np.ndarray:
         key = (n, seed)
@@ -109,9 +114,23 @@ class Window:
             return A.w * B.nw_at(A.pos)
         return (1.0 + A.alpha) * A.w ** 2
 
+    def value_at(self, positions: np.ndarray) -> np.ndarray:
+        """omega(x) at arbitrary positions (nearest-random interpolation of nbar and w)."""
+        if self.kind == 'W':
+            A, B = self.tracers
+            return A.nw_at(positions) * B.nw_at(positions)
+        A = self.host
+        nb, w = A.nbar_w_at(positions)
+        return (1.0 + A.alpha) * nb * w ** 2
+
     def integral(self) -> float:
         """int d^3x omega(x)  (e.g. I_AB for kind 'W')."""
         return self.host.alpha * float(np.sum(self.tilde_weights()))
+
+    def overlap_integral(self, other: "Window") -> float:
+        """int d^3x omega(x) omega'(x): the s -> 0 anchor of the window pair function."""
+        A = self.host
+        return A.alpha * float(np.sum(self.tilde_weights() * other.value_at(A.pos)))
 
     def sample(self, n_sub: int, seed: int = 0):
         """(positions, tilde weights, effective alpha) of a subsample of the host randoms."""

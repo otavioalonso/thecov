@@ -7,31 +7,51 @@ Implements eq. Q-pairs of the note:
 
 S is evaluated in the frame where s^ is the polar axis (harmonics.tripolar_frame_weights), so
 that only two associated-Legendre tables and cos(mu * dphi) are needed per pair.
+
+Sampling strategy
+-----------------
+* far pairs (s >= s_split): all pairs of a random subsample of n_sub points per window;
+* near pairs (s <  s_split): KD-tree neighbour search on a much larger subsample (n_near), where
+  the far subsample would contain too few pairs (their number grows as s^2 ds);
+* s = 0: the exact one-point anchor Q(0) = sqrt(4 pi) delta_{Lam 0} delta_{Lam1 Lam2}
+  sqrt(2 Lam1 + 1) / (4 pi) * int d^3x omega omega', which needs no pairs at all
+  (Window.overlap_integral).
+The radial spline through the bin values uses only bins with at least `min_pairs` pairs plus the
+anchors at s = 0 and s = s_max.
 """
 from __future__ import annotations
 
+import math
 import time
 
 import numpy as np
 from scipy.interpolate import CubicSpline
+from scipy.spatial import cKDTree
 
 from .harmonics import normalized_legendre, cos_dphi, cos_multiples, tripolar_frame_weights, unit_vectors
 from .tracers import Window
+from .wigner import FOUR_PI
 
 
 class TripolarWindow:
     """Pair-count estimate of Q^{omega omega'}_{Lam1 Lam2 Lam}(s) for a set of triples."""
 
     def __init__(self, omega: Window, omega_p: Window, triples, s_edges: np.ndarray,
-                 n_sub: int = 5000, seed: int = 0, chunk_pairs: int = 40000):
+                 n_sub: int = 5000, n_near: int = 200000, s_split: float = 80.0,
+                 seed: int = 0, chunk_pairs: int = 40000, min_pairs: int = 20):
         self.omega = omega
         self.omega_p = omega_p
         self.triples = sorted(set(tuple(int(x) for x in t) for t in triples))
         self.s_edges = np.asarray(s_edges, dtype=float)
         self.n_sub = int(n_sub)
+        self.n_near = int(n_near)
+        self.s_split = float(s_split)
         self.seed = int(seed)
         self.chunk_pairs = int(chunk_pairs)
-        self.Q = None  # dict triple -> array over s bins
+        self.min_pairs = int(min_pairs)
+        self.Q = None          # dict triple -> array over s bins
+        self.npairs = None     # pairs per s bin actually used
+        self.Q0 = None         # dict triple -> exact value at s = 0
         self._splines = {}
 
     # ------------------------------------------------------------------
@@ -39,71 +59,122 @@ class TripolarWindow:
     def s_centers(self) -> np.ndarray:
         return 0.5 * (self.s_edges[1:] + self.s_edges[:-1])
 
-    def compute(self, verbose: bool = False):
+    def _groups(self):
+        groups = {}
+        for (L1, L2, L) in self.triples:
+            groups.setdefault((L1, L2), []).append(L)
+        Wmats = {k: tripolar_frame_weights(k[0], k[1], v) for k, v in groups.items()}
+        return groups, Wmats
+
+    def _accumulate(self, x1, x2, wpair, d, groups, Wmats, acc, npairs):
+        """Add the contribution of the pairs (x1[i] -> x2[i]) with separation vectors d[i]."""
+        nb = len(self.s_edges) - 1
+        s = np.linalg.norm(d, axis=-1)
+        shat = d / s[:, None]
+        c1 = np.einsum('ij,ij->i', x1, shat)
+        c2 = np.einsum('ij,ij->i', x2, shat)
+        cx = np.einsum('ij,ij->i', x1, x2)
+        lmax1 = max(k[0] for k in groups)
+        lmax2 = max(k[1] for k in groups)
+        mumax = max(min(k) for k in groups)
+        cm = cos_multiples(cos_dphi(c1, c2, cx), mumax)
+        P1 = normalized_legendre(c1, lmax1)
+        P2 = normalized_legendre(c2, lmax2)
+        ib = np.digitize(s, self.s_edges) - 1
+        ok = (ib >= 0) & (ib < nb)
+        npairs += np.bincount(ib[ok], minlength=nb)
+        for (L1, L2), Ls in groups.items():
+            mm = min(L1, L2)
+            A = (P1[L1, :mm + 1] * P2[L2, :mm + 1] * cm[:mm + 1]).T
+            S = A @ Wmats[(L1, L2)]
+            for j, L in enumerate(Ls):
+                acc[(L1, L2, L)] += np.bincount(ib[ok], weights=(wpair * S[:, j])[ok], minlength=nb)
+
+    def _far_pairs(self, groups, Wmats, verbose):
         pos1, tw1, a1 = self.omega.sample(self.n_sub, self.seed)
         pos2, tw2, a2 = self.omega_p.sample(self.n_sub, self.seed)
         xhat1, xhat2 = unit_vectors(pos1), unit_vectors(pos2)
         n1, n2 = len(pos1), len(pos2)
         nb = len(self.s_edges) - 1
-        smax = self.s_edges[-1]
-
-        # group triples by (Lam1, Lam2)
-        groups = {}
-        for (L1, L2, L) in self.triples:
-            groups.setdefault((L1, L2), []).append(L)
-        Wmats = {k: tripolar_frame_weights(k[0], k[1], v) for k, v in groups.items()}
-        lmax1 = max(k[0] for k in groups)
-        lmax2 = max(k[1] for k in groups)
-        mumax = max(min(k) for k in groups)
         acc = {t: np.zeros(nb) for t in self.triples}
-
+        npairs = np.zeros(nb)
         step = max(1, self.chunk_pairs // n2)
         t0 = time.time()
         for i0 in range(0, n1, step):
             i1 = min(n1, i0 + step)
-            d = pos2[None, :, :] - pos1[i0:i1, None, :]              # (c, n2, 3)
+            d = pos2[None, :, :] - pos1[i0:i1, None, :]
             s = np.linalg.norm(d, axis=-1)
-            keep = (s > 0) & (s < smax)
+            keep = (s >= self.s_split) & (s < self.s_edges[-1])
             if not np.any(keep):
                 continue
-            shat = (d / np.where(s > 0, s, 1.0)[..., None])[keep]
-            s = s[keep]
             x1 = np.broadcast_to(xhat1[i0:i1, None, :], d.shape)[keep]
             x2 = np.broadcast_to(xhat2[None, :, :], d.shape)[keep]
-            wpair = (tw1[i0:i1, None] * tw2[None, :])[keep]
-            c1 = np.einsum('ij,ij->i', x1, shat)
-            c2 = np.einsum('ij,ij->i', x2, shat)
-            cx = np.einsum('ij,ij->i', x1, x2)
-            cm = cos_multiples(cos_dphi(c1, c2, cx), mumax)          # (mumax+1, npairs)
-            P1 = normalized_legendre(c1, lmax1)                       # (lmax1+1, lmax1+1, npairs)
-            P2 = normalized_legendre(c2, lmax2)
-            ib = np.digitize(s, self.s_edges) - 1
-            ok = (ib >= 0) & (ib < nb)
-            for (L1, L2), Ls in groups.items():
-                mm = min(L1, L2)
-                A = (P1[L1, :mm + 1] * P2[L2, :mm + 1] * cm[:mm + 1]).T   # (npairs, mm+1)
-                S = A @ Wmats[(L1, L2)]                                   # (npairs, nL)
-                for j, L in enumerate(Ls):
-                    acc[(L1, L2, L)] += np.bincount(ib[ok], weights=(wpair * S[:, j])[ok], minlength=nb)
-            if verbose and (i0 // step) % 20 == 0:
-                print(f"  pairs {self.omega.key} x {self.omega_p.key}: {i1}/{n1} primaries, {time.time()-t0:.1f}s")
+            w = (tw1[i0:i1, None] * tw2[None, :])[keep]
+            self._accumulate(x1, x2, w, d[keep], groups, Wmats, acc, npairs)
+            if verbose and (i0 // step) % 50 == 0:
+                print(f"  far pairs {self.omega.key} x {self.omega_p.key}: {i1}/{n1}, {time.time() - t0:.1f}s")
+        return acc, npairs, a1 * a2
 
+    def _near_pairs(self, groups, Wmats, verbose):
+        pos1, tw1, a1 = self.omega.sample(self.n_near, self.seed)
+        pos2, tw2, a2 = self.omega_p.sample(self.n_near, self.seed)
+        xhat1, xhat2 = unit_vectors(pos1), unit_vectors(pos2)
+        tree2 = cKDTree(pos2)
+        nb = len(self.s_edges) - 1
+        acc = {t: np.zeros(nb) for t in self.triples}
+        npairs = np.zeros(nb)
+        step = 2000
+        t0 = time.time()
+        for i0 in range(0, len(pos1), step):
+            i1 = min(len(pos1), i0 + step)
+            lists = tree2.query_ball_point(pos1[i0:i1], r=self.s_split)
+            lens = np.array([len(l) for l in lists])
+            if lens.sum() == 0:
+                continue
+            i = np.repeat(np.arange(i0, i1), lens)
+            j = np.concatenate([np.asarray(l, dtype=int) for l in lists])
+            d = pos2[j] - pos1[i]
+            keep = np.linalg.norm(d, axis=-1) > 0
+            i, j, d = i[keep], j[keep], d[keep]
+            self._accumulate(xhat1[i], xhat2[j], tw1[i] * tw2[j], d, groups, Wmats, acc, npairs)
+            if verbose and (i0 // step) % 20 == 0:
+                print(f"  near pairs {self.omega.key} x {self.omega_p.key}: {i1}/{len(pos1)}, {time.time() - t0:.1f}s")
+        return acc, npairs, a1 * a2
+
+    def compute(self, verbose: bool = False):
+        groups, Wmats = self._groups()
         vol = (self.s_edges[1:] ** 3 - self.s_edges[:-1] ** 3) / 3.0
-        self.Q = {t: a1 * a2 * a / vol for t, a in acc.items()}
+        near = self.s_edges[1:] <= self.s_split + 1e-9
+        acc_f, np_f, norm_f = self._far_pairs(groups, Wmats, verbose)
+        self.Q = {t: norm_f * acc_f[t] / vol for t in self.triples}
+        self.npairs = np_f.copy()
+        if np.any(near):
+            acc_n, np_n, norm_n = self._near_pairs(groups, Wmats, verbose)
+            for t in self.triples:
+                self.Q[t][near] = (norm_n * acc_n[t] / vol)[near]
+            self.npairs[near] = np_n[near]
+        # exact s = 0 anchor
+        ov = self.omega.overlap_integral(self.omega_p)
+        self.Q0 = {(L1, L2, L): (math.sqrt(FOUR_PI) * math.sqrt(2 * L1 + 1) / FOUR_PI * ov if (L == 0 and L1 == L2) else 0.0)
+                   for (L1, L2, L) in self.triples}
         self._splines = {}
         return self
 
     # ------------------------------------------------------------------
+    def _spline(self, key):
+        if key not in self._splines:
+            good = (self.npairs >= self.min_pairs) if self.npairs is not None else np.ones(len(self.s_centers), bool)
+            x = np.concatenate([[0.0], self.s_centers[good], [self.s_edges[-1]]])
+            y0 = self.Q0[key] if self.Q0 is not None else self.Q[key][0]
+            y = np.concatenate([[y0], self.Q[key][good], [0.0]])
+            self._splines[key] = CubicSpline(x, y, extrapolate=False)
+        return self._splines[key]
+
     def __call__(self, Lam1: int, Lam2: int, Lam: int, s: np.ndarray) -> np.ndarray:
         """Q interpolated on the grid s (zero beyond the last pair bin)."""
-        key = (Lam1, Lam2, Lam)
         if self.Q is None:
             raise RuntimeError("call compute() first")
-        if key not in self._splines:
-            self._splines[key] = CubicSpline(self.s_centers, self.Q[key], extrapolate=True)
-        out = self._splines[key](s)
-        out[s > self.s_edges[-1]] = 0.0
-        return out
+        return np.nan_to_num(self._spline((Lam1, Lam2, Lam))(s), nan=0.0)
 
 
 class WindowLibrary:
@@ -113,10 +184,11 @@ class WindowLibrary:
     (even multipoles) so that each unordered pair of windows is counted once.
     """
 
-    def __init__(self, s_edges, n_sub=5000, seed=0, chunk_pairs=40000):
+    def __init__(self, s_edges, n_sub=5000, n_near=200000, s_split=80.0, seed=0, chunk_pairs=40000, min_pairs=20):
         self.s_edges = np.asarray(s_edges, dtype=float)
-        self.n_sub, self.seed, self.chunk_pairs = n_sub, seed, chunk_pairs
-        self._requests = {}   # canonical key -> (omega, omega_p, set of triples)
+        self.opts = dict(n_sub=n_sub, n_near=n_near, s_split=s_split, seed=seed,
+                         chunk_pairs=chunk_pairs, min_pairs=min_pairs)
+        self._requests = {}   # canonical key -> ((omega, omega_p), set of triples)
         self._windows = {}    # canonical key -> TripolarWindow
         self._interp_cache = {}
 
@@ -134,14 +206,17 @@ class WindowLibrary:
         for (L1, L2, L) in triples:
             trip.add((L2, L1, L) if swapped else (L1, L2, L))
 
+    def missing(self):
+        """Canonical keys that were requested but are not (fully) computed."""
+        return [key for key, (_, trip) in self._requests.items()
+                if key not in self._windows or not set(self._windows[key].triples) >= trip]
+
     def compute_all(self, verbose=False):
-        for key, (wins, trip) in self._requests.items():
-            if key in self._windows and set(self._windows[key].triples) >= trip:
-                continue
+        for key in self.missing():
+            wins, trip = self._requests[key]
             if verbose:
                 print(f"pair counts for {key}: {len(trip)} triples")
-            tw = TripolarWindow(wins[0], wins[1], sorted(trip), self.s_edges,
-                                n_sub=self.n_sub, seed=self.seed, chunk_pairs=self.chunk_pairs)
+            tw = TripolarWindow(wins[0], wins[1], sorted(trip), self.s_edges, **self.opts)
             tw.compute(verbose=verbose)
             self._windows[key] = tw
         self._interp_cache = {}
@@ -156,24 +231,17 @@ class WindowLibrary:
             self._interp_cache[ckey] = tw(Lam1, Lam2, Lam, s)
         return self._interp_cache[ckey]
 
-    def missing(self):
-        """Canonical keys that were requested but are not (fully) computed."""
-        out = []
-        for key, (_, trip) in self._requests.items():
-            if key not in self._windows or not set(self._windows[key].triples) >= trip:
-                out.append(key)
-        return out
-
     # ------------------------------------------------------------------ persistence
     def save(self, path):
         """Store the pair-count results (the expensive, cosmology-independent part)."""
         data = {'s_edges': self.s_edges}
         meta = []
         for key, tw in self._windows.items():
+            data[f"npairs_{len(meta)}"] = tw.npairs
             for trip, Q in tw.Q.items():
                 name = f"Q_{len(meta)}"
                 data[name] = Q
-                meta.append((key, trip, name))
+                meta.append((key, trip, name, tw.Q0[trip], len(meta)))
         data['meta'] = np.array(meta, dtype=object)
         np.savez(path, **data, allow_pickle=True)
 
@@ -183,13 +251,17 @@ class WindowLibrary:
             s_edges = f['s_edges']
             if len(s_edges) != len(self.s_edges) or not np.allclose(s_edges, self.s_edges):
                 raise ValueError("s_edges of the stored windows differ from the current ones")
-            groups = {}
-            for key, trip, name in f['meta']:
+            groups, q0s, npairs = {}, {}, {}
+            for (key, trip, name, q0, n) in f['meta']:
                 key = tuple(tuple(k) for k in key)
-                groups.setdefault(key, {})[tuple(int(x) for x in trip)] = f[name]
+                trip = tuple(int(x) for x in trip)
+                groups.setdefault(key, {})[trip] = f[name]
+                q0s.setdefault(key, {})[trip] = float(q0)
+                if key not in npairs and f"npairs_{n}" in f:
+                    npairs[key] = f[f"npairs_{n}"]
         for key, Qs in groups.items():
-            tw = TripolarWindow(None, None, list(Qs), self.s_edges)
-            tw.Q = Qs
+            tw = TripolarWindow(None, None, list(Qs), self.s_edges, **self.opts)
+            tw.Q, tw.Q0, tw.npairs = Qs, q0s[key], npairs.get(key)
             self._windows[key] = tw
         self._interp_cache = {}
         return self

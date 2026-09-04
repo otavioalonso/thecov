@@ -31,11 +31,15 @@ class GaussianCovariance:
     ds        : step of the s grid used for the radial integrals (Mpc/h)
     ds_pair   : radial bin width of the pair counts (Mpc/h); Q is smooth, coarse is fine
     shot_noise: include the shot-noise windows S^A
-    n_sub     : number of randoms per tracer used in the pair counts
+    n_sub     : randoms per tracer used for the far pairs (s >= s_split; all pairs, cost ~ n_sub^2)
+    n_near    : randoms per tracer used for the near pairs (s < s_split; KD-tree, cost ~ n_near * density)
+    s_split   : separation splitting the two regimes (Mpc/h)
+    min_pairs : s bins with fewer pairs are dropped from the radial spline of Q
     """
 
     def __init__(self, tracers, k_edges, ells=(0, 2, 4), L_max=4, s_max=None, ds=2.0, ds_pair=10.0,
-                 shot_noise=True, n_sub=5000, seed=0, chunk_pairs=40000):
+                 shot_noise=True, n_sub=5000, n_near=200000, s_split=80.0, min_pairs=20, seed=0,
+                 chunk_pairs=40000):
         self.tracers = {t.name: t for t in tracers}
         self.k_edges = np.asarray(k_edges, dtype=float)
         self.nbins = len(self.k_edges) - 1
@@ -48,7 +52,8 @@ class GaussianCovariance:
         self.s = np.arange(0.5 * ds, self.s_max, ds)
         self.s_weights = self.s ** 2 * ds
         s_edges = np.arange(0.0, self.s_max + ds_pair, ds_pair)
-        self.windows = WindowLibrary(s_edges, n_sub=n_sub, seed=seed, chunk_pairs=chunk_pairs)
+        self.windows = WindowLibrary(s_edges, n_sub=n_sub, n_near=n_near, s_split=s_split,
+                                     min_pairs=min_pairs, seed=seed, chunk_pairs=chunk_pairs)
         self.coeffs = CouplingCoefficients()
         self.kernels = ShellKernels(self.k_edges, self.s)
         self.model: PowerSpectrumModel | None = None
