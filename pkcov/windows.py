@@ -21,6 +21,7 @@ anchors at s = 0 and s = s_max.
 """
 from __future__ import annotations
 
+import json
 import math
 import time
 
@@ -90,6 +91,16 @@ class TripolarWindow:
             for j, L in enumerate(Ls):
                 acc[(L1, L2, L)] += np.bincount(ib[ok], weights=(wpair * S[:, j])[ok], minlength=nb)
 
+    def _split_edge(self) -> float:
+        """s_split snapped to the nearest s-bin edge.
+
+        Near and far pairs are counted on different subsamples, so a bin that STRADDLES the split
+        would receive near pairs only below it and far pairs only above it -- with each estimator
+        normalised by the whole bin volume, the bin comes out low by the volume fraction it is
+        missing. Snapping the split to a bin edge makes every bin belong entirely to one regime.
+        """
+        return float(self.s_edges[int(np.argmin(np.abs(self.s_edges - self.s_split)))])
+
     def _far_pairs(self, groups, Wmats, verbose):
         pos1, tw1, a1 = self.omega.sample(self.n_sub, self.seed)
         pos2, tw2, a2 = self.omega_p.sample(self.n_sub, self.seed)
@@ -104,7 +115,7 @@ class TripolarWindow:
             i1 = min(n1, i0 + step)
             d = pos2[None, :, :] - pos1[i0:i1, None, :]
             s = np.linalg.norm(d, axis=-1)
-            keep = (s >= self.s_split) & (s < self.s_edges[-1])
+            keep = (s >= self._split) & (s < self.s_edges[-1])
             if not np.any(keep):
                 continue
             x1 = np.broadcast_to(xhat1[i0:i1, None, :], d.shape)[keep]
@@ -127,7 +138,7 @@ class TripolarWindow:
         t0 = time.time()
         for i0 in range(0, len(pos1), step):
             i1 = min(len(pos1), i0 + step)
-            lists = tree2.query_ball_point(pos1[i0:i1], r=self.s_split)
+            lists = tree2.query_ball_point(pos1[i0:i1], r=self._split)
             lens = np.array([len(l) for l in lists])
             if lens.sum() == 0:
                 continue
@@ -143,8 +154,11 @@ class TripolarWindow:
 
     def compute(self, verbose: bool = False):
         groups, Wmats = self._groups()
+        self._split = self._split_edge()
+        if abs(self._split - self.s_split) > 1e-9 and verbose:
+            print(f"  s_split snapped from {self.s_split:g} to the bin edge {self._split:g}")
         vol = (self.s_edges[1:] ** 3 - self.s_edges[:-1] ** 3) / 3.0
-        near = self.s_edges[1:] <= self.s_split + 1e-9
+        near = self.s_edges[1:] <= self._split + 1e-9
         acc_f, np_f, norm_f = self._far_pairs(groups, Wmats, verbose)
         self.Q = {t: norm_f * acc_f[t] / vol for t in self.triples}
         self.npairs = np_f.copy()
@@ -155,7 +169,10 @@ class TripolarWindow:
             self.npairs[near] = np_n[near]
         # exact s = 0 anchor
         ov = self.omega.overlap_integral(self.omega_p)
-        self.Q0 = {(L1, L2, L): (math.sqrt(FOUR_PI) * math.sqrt(2 * L1 + 1) / FOUR_PI * ov if (L == 0 and L1 == L2) else 0.0)
+        # Q(0) = sqrt(4 pi) (-1)^Lam1 sqrt(2 Lam1 + 1) / (4 pi) * int omega omega'  for Lam = 0,
+        # Lam1 = Lam2, and zero otherwise (see the note; the sign is +1 for even Lam1).
+        self.Q0 = {(L1, L2, L): ((-1) ** L1 * math.sqrt(FOUR_PI * (2 * L1 + 1)) / FOUR_PI * ov
+                                 if (L == 0 and L1 == L2) else 0.0)
                    for (L1, L2, L) in self.triples}
         self._splines = {}
         return self
@@ -233,32 +250,39 @@ class WindowLibrary:
 
     # ------------------------------------------------------------------ persistence
     def save(self, path):
-        """Store the pair-count results (the expensive, cosmology-independent part)."""
+        """Store the pair-count results (the expensive, cosmology-independent part).
+
+        The metadata is written as a JSON string, so loading needs no pickling.
+        """
         data = {'s_edges': self.s_edges}
         meta = []
-        for key, tw in self._windows.items():
-            data[f"npairs_{len(meta)}"] = tw.npairs
+        for w, (key, tw) in enumerate(self._windows.items()):
+            np_name = f"npairs_{w}"
+            data[np_name] = np.asarray(tw.npairs if tw.npairs is not None else [])
             for trip, Q in tw.Q.items():
-                name = f"Q_{len(meta)}"
-                data[name] = Q
-                meta.append((key, trip, name, tw.Q0[trip], len(meta)))
-        data['meta'] = np.array(meta, dtype=object)
-        np.savez(path, **data, allow_pickle=True)
+                q_name = f"Q_{len(meta)}"
+                data[q_name] = np.asarray(Q)
+                meta.append({'key': [list(k) for k in key], 'trip': list(int(x) for x in trip),
+                             'q': q_name, 'npairs': np_name,
+                             'q0': float(tw.Q0[trip]) if tw.Q0 is not None else 0.0})
+        data['meta'] = np.array(json.dumps(meta))
+        np.savez(path, **data)
 
     def load(self, path):
-        """Load pair-count results saved with save(); keys are matched by window names."""
-        with np.load(path, allow_pickle=True) as f:
-            s_edges = f['s_edges']
-            if len(s_edges) != len(self.s_edges) or not np.allclose(s_edges, self.s_edges):
+        """Load pair-count results saved with save(); windows are matched by their names."""
+        with np.load(path) as f:
+            if len(f['s_edges']) != len(self.s_edges) or not np.allclose(f['s_edges'], self.s_edges):
                 raise ValueError("s_edges of the stored windows differ from the current ones")
+            meta = json.loads(str(f['meta'].item()))
             groups, q0s, npairs = {}, {}, {}
-            for (key, trip, name, q0, n) in f['meta']:
-                key = tuple(tuple(k) for k in key)
-                trip = tuple(int(x) for x in trip)
-                groups.setdefault(key, {})[trip] = f[name]
-                q0s.setdefault(key, {})[trip] = float(q0)
-                if key not in npairs and f"npairs_{n}" in f:
-                    npairs[key] = f[f"npairs_{n}"]
+            for rec in meta:
+                key = tuple(tuple(k) for k in rec['key'])
+                trip = tuple(rec['trip'])
+                groups.setdefault(key, {})[trip] = f[rec['q']]
+                q0s.setdefault(key, {})[trip] = rec['q0']
+                if key not in npairs:
+                    arr = f[rec['npairs']]
+                    npairs[key] = arr if arr.size else None
         for key, Qs in groups.items():
             tw = TripolarWindow(None, None, list(Qs), self.s_edges, **self.opts)
             tw.Q, tw.Q0, tw.npairs = Qs, q0s[key], npairs.get(key)

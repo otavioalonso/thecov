@@ -7,6 +7,12 @@ A tracer is described by its random catalogue: a dict with keys
 plus alpha = (weighted number of galaxies) / (weighted number of randoms), i.e. the
 random catalogue samples nbar / alpha.
 
+Cross windows W^{AB} are sampled by the randoms of A, with nbar_B w_B taken from the nearest random
+of B and set to zero when that random is farther than `mask_factor` x the LOCAL spacing of B's
+randoms, so that B's footprint is respected. The footprint edge is therefore resolved to a few
+inter-random spacings: use dense random catalogues for cross windows, and check I_AB against an
+independent estimate (it is exposed as GaussianCovariance.I).
+
 Windows (eq. windows of the note):
     W^{AB}(x) = nbar_A nbar_B w_A w_B      (clustering)
     S^{A}(x)  = (1 + alpha_A) nbar_A w_A^2 (shot noise)
@@ -22,7 +28,8 @@ from scipy.spatial import cKDTree
 
 
 class Tracer:
-    def __init__(self, name: str, randoms: dict, alpha: float, nbar=None, knn: int = 64):
+    def __init__(self, name: str, randoms: dict, alpha: float, nbar=None, knn: int = 64,
+                 mask_factor: float = 2.5, mask_knn: int = 8):
         self.name = str(name)
         self.pos = np.ascontiguousarray(randoms['POSITION'], dtype=float)
         if self.pos.ndim != 2 or self.pos.shape[1] != 3:
@@ -42,6 +49,31 @@ class Tracer:
         if self.nbar.shape != (len(self.pos),):
             raise ValueError("nbar must have one value per random")
         self._sub_cache = {}
+        # Footprint mask used when this tracer's density is needed at foreign positions: a position
+        # is outside the footprint if it is farther than mask_factor x the LOCAL random spacing from
+        # the nearest random. The threshold has to be local: with a global value, a tracer whose
+        # density varies strongly (e.g. a steep n(z)) would have its sparse outskirts masked away.
+        # The spacing is estimated from the k-th neighbour (k = mask_knn) rather than the first: the
+        # first-neighbour distance of a Poisson set has ~50 % scatter, so a threshold built on it
+        # masks out interior positions whose nearest random happens to sit in a close pair.
+        self.mask_factor = float(mask_factor)
+        kk = min(int(mask_knn), self.size - 1)
+        d, _ = self.tree.query(self.pos, k=kk + 1)
+        self.spacing = d[:, kk] / kk ** (1.0 / 3.0)
+        # consistency of alpha with NZ: the randoms must sample nbar/alpha. The pair counts use alpha
+        # and the randoms, the s = 0 anchor and cross windows use NZ; an inconsistent pair of
+        # (alpha, NZ) would mis-normalise them relative to each other.
+        ratio = self._implied_alpha(knn) / self.alpha
+        if abs(ratio - 1) > 0.15:
+            warnings.warn(f"Tracer {self.name}: alpha={self.alpha:.4g} but the random density and NZ imply "
+                          f"alpha~{self.alpha * ratio:.4g} (ratio {ratio:.2f}); nbar/alpha must equal the "
+                          f"density of the randoms.")
+
+    def _implied_alpha(self, k: int) -> float:
+        sub = self.pos[: min(self.size, 20000)]
+        d, _ = self.tree.query(sub, k=k + 1)
+        n_ran = k / (4.0 / 3.0 * np.pi * d[:, -1] ** 3)
+        return float(np.median(self.nbar[: len(sub)] / n_ran))
 
     # -- geometry helpers ------------------------------------------------------
     @property
@@ -63,8 +95,9 @@ class Tracer:
         """(nbar(x), w(x)) of this tracer at arbitrary positions (nearest random)."""
         if positions is self.pos:
             return self.nbar, self.w
-        _, idx = self.tree.query(positions, k=1)
-        return self.nbar[idx], self.w[idx]
+        d, idx = self.tree.query(positions, k=1)
+        inside = d <= self.mask_factor * self.spacing[idx]
+        return np.where(inside, self.nbar[idx], 0.0), np.where(inside, self.w[idx], 0.0)
 
     def nw_at(self, positions: np.ndarray) -> np.ndarray:
         """nbar(x) * w(x) of this tracer at arbitrary positions (nearest random)."""

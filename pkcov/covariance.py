@@ -148,8 +148,26 @@ class GaussianCovariance:
         return self
 
     # ------------------------------------------------------------------ results
-    def block(self, AB, CD, ell1: int, ell2: int) -> np.ndarray:
-        """Covariance block Cov[P^{AB}_{ell1}(k_i), P^{CD}_{ell2}(k_j)] as an (nbins, nbins) array."""
+    def block(self, AB, CD, ell1: int, ell2: int, symmetrize: bool = True) -> np.ndarray:
+        """Covariance block Cov[P^{AB}_{ell1}(k_i), P^{CD}_{ell2}(k_j)] as an (nbins, nbins) array.
+
+        In each correlator the derivation evaluates the power spectrum at one of the two momenta
+        (eq. Pi of the note uses the momentum of the field without the Legendre weight). The other
+        choice differs by O(q) = O(1/(k L_survey)) and is equally valid at this order. The two
+        choices agree on the diagonal but not off it, so an individual block is not exactly the
+        transpose of its exchanged partner: C^{ABCD}_{l1 l2}(i,j) vs C^{CDAB}_{l2 l1}(j,i). With
+        symmetrize=True (default) the average of the two is returned, which is symmetric by
+        construction and is the combination that enters covariance(). Pass symmetrize=False for the
+        raw expression; the difference between them measures the ambiguity and is confined to the
+        off-diagonal elements.
+        """
+        if symmetrize:
+            direct = self.block(AB, CD, ell1, ell2, symmetrize=False)
+            mirror = self.block(CD, AB, ell2, ell1, symmetrize=False)
+            return 0.5 * (direct + mirror.T)
+        return self._block_raw(AB, CD, ell1, ell2)
+
+    def _block_raw(self, AB, CD, ell1: int, ell2: int) -> np.ndarray:
         if self.model is None:
             raise RuntimeError("set_model() first")
         AB = tuple(str(x) for x in AB)
@@ -193,12 +211,11 @@ class GaussianCovariance:
         t0 = time.time()
         for a, (spA, lA) in enumerate(blocks):
             for b, (spB, lB) in enumerate(blocks):
-                blk = self.block(spA, spB, lA, lB)
+                blk = self.block(spA, spB, lA, lB, symmetrize=False)
                 C[a * self.nbins:(a + 1) * self.nbins, b * self.nbins:(b + 1) * self.nbins] = blk
                 if verbose:
                     print(f"block {spA} l={lA} x {spB} l={lB} done ({time.time() - t0:.1f}s)")
         if symmetrize:
-            # exact for T1; the residual asymmetry comes from the x'^ -> x^ step in T2 (Section 7)
             C = 0.5 * (C + C.T)
         labels = [(sp[0], sp[1], l, i) for (sp, l) in blocks for i in range(self.nbins)]
         return C, labels
