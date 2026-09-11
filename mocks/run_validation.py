@@ -58,7 +58,10 @@ def pk_lin(k, amplitude=1.0):
     k0 = 0.05
     shape = (k / k0) / (1.0 + (k / k0) ** 2) ** 2
     wig = 1.0 + 0.05 * np.sin(k * 100.0) * np.exp(-(k / 0.25) ** 2)
-    return amplitude * 2.2e4 * shape * wig
+    # The overall amplitude is deliberately low. Poisson sampling clips 1 + b delta at zero, and
+    # with sigma(b delta) ~ 0.9 the mocks lose ~12 % of their power -- which would be misread as a
+    # covariance failure. run_validation prints sigma(b delta) and the clipped fraction at start-up.
+    return amplitude * 4.0e3 * shape * wig
 
 
 # --------------------------------------------------------------------------- one realisation
@@ -237,6 +240,15 @@ def main():
     lo, hi = fp.extent()
     print(f"  survey extent {np.round(hi - lo, 0)}, box/survey = "
           f"{grid.L / np.max(hi - lo):.2f}  (raise --box-factor to check convergence)")
+
+    from .field import GaussianField as _GF
+    from .survey import clipping_diagnostics
+    _d = _GF(grid, lambda k: pk_lin(k, args.amplitude), np.random.default_rng(0)).delta()
+    diag = clipping_diagnostics(_d, BIAS)
+    for t, (sig, frac) in diag.items():
+        flag = 'ok' if sig < 0.35 else 'TOO HIGH: clipping removes power'
+        print(f"  sigma(b_{t} delta) = {sig:.3f}, clipped cells = {frac:.2e}  ({flag})")
+    del _d
 
     C, labels, _ = analytic_covariance(cat, k_edges, spectra, ells, args.amplitude,
                                        args.n_sub, args.n_near, args.ds, args.ds_pair)

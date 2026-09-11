@@ -129,7 +129,7 @@ class GaussianField:
         return self._deltak if self._deltak is not None else self._generate_k()
 
     def delta(self) -> np.ndarray:
-        return np.fft.irfftn(self.deltak, s=(self.grid.N,) * 3).astype(self.grid.dtype)
+        return np.fft.irfftn(self.deltak, s=(self.grid.N,) * 3, axes=(0, 1, 2)).astype(self.grid.dtype)
 
     def displacement(self, i: int) -> np.ndarray:
         """Psi_i(x) = irfftn(i k_i / k^2 delta_k) -- the Zel'dovich displacement component."""
@@ -139,7 +139,7 @@ class GaussianField:
         fac = np.zeros_like(k2)
         nz = k2 > 0
         fac[nz] = 1.0 / k2[nz]
-        return np.fft.irfftn(1j * kv * fac * self.deltak, s=(g.N,) * 3).astype(g.dtype)
+        return np.fft.irfftn(1j * kv * fac * self.deltak, s=(g.N,) * 3, axes=(0, 1, 2)).astype(g.dtype)
 
     def free(self):
         self._deltak = None

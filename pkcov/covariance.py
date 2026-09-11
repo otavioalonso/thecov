@@ -35,11 +35,17 @@ class GaussianCovariance:
     n_near    : randoms per tracer used for the near pairs (s < s_split; KD-tree, cost ~ n_near * density)
     s_split   : separation splitting the two regimes (Mpc/h)
     min_pairs : s bins with fewer pairs are dropped from the radial spline of Q
+    n_shells, n_mu : resolution of the (r1, s, mu) histogram the pairs are binned into. S is
+                evaluated at each cell's weighted mean, so the result is first-order accurate in the
+                cell size. n_mu must resolve oscillations of order max(Lam1, Lam2) in mu and
+                defaults to 6 x that (None = auto); n_shells controls only the weak s/r1 dependence.
+    backend   : 'auto' (jax if importable, else numpy), 'jax', or 'numpy'. Only the pair-counting
+                step differs; both backends produce the same histogram.
     """
 
     def __init__(self, tracers, k_edges, ells=(0, 2, 4), L_max=4, s_max=None, ds=2.0, ds_pair=10.0,
                  shot_noise=True, n_sub=5000, n_near=200000, s_split=80.0, min_pairs=20, seed=0,
-                 chunk_pairs=40000):
+                 chunk_pairs=200000, n_shells=16, n_mu=None, backend='auto'):
         self.tracers = {t.name: t for t in tracers}
         self.k_edges = np.asarray(k_edges, dtype=float)
         self.nbins = len(self.k_edges) - 1
@@ -53,7 +59,9 @@ class GaussianCovariance:
         self.s_weights = self.s ** 2 * ds
         s_edges = np.arange(0.0, self.s_max + ds_pair, ds_pair)
         self.windows = WindowLibrary(s_edges, n_sub=n_sub, n_near=n_near, s_split=s_split,
-                                     min_pairs=min_pairs, seed=seed, chunk_pairs=chunk_pairs)
+                                     min_pairs=min_pairs, seed=seed, chunk_pairs=chunk_pairs,
+                                     n_shells=n_shells, n_mu=n_mu,
+                                     backend=backend)
         self.coeffs = CouplingCoefficients()
         self.kernels = ShellKernels(self.k_edges, self.s)
         self.model: PowerSpectrumModel | None = None

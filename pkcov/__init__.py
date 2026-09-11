@@ -15,10 +15,10 @@ Typical use
 """
 from .tracers import Tracer, Window, spectrum_window_pairs
 from .kernels import PowerSpectrumModel, ShellKernels
-from .windows import TripolarWindow, WindowLibrary
+from .windows import TripolarWindow, WindowLibrary, PairHistogram
 from .wigner import wigner_3j, gaunt_tensor, CouplingCoefficients, tri, tri_multi
 from .covariance import GaussianCovariance
 
 __all__ = ['Tracer', 'Window', 'spectrum_window_pairs', 'PowerSpectrumModel', 'ShellKernels',
-           'TripolarWindow', 'WindowLibrary', 'wigner_3j', 'gaunt_tensor', 'CouplingCoefficients',
+           'TripolarWindow', 'WindowLibrary', 'PairHistogram', 'wigner_3j', 'gaunt_tensor', 'CouplingCoefficients',
            'tri', 'tri_multi', 'GaussianCovariance']

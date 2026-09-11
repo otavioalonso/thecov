@@ -164,6 +164,17 @@ class Catalogues:
         return float((n1 * n2 * w1 * w2).sum() * self.grid.V_cell)
 
 
+def clipping_diagnostics(delta, bias: dict):
+    """sigma(b delta) and the fraction of cells with 1 + b delta < 0, per tracer.
+
+    Poisson sampling needs a non-negative intensity, so 1 + b delta is clipped at zero. Clipping
+    removes power: at sigma = 0.9 the measured P is ~12 % low, which would look exactly like a
+    covariance failure. Keep sigma(b delta) <~ 0.35.
+    """
+    sd = float(np.std(delta))
+    return {t: (b * sd, float(np.mean(1.0 + b * delta < 0.0))) for t, b in bias.items()}
+
+
 def make_mock(cat: Catalogues, field, bias: dict, stoch: dict, f: float,
               rng: np.random.Generator, rsd=True):
     """One realisation: Poisson-sample each tracer from the shared field and apply radial RSD."""

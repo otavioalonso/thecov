@@ -140,3 +140,54 @@ def cos_multiples(cosd, mumax: int) -> np.ndarray:
     for mu in range(2, mumax + 1):
         cm[mu] = 2.0 * cosd * cm[mu - 1] - cm[mu - 2]
     return cm
+
+
+# ---------------------------------------------------------------------------
+# Coplanar (r1, s, mu) form of the tripolar basis function
+# ---------------------------------------------------------------------------
+def coplanar_geometry(r1, s, mu):
+    r"""(c1, c2, r2) for x' = x + s s^, given r1 = |x|, s = |s| and mu = x^ . s^.
+
+        r2^2 = r1^2 + s^2 + 2 r1 s mu,   c1 = mu,   c2 = (r1 mu + s) / r2.
+
+    Because x' - x is parallel to s^, the component of x' perpendicular to s^ equals that of x, so
+    the azimuthal angle between x^ and x'^ about s^ vanishes identically:
+
+        cos dphi = (x^.x'^ - c1 c2) / (sin1 sin2) = [r1 (1-mu^2)/r2] / [sqrt(1-mu^2) r1 sqrt(1-mu^2)/r2] = 1.
+
+    The tripolar function therefore reduces to a single sum over m with no cos(m dphi) factor, and
+    depends on the pair only through (r1, s, mu) -- the variables a standard pair counter bins in.
+    """
+    r1 = np.asarray(r1, dtype=float)
+    s = np.asarray(s, dtype=float)
+    mu = np.clip(np.asarray(mu, dtype=float), -1.0, 1.0)
+    r2 = np.sqrt(np.maximum(r1 ** 2 + s ** 2 + 2 * r1 * s * mu, 0.0))
+    good = r2 > 0
+    c2 = np.where(good, (r1 * mu + s) / np.where(good, r2, 1.0), 0.0)
+    return mu, np.clip(c2, -1.0, 1.0), r2
+
+
+def tripolar_coplanar(triples, r1, s, mu):
+    """S_{Lam1 Lam2 Lam}(r1, s, mu) for every triple, as an array of shape (n_triples,) + r1.shape.
+
+    Exact for the coplanar configuration x' = x + s (see coplanar_geometry); this is the only
+    configuration that occurs in the window pair function.
+    """
+    triples = [tuple(int(x) for x in t) for t in triples]
+    c1, c2, r2 = coplanar_geometry(r1, s, mu)
+    lmax1 = max(t[0] for t in triples)
+    lmax2 = max(t[1] for t in triples)
+    P1 = normalized_legendre(c1, lmax1)
+    P2 = normalized_legendre(c2, lmax2)
+    out = np.zeros((len(triples),) + np.shape(c1))
+    groups = {}
+    for n, (L1, L2, L) in enumerate(triples):
+        groups.setdefault((L1, L2), []).append((L, n))
+    for (L1, L2), items in groups.items():
+        W = tripolar_frame_weights(L1, L2, [L for L, _ in items])
+        mm = min(L1, L2)
+        A = P1[L1, :mm + 1] * P2[L2, :mm + 1]                # (mm+1,) + shape
+        for j, (L, n) in enumerate(items):
+            out[n] = np.tensordot(W[:, j], A, axes=([0], [0]))
+    out[:, r2 <= 0] = 0.0
+    return out

@@ -87,6 +87,29 @@ covariance bins (down to k = 0 if the first bin starts there).
 
 ## Accuracy and cost
 
+* **Counting is split from contracting.** Because x' = x + s, the tripolar weight depends on a pair
+  only through (r1, s, mu) with r1 = |x| and mu = x^ . s^ -- the azimuth about s^ vanishes
+  identically, so there is no cos(m dphi) factor and no second unit-vector array. Pairs are
+  histogrammed into cells of (r1, s, mu), and S is evaluated once per cell at the cell's WEIGHTED
+  MEAN (first-order accurate, so the resolution is not critical in r1 or s). All triples share one
+  set of counts, and the inner loop is one distance and one dot product. This is also the shape an
+  external counter plugs into: Corrfunc/pycorr bin in exactly these variables (one call per radial
+  shell), and a GPU kernel would need nothing more.
+* `n_mu` must resolve oscillations of order max(Lam1, Lam2) in mu -- up to 12 for ells and L up to
+  4 -- and defaults to 6x that. A fixed small value silently biases the high multipoles. Because it
+  adapts to the multipoles actually requested, raising L_max changes the mu resolution and hence the
+  discretisation of every triple; the effect is ~1e-3 on the off-diagonals, which is the size of the
+  residual discretisation error. Pass an explicit `n_mu` when comparing two runs that differ in
+  L_max or ells.
+* **Backends.** `backend='auto'` (default) uses JAX if it imports, else numpy; `'jax'` and
+  `'numpy'` force the choice. Only the counting step differs, and the two agree bitwise, so they can
+  be compared directly. On CPU the JAX path runs the all-pairs kernel about 5x faster
+  (27M vs 5M pairs/s for 1e8 pairs), because XLA fuses the chunk into one pass instead of
+  materialising several (block x n2 x 3) temporaries, and it runs on a GPU unchanged. Two details
+  matter for the speed: the pair arithmetic may run in float32 but the ~1e8 accumulations into
+  ~1e5 cells are summed in float64, and equally-spaced bin edges (the usual case) are indexed
+  arithmetically instead of by searchsorted. Chunks of ~2e5 pairs are optimal; larger ones are
+  slower, so `chunk_pairs` should not be raised for JAX.
 * `s_split` is snapped to the nearest pair-count bin edge. A bin that straddled the split would get
   near pairs only below it and far pairs only above it, while being normalised by its whole volume,
   and would come out low by the missing volume fraction (15 % for a bin of width 25 split at 80).
@@ -261,9 +284,17 @@ extended with `--resume`.
   taken from the galaxy's own cell so that it carries the same single power of T. Without this the
   measured P is ~10 % low at half-Nyquist and the covariance ~20 % low. `tests/test_mock_pipeline.py`
   verifies the cancellation.
-* **Non-Gaussianity.** The amplitude is deliberately low so that 1 + delta stays positive and the
-  Gaussian covariance is the right answer; `--amplitude` rescales it if you want to see the
-  departure.
+* **Independent randoms per tracer.** Sharing one random catalogue between two tracers makes the
+  -alpha n_r piece of the FKP field common to both, so its Poisson noise survives in the CROSS
+  spectrum as a spurious constant alpha/nbar (5 % of P at k = 0.02 in the test set-up, 18 % by
+  k = 0.1). `survey.Catalogues` gives each tracer its own randoms; the same care is needed with
+  real catalogues.
+* **Clipping.** Poisson sampling needs a non-negative intensity, so 1 + b delta is clipped at zero.
+  This removes power: at sigma(b delta) ~ 0.9 the measured P is ~12 % low, which would be misread as
+  a covariance failure. The default amplitude keeps sigma(b delta) ~ 0.3; the driver prints it and
+  the clipped fraction at start-up and warns above 0.35. `--amplitude` rescales it.
+* **Non-Gaussianity.** The low amplitude also keeps the field close to Gaussian, which is what the
+  formula assumes; raise `--amplitude` if you want to see the departure (but watch the clipping).
 
 `tests/test_mock_pipeline.py` (mostly `slow`) validates the mock machinery itself where the answer is
 known exactly -- field variance, the shot-noise constant, monopole and Kaiser quadrupole recovery in
