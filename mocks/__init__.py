@@ -1,4 +1,4 @@
-"""Gaussian mock catalogues in a realistic window, for validating pkcov end to end.
+"""Gaussian mock catalogues in a realistic window, for validating thecov end to end.
 
     python -m mocks.run_validation --n-mocks 300 --grid 256 --nproc 8 --out results/
 

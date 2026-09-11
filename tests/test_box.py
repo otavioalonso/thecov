@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from scipy.special import eval_legendre
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 
 
 # --------------------------------------------------------------------------- reference formulae

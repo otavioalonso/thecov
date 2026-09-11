@@ -1,8 +1,8 @@
-"""pkcov: Gaussian covariance of windowed power-spectrum multipoles in separation space.
+"""thecov: Gaussian covariance of windowed power-spectrum multipoles in separation space.
 
 Typical use
 -----------
-    from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+    from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 
     lrg = Tracer('LRG', randoms_lrg, alpha=alpha_lrg)          # randoms: {'POSITION', 'WEIGHT'[, 'NZ']}
     model = PowerSpectrumModel()

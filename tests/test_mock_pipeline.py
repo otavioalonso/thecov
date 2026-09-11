@@ -1,5 +1,5 @@
 """Self-tests of the mock machinery, so that a failure of the end-to-end validation can be
-attributed to pkcov rather than to the mocks.
+attributed to thecov rather than to the mocks.
 
 The estimator is checked where the answer is known exactly: a uniform periodic box far from the
 observer, where the window is trivial and the measured multipoles must reproduce the input Kaiser
@@ -192,12 +192,12 @@ def test_footprint_and_catalogues_are_consistent():
     for t in ('A', 'B'):
         n_from_ran = cat.alpha[t] * len(cat.randoms[t])
         assert np.isclose(n_from_ran, cat.n_gal_expected[t], rtol=1e-9)
-    # I_AB from the randoms (as pkcov computes it) vs the grid integral
-    from pkcov import Tracer
-    from pkcov.tracers import Window
+    # I_AB from the randoms (as thecov computes it) vs the grid integral
+    from thecov import Tracer
+    from thecov.tracers import Window
     trs = {}
     for t in ('A', 'B'):
-        rnd, alpha = cat.pkcov_randoms(t)
+        rnd, alpha = cat.thecov_randoms(t)
         trs[t] = Tracer(t, rnd, alpha)
     for (X, Y) in [('A', 'A'), ('B', 'B'), ('A', 'B')]:
         I_ran = Window('W', trs[X], trs[Y]).integral()

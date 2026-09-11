@@ -28,11 +28,11 @@ the Wigner symbols.
 import numpy as np
 import pytest
 
-from pkcov import Tracer
-from pkcov.harmonics import tripolar_direct, unit_vectors
-from pkcov.tracers import Window
-from pkcov.windows import TripolarWindow
-from pkcov.wigner import FOUR_PI
+from thecov import Tracer
+from thecov.harmonics import tripolar_direct, unit_vectors
+from thecov.tracers import Window
+from thecov.windows import TripolarWindow
+from thecov.wigner import FOUR_PI
 
 R_SPHERE = 500.0
 NBAR = 2e-4

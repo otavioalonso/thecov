@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from scipy.special import spherical_jn, eval_legendre
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 from tests.test_box import leakage_fractions
 
 

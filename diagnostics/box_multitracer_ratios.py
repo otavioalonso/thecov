@@ -19,7 +19,7 @@ import time
 
 import numpy as np
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 from tests.test_box import leakage_fractions
 from tests.test_multitracer import kaiser, kaiser_cross, box_multitracer_analytic
 

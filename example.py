@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 
 
 # ----------------------------------------------------------------------------- synthetic survey

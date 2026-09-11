@@ -1,4 +1,4 @@
-# pkcov — Gaussian covariance of windowed power-spectrum multipoles
+# thecov — Gaussian covariance of windowed power-spectrum multipoles
 
 Implementation of the separation-space (tripolar) formulation derived in `pk_covariance.typ`:
 
@@ -18,7 +18,7 @@ length. Everything else (k-bin average, angular structure, shot noise, multi-tra
 ## Layout
 
 ```
-pkcov/
+thecov/
   wigner.py      3j symbols, n-harmonic Gaunt tensors, CouplingCoefficients (t^(1), t^(2))
   harmonics.py   normalised Legendre / spherical-harmonic tables, tripolar S in the s-hat frame
   tracers.py     Tracer (randoms, nbar, alpha), Window (W^AB, S^A), spectrum_window_pairs (P^AB)
@@ -54,7 +54,7 @@ covariance bins). Missing multipoles are zero; cross spectra are symmetric in th
 
 ```python
 import numpy as np
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 
 A = Tracer('A', randoms_A, alpha=alpha_A)
 B = Tracer('B', randoms_B, alpha=alpha_B)
@@ -248,7 +248,7 @@ expectation overlaid (`box_test_d0.png`).
 
 This is the only test that probes the **approximations** rather than the implementation. Multi-tracer
 Gaussian mocks are generated in a realistic window and their sample covariance is compared with the
-pkcov prediction.
+thecov prediction.
 
 * **Geometry**: a spherical cap between 400 and 900 Mpc/h with a smooth n(z) per tracer, three
   circular holes in the angular mask and a completeness gradient. The two tracers share the angular
@@ -265,14 +265,14 @@ pkcov prediction.
 ### Statistics
 
 Element-by-element agreement on the diagonal needs ~2/eps^2 mocks (800 for 5 %). The whole matrix is
-tested far more cheaply by chi^2_i = (d_i - dbar)^T C_pkcov^-1 (d_i - dbar), whose mean is
+tested far more cheaply by chi^2_i = (d_i - dbar)^T C_thecov^-1 (d_i - dbar), whose mean is
 n_dim (1 - 1/N_mock) with a relative error sqrt(2 / (n_dim N_mock)) -- about 1.2 % for 48 elements
 and 300 mocks -- and which is sensitive to the off-diagonal structure as well. The script also
 reports the eigenvalues of C^-1/2 Chat C^-1/2 (mean 1, spread sqrt(2/N_mock)), the diagonal ratios
 and the first off-diagonal correlations, and writes a plot plus `comparison.npz`. Runs can be
 extended with `--resume`.
 
-### Systematics of the test itself (not of pkcov)
+### Systematics of the test itself (not of thecov)
 
 * **Box size.** The covariance couples modes separated by |q| ~ 1/R_survey and the mocks sample that
   structure at the box spacing 2 pi / L, so a small box biases the *mock* covariance. Run at two
@@ -300,7 +300,7 @@ extended with `--resume`.
 known exactly -- field variance, the shot-noise constant, monopole and Kaiser quadrupole recovery in
 a periodic box, the absence of shot noise in the cross spectrum, and consistency between the random
 catalogues and the grid integrals -- so that a failure of the end-to-end comparison can be attributed
-to pkcov rather than to the mocks.
+to thecov rather than to the mocks.
 
 ## Not covered
 

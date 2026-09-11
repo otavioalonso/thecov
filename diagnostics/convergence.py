@@ -19,7 +19,7 @@ import time
 
 import numpy as np
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 
 REFERENCE = dict(ds=1.0, ds_pair=5.0, n_sub=8000, n_near=200000, s_split=80.0, min_pairs=20)
 SWEEPS = {

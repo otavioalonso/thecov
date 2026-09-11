@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 from scipy.special import sph_harm_y, eval_legendre
 
-from pkcov.wigner import wigner_3j, w3j_tensor, gaunt_tensor, tri, tri_multi, CouplingCoefficients, FOUR_PI
-from pkcov.harmonics import sph_harm_table, tripolar_direct, tripolar_frame, unit_vectors
-from pkcov.covariance import GaussianCovariance
+from thecov.wigner import wigner_3j, w3j_tensor, gaunt_tensor, tri, tri_multi, CouplingCoefficients, FOUR_PI
+from thecov.harmonics import sph_harm_table, tripolar_direct, tripolar_frame, unit_vectors
+from thecov.covariance import GaussianCovariance
 
 
 def test_3j_known_values():

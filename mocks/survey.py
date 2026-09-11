@@ -80,7 +80,7 @@ def make_grid(fp: Footprint, N: int, box_factor: float = 2.5) -> Grid:
 
     The box must be comfortably larger than the survey: the covariance couples modes separated by
     |q| ~ 1/R_survey, and that structure is sampled at the box spacing 2 pi / L. A small box
-    therefore biases the *mock* covariance (a Riemann-sum error of the test set-up, not of pkcov).
+    therefore biases the *mock* covariance (a Riemann-sum error of the test set-up, not of thecov).
     Run the validation at two values of box_factor to check it.
     """
     lo, hi = fp.extent()
@@ -151,13 +151,13 @@ class Catalogues:
     def weights_at(self, t, pos):
         return 1.0 / (1.0 + self._nbar_at(t, pos) * self.P0_fkp)
 
-    def pkcov_randoms(self, t):
-        """The dict expected by pkcov.Tracer, plus its alpha."""
+    def thecov_randoms(self, t):
+        """The dict expected by thecov.Tracer, plus its alpha."""
         return ({'POSITION': self.randoms[t], 'WEIGHT': self.w_ran[t], 'NZ': self.nbar_ran[t]},
                 self.alpha[t])
 
     def I(self, t1, t2):
-        """int nbar_1 nbar_2 w_1 w_2 evaluated on the grid (exact, for cross-checking pkcov's I)."""
+        """int nbar_1 nbar_2 w_1 w_2 evaluated on the grid (exact, for cross-checking thecov's I)."""
         n1, n2 = self.nbar[t1], self.nbar[t2]
         w1 = 1.0 / (1.0 + n1 * self.P0_fkp)
         w2 = 1.0 / (1.0 + n2 * self.P0_fkp)

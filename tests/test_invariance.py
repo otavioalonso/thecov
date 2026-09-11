@@ -15,7 +15,7 @@ so a transformed catalogue must keep the same name for the two runs to use the s
 import numpy as np
 import pytest
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 
 
 # --------------------------------------------------------------------------- helpers

@@ -1,4 +1,4 @@
-"""Box test after box_test.ipynb, for pkcov.
+"""Box test after box_test.ipynb, for thecov.
 
 Uniform randoms in a cube of side `boxsize` (observer at `distance` along x from the centre),
 flat P_0, P_2 = P_4 = 0, shot noise included, compared with the periodic-box formula
@@ -12,7 +12,7 @@ import time
 
 import numpy as np
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 from tests.test_box import analytic_box, leakage_fractions
 
 boxsize = 4e3
@@ -62,8 +62,8 @@ import matplotlib.pyplot as plt
 fig, ax = plt.subplots(1, 2, figsize=(11, 4))
 ax[0].semilogy(kc, np.sqrt(analytic[(0, 0)]), c='gray', ls='dashed', label='periodic box, $2/N_{modes}$')
 ax[0].semilogy(kc, np.sqrt(analytic[(0, 0)] * retained), c='k', ls='dotted', label='periodic x retained fraction')
-ax[0].semilogy(kc, np.sqrt(np.diag(block[(0, 0)])), c='red', label='pkcov, $\\ell=0$')
-ax[0].semilogy(kc, np.sqrt(np.diag(block[(2, 2)])), c='blue', label='pkcov, $\\ell=2$')
+ax[0].semilogy(kc, np.sqrt(np.diag(block[(0, 0)])), c='red', label='thecov, $\\ell=0$')
+ax[0].semilogy(kc, np.sqrt(np.diag(block[(2, 2)])), c='blue', label='thecov, $\\ell=2$')
 ax[0].semilogy(kc, np.sqrt(analytic[(2, 2)]), c='blue', ls='dashed', alpha=0.5)
 ax[0].set_xlabel('k [h/Mpc]'); ax[0].set_ylabel(r'$\sigma(P_\ell)$'); ax[0].legend(fontsize=8)
 ax[1].plot(kc, np.sqrt(np.diag(block[(0, 0)]) / analytic[(0, 0)]), c='red', label=r'$\ell=0$')

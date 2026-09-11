@@ -12,10 +12,10 @@ import numpy as np
 import pytest
 from scipy.special import spherical_jn, eval_legendre
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
-from pkcov.tracers import Window
-from pkcov.windows import TripolarWindow
-from pkcov.wigner import FOUR_PI
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov.tracers import Window
+from thecov.windows import TripolarWindow
+from thecov.wigner import FOUR_PI
 
 
 def sphere_randoms(R, n, center=(0.0, 0.0, 0.0), nbar=1e-3, seed=0):

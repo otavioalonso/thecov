@@ -1,4 +1,4 @@
-r"""End-to-end validation: multi-tracer Gaussian mocks in a realistic window vs the pkcov prediction.
+r"""End-to-end validation: multi-tracer Gaussian mocks in a realistic window vs the thecov prediction.
 
     python -m mocks.run_validation --n-mocks 400 --grid 256 --nproc 8 --out results/
 
@@ -22,7 +22,7 @@ This is sensitive to the off-diagonal structure as well, because a wrong correla
 up as a shifted mean and a distorted chi^2 distribution. The eigenvalues of
 C^-1/2 Chat C^-1/2 give the same information resolved by direction.
 
-Systematics OF THE TEST (not of pkcov)
+Systematics OF THE TEST (not of thecov)
 --------------------------------------
 * Box size. The covariance couples modes separated by |q| ~ 1/R_survey, and the mocks sample that
   structure at the box spacing 2 pi / L: a small box biases the *mock* covariance. Run at two values
@@ -41,7 +41,7 @@ from functools import partial
 
 import numpy as np
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 
 from .estimator import MultipoleFields, ShellBinner, cross_multipole, shot_noise
 from .field import GaussianField
@@ -94,7 +94,7 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
                         verbose=True):
     tracers = []
     for t in cat.tracers:
-        rnd, alpha = cat.pkcov_randoms(t)
+        rnd, alpha = cat.thecov_randoms(t)
         tracers.append(Tracer(t, rnd, alpha))
     k = np.linspace(0.0, 1.2 * k_edges[-1], 400)
     mult = model_multipoles(k, lambda kk: pk_lin(kk, amplitude), BIAS, STOCH, GROWTH, cat.tracers)
@@ -106,11 +106,11 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
     t0 = time.time()
     cov.compute_windows(spectra, verbose=verbose).set_model(model)
     if verbose:
-        print(f"[pkcov] window functions: {time.time() - t0:.1f} s")
+        print(f"[thecov] window functions: {time.time() - t0:.1f} s")
     t0 = time.time()
     C, labels = cov.covariance(spectra, ells=ells)
     if verbose:
-        print(f"[pkcov] covariance {C.shape[0]}x{C.shape[0]}: {time.time() - t0:.1f} s")
+        print(f"[thecov] covariance {C.shape[0]}x{C.shape[0]}: {time.time() - t0:.1f} s")
     return C, labels, cov
 
 
@@ -162,7 +162,7 @@ def report(vectors, C, labels, k_eff, spectra, ells, out_dir):
             cm = np.diag(Chat[s, s], 1) / np.sqrt(dhat[s][:-1] * dhat[s][1:])
             ca = np.diag(C[s, s], 1) / np.sqrt(d[s][:-1] * d[s][1:])
             print(f"  {X}{Y} l={ell}: mock " + " ".join(f"{v:+5.2f}" for v in cm))
-            print(f"  {' ' * len(f'{X}{Y} l={ell}')}  pkcov " + " ".join(f"{v:+5.2f}" for v in ca))
+            print(f"  {' ' * len(f'{X}{Y} l={ell}')}  thecov " + " ".join(f"{v:+5.2f}" for v in ca))
             i += nb
 
     np.savez(os.path.join(out_dir, "comparison.npz"), vectors=vectors, C_analytic=C,
@@ -176,17 +176,17 @@ def report(vectors, C, labels, k_eff, spectra, ells, out_dir):
         ax[0].axhline(1, c='k', lw=0.8)
         ax[0].fill_between([0, n_dim], 1 - 1 / np.sqrt(2 * (n_mock - 1)), 1 + 1 / np.sqrt(2 * (n_mock - 1)),
                            color='0.85', zorder=0)
-        ax[0].set_xlabel('data vector element'); ax[0].set_ylabel(r'$\sigma_{mock}/\sigma_{pkcov}$')
+        ax[0].set_xlabel('data vector element'); ax[0].set_ylabel(r'$\sigma_{mock}/\sigma_{thecov}$')
         corr_m = Chat / np.sqrt(np.outer(dhat, dhat))
         corr_a = C / np.sqrt(np.outer(d, d))
         im = ax[1].imshow(np.tril(corr_m) + np.triu(corr_a, 1), vmin=-1, vmax=1, cmap='RdBu_r')
-        ax[1].set_title('mock (lower) vs pkcov (upper)')
+        ax[1].set_title('mock (lower) vs thecov (upper)')
         fig.colorbar(im, ax=ax[1])
         ax[2].hist(chi2, bins=30, density=True, alpha=0.6)
         xs = np.linspace(chi2.min(), chi2.max(), 200)
         from scipy.stats import chi2 as chi2dist
         ax[2].plot(xs, chi2dist.pdf(xs, df=expect), 'k-')
-        ax[2].set_xlabel(r'$\chi^2$ with the pkcov matrix')
+        ax[2].set_xlabel(r'$\chi^2$ with the thecov matrix')
         fig.tight_layout()
         fig.savefig(os.path.join(out_dir, "validation.png"), dpi=130)
         print(f"\nwrote {out_dir}/validation.png and comparison.npz")

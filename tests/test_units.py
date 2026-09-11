@@ -11,8 +11,8 @@ import pytest
 from scipy.integrate import quad
 from scipy.special import spherical_jn
 
-from pkcov import Tracer, PowerSpectrumModel, GaussianCovariance
-from pkcov.kernels import ShellKernels
+from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov.kernels import ShellKernels
 
 
 # =============================================================== shell kernels
