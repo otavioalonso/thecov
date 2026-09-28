@@ -13,79 +13,137 @@ expanded in Cartesian moments of x^ (Bianchi et al. 2015; Scoccimarro 2015), so 
     F_4 = (35/8) k^_i k^_j k^_k k^_l FFT[x^_i x^_j x^_k x^_l F]
           - (30/8) k^_i k^_j FFT[x^_i x^_j F] + (3/8) F_0                    (15 extra FFTs).
 
-Mass assignment is CIC with the standard window deconvolution; keep k_max below about half the
-Nyquist frequency so that aliasing stays negligible.
+Mass assignment is CIC (or TSC) with the window deconvolved, optionally interlaced (Sefusatti et al.
+2016): a second grid shifted by half a cell along every axis is averaged in with the phase
+exp(-i k.h), which cancels exactly every alias image k + 2 k_Nyq n with odd n_x + n_y + n_z. That
+matters here beyond the usual shot-noise argument. The mocks are drawn from an intensity that is
+piecewise constant on the SAME grid, so the galaxy field carries coherent images of every mode at
+k + 2 k_Nyq n; without interlacing these fold back as a deterministic, direction-dependent
+multiplicative bias on P(k) (about 6 % from n = (1,0,0) at k / k_Nyq = 0.56 with CIC), which
+biases the mock variance by the same factor. With interlacing the leading residual comes from
+n = (1,1,0) and friends.
 """
 from __future__ import annotations
 
 import itertools
+import math
 
 import numpy as np
 
 from .field import Grid
 
+ORDER = {'ngp': 1, 'cic': 2, 'tsc': 3}
+
+
+def assign(grid: Grid, pos: np.ndarray, weights: np.ndarray, scheme: str = 'cic') -> np.ndarray:
+    """Mass assignment of weighted points onto the grid (periodic), by np.bincount."""
+    p = ORDER[scheme]
+    N = grid.N
+    out = np.zeros(N ** 3)
+    if len(pos) == 0:
+        return out.reshape((N,) * 3)
+    u = (pos - grid.box_min) / grid.cell - 0.5          # cell-centre coordinates
+    if p == 1:
+        i0 = np.rint(u).astype(np.int64)
+        idx = ((i0[:, 0] % N) * N + i0[:, 1] % N) * N + i0[:, 2] % N
+        return np.bincount(idx, weights=weights, minlength=N ** 3).reshape((N,) * 3)
+    if p == 2:
+        i0 = np.floor(u).astype(np.int64)
+        d = u - i0
+        offs = (0, 1)
+        wfun = lambda o, d: d if o else 1.0 - d
+    else:
+        i0 = np.rint(u).astype(np.int64) - 1
+        d = u - (i0 + 1)                                  # in [-1/2, 1/2]
+        offs = (0, 1, 2)
+        wfun = lambda o, d: (0.5 * (0.5 - d) ** 2 if o == 0 else
+                             0.75 - d ** 2 if o == 1 else 0.5 * (0.5 + d) ** 2)
+    wax = [[wfun(o, d[:, a]) for o in offs] for a in range(3)]
+    iax = [[(i0[:, a] + o) % N for o in offs] for a in range(3)]
+    for ox, oy, oz in itertools.product(range(len(offs)), repeat=3):
+        idx = (iax[0][ox] * N + iax[1][oy]) * N + iax[2][oz]
+        out += np.bincount(idx, weights=weights * wax[0][ox] * wax[1][oy] * wax[2][oz],
+                           minlength=N ** 3)
+    return out.reshape((N,) * 3)
+
 
 def cic_assign(grid: Grid, pos: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """Cloud-in-cell assignment of weighted points onto the grid (periodic)."""
-    out = np.zeros((grid.N,) * 3)
-    if len(pos) == 0:
-        return out
-    u = (pos - grid.box_min) / grid.cell - 0.5
-    i0 = np.floor(u).astype(np.int64)
-    d = u - i0
-    N = grid.N
-    for dx in (0, 1):
-        wx = d[:, 0] if dx else 1 - d[:, 0]
-        ix = (i0[:, 0] + dx) % N
-        for dy in (0, 1):
-            wy = d[:, 1] if dy else 1 - d[:, 1]
-            iy = (i0[:, 1] + dy) % N
-            for dz in (0, 1):
-                wz = d[:, 2] if dz else 1 - d[:, 2]
-                iz = (i0[:, 2] + dz) % N
-                np.add.at(out, (ix, iy, iz), weights * wx * wy * wz)
-    return out
+    """Cloud-in-cell assignment (kept for backwards compatibility)."""
+    return assign(grid, pos, weights, 'cic')
 
 
-def cic_correction(grid: Grid) -> np.ndarray:
-    """1 / W_CIC(k)^2 for deconvolving the assignment window."""
-    kf = np.pi / grid.N
+def assignment_correction(grid: Grid, scheme: str = 'cic') -> np.ndarray:
+    """1 / W(k) for deconvolving the assignment window, W = prod_i sinc(n_i / N)^p."""
+    p = ORDER[scheme]
     n1 = np.fft.fftfreq(grid.N, d=1.0 / grid.N)
     n3 = np.fft.rfftfreq(grid.N, d=1.0 / grid.N)
     s = lambda n: np.sinc(n / grid.N)          # np.sinc(x) = sin(pi x)/(pi x)
-    w = (s(n1)[:, None, None] * s(n1)[None, :, None] * s(n3)[None, None, :]) ** 2
+    w = (s(n1)[:, None, None] * s(n1)[None, :, None] * s(n3)[None, None, :]) ** p
     return 1.0 / w
 
 
-class MultipoleFields:
-    """F_l(k) for one tracer, computed once and reused for every spectrum it enters."""
+def cic_correction(grid: Grid) -> np.ndarray:
+    """1 / W_CIC(k) (kept for backwards compatibility)."""
+    return assignment_correction(grid, 'cic')
 
-    def __init__(self, grid: Grid, gal_pos, gal_w, ran_pos, ran_w, alpha, ells=(0, 2)):
-        self.grid = grid
-        self.ells = tuple(ells)
-        F = cic_assign(grid, gal_pos, gal_w) - alpha * cic_assign(grid, ran_pos, ran_w)
-        corr = cic_correction(grid)
+
+def _raw_multipoles(grid: Grid, F: np.ndarray, ells, corr, kh):
+    """F_l(k) of one real-space field on one grid (no interlacing)."""
+    out = {}
+    F0 = np.fft.rfftn(F) * corr
+    out[0] = F0
+    if 2 in ells or 4 in ells:
         r = grid.radius()
         xh = [grid.unit_vector(i, r) for i in range(3)]
+        A2 = np.zeros_like(F0)
+        for i, j in itertools.combinations_with_replacement(range(3), 2):
+            m = 1.0 if i == j else 2.0
+            A2 += m * kh[i] * kh[j] * (np.fft.rfftn(xh[i] * xh[j] * F) * corr)
+        if 2 in ells:
+            out[2] = 1.5 * A2 - 0.5 * F0
+        if 4 in ells:
+            A4 = np.zeros_like(F0)
+            for c in itertools.combinations_with_replacement(range(3), 4):
+                m = 24.0 / np.prod([math.factorial(c.count(a)) for a in range(3)])
+                prod_x = xh[c[0]] * xh[c[1]] * xh[c[2]] * xh[c[3]]
+                A4 += m * kh[c[0]] * kh[c[1]] * kh[c[2]] * kh[c[3]] * (np.fft.rfftn(prod_x * F) * corr)
+            out[4] = (35 * A4 - 30 * A2 + 3 * F0) / 8.0
+    return out
+
+
+class MultipoleFields:
+    """F_l(k) for one tracer, computed once and reused for every spectrum it enters.
+
+    `scheme` is the mass assignment ('cic' or 'tsc'); `interlace` averages in a second grid shifted
+    by half a cell (see the module docstring).
+    """
+
+    def __init__(self, grid: Grid, gal_pos, gal_w, ran_pos, ran_w, alpha, ells=(0, 2),
+                 scheme='cic', interlace=False):
+        self.grid = grid
+        self.ells = tuple(ells)
+        corr = assignment_correction(grid, scheme)
         kx, ky, kz = grid.kvec()
         k = grid.knorm()
         safe = np.where(k > 0, k, 1.0)
         kh = [kx / safe, ky / safe, kz / safe]
-        self.F = {}
-        F0 = np.fft.rfftn(F) * corr
-        self.F[0] = F0
-        if 2 in self.ells or 4 in self.ells:
-            A2 = np.zeros_like(F0)
-            for i, j in itertools.product(range(3), repeat=2):
-                A2 += kh[i] * kh[j] * (np.fft.rfftn(xh[i] * xh[j] * F) * corr)
-            if 2 in self.ells:
-                self.F[2] = 1.5 * A2 - 0.5 * F0
-        if 4 in self.ells:
-            A4 = np.zeros_like(F0)
-            for i, j, m, n in itertools.product(range(3), repeat=4):
-                A4 += kh[i] * kh[j] * kh[m] * kh[n] * (np.fft.rfftn(xh[i] * xh[j] * xh[m] * xh[n] * F) * corr)
-            self.F[4] = (35 * A4 - 30 * A2 + 3 * F0) / 8.0
-        del F
+        grids = [grid]
+        if interlace:
+            h = 0.5 * grid.cell
+            grids.append(Grid(grid.box_min + h, grid.L, grid.N, dtype=grid.dtype))
+        self.F = None
+        for n, g in enumerate(grids):
+            F = assign(g, gal_pos, gal_w, scheme) - alpha * assign(g, ran_pos, ran_w, scheme)
+            Fl = _raw_multipoles(g, F, self.ells, corr, kh)
+            del F
+            if n == 0:
+                self.F = Fl
+            else:
+                # g's cell centres sit at +h relative to `grid`: F_true = exp(-i k.h) FFT[F_g]
+                phase = np.exp(-1j * 0.5 * grid.cell * (kx + ky + kz))
+                for ell in self.F:
+                    self.F[ell] = 0.5 * (self.F[ell] + phase * Fl[ell])
+            del Fl
 
 
 class ShellBinner:

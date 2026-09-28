@@ -51,7 +51,9 @@ from .survey import Catalogues, Footprint, make_grid, make_mock, model_multipole
 BIAS = {'A': 1.9, 'B': 1.2}
 STOCH = {'A': 300.0, 'B': 800.0}        # white "clustering" stochasticity, part of P^XX
 GROWTH = 0.78
-MAX_KMAX_OVER_KNYQ = 0.45             # shot-noise aliasing negligible below this
+# Largest k_max / k_Nyquist at which the estimator's aliasing bias is negligible for the validation;
+# measured with diagnostics/aliasing.py on the production set-up.
+MAX_KMAX_OVER_KNYQ = {False: 0.45, True: 0.45}      # keyed by --interlace (True: provisional)
 K_CUT = 0.8                           # GaussianField default: no power above K_CUT * k_Nyquist
 
 
@@ -68,7 +70,7 @@ def pk_lin(k, amplitude=1.0):
 
 
 # --------------------------------------------------------------------------- one realisation
-def one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude):
+def one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme='cic', interlace=False):
     rng = np.random.default_rng(seed)
     field = GaussianField(cat.grid, lambda k: pk_lin(k, amplitude), rng)
     cats = make_mock(cat, field, BIAS, STOCH, GROWTH, rng, rsd=True)
@@ -76,7 +78,8 @@ def one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude):
     for t in cat.tracers:
         pos = cats[t]
         fields[t] = MultipoleFields(cat.grid, pos, cat.weights_at(t, pos),
-                                    cat.randoms[t], cat.w_ran[t], cat.alpha[t], ells=ells)
+                                    cat.randoms[t], cat.w_ran[t], cat.alpha[t], ells=ells,
+                                    scheme=scheme, interlace=interlace)
     out = []
     for (X, Y) in spectra:
         for ell in ells:
@@ -87,8 +90,8 @@ def one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude):
     return np.concatenate(out), {t: len(cats[t]) for t in cat.tracers}
 
 
-def _worker(seed, cat, binner, spectra, ells, I_tab, amplitude):
-    v, n = one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude)
+def _worker(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace):
+    v, n = one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace)
     return v, n
 
 
@@ -217,6 +220,8 @@ def main():
     ap.add_argument('--ds', type=float, default=2.0)
     ap.add_argument('--ds-pair', type=float, default=10.0)
     ap.add_argument('--out', default='mock_validation')
+    ap.add_argument('--scheme', choices=['cic', 'tsc'], default='cic', help='mass assignment')
+    ap.add_argument('--interlace', action='store_true', help='interlaced estimator (see estimator.py)')
     ap.add_argument('--allow-aliasing', action='store_true',
                     help='run even if k_max is too close to k_Nyquist (diagnostics only)')
     ap.add_argument('--resume', action='store_true', help='append to an existing vectors.npy')
@@ -242,8 +247,10 @@ def main():
     # Both failure modes produce a k-only sawtooth in sigma_mock / sigma_thecov that is identical
     # across blocks and is easily misread as a covariance failure, so refuse to run them.
     problems = []
-    if ratio > MAX_KMAX_OVER_KNYQ:
-        problems.append(f"k_max / k_Nyquist = {ratio:.2f} > {MAX_KMAX_OVER_KNYQ}: aliasing")
+    limit = MAX_KMAX_OVER_KNYQ[args.interlace]
+    if ratio > limit:
+        problems.append(f"k_max / k_Nyquist = {ratio:.2f} > {limit} "
+                        f"({'with' if args.interlace else 'without'} interlacing): aliasing")
     if args.kmax > K_CUT * grid.k_nyquist:
         problems.append(f"k_max = {args.kmax:.3f} > k_cut = {K_CUT * grid.k_nyquist:.3f}: "
                         f"the mock field has no clustering power in the top bins")
@@ -277,7 +284,7 @@ def main():
     print(f"\nrunning {len(todo)} mocks ({len(done)} already stored) on {args.nproc} process(es)")
 
     fn = partial(_worker, cat=cat, binner=binner, spectra=spectra, ells=ells, I_tab=I_tab,
-                 amplitude=args.amplitude)
+                 amplitude=args.amplitude, scheme=args.scheme, interlace=args.interlace)
     results, t0 = [], time.time()
     if args.nproc > 1:
         import multiprocessing as mp
