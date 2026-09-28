@@ -244,7 +244,8 @@ expectation overlaid (`box_test_d0.png`).
 
 ## End-to-end validation with mocks (`mocks/`)
 
-    python -m mocks.run_validation --n-mocks 300 --grid 256 --nproc 8 --out results/
+    python -m mocks.run_validation --n-mocks 1000 --grid 256 --box-factor 2 --kmax 0.30 \
+           --interlace --scheme tsc --amplitude 0.6 --nproc 4 --out results/
 
 This is the only test that probes the **approximations** rather than the implementation. Multi-tracer
 Gaussian mocks are generated in a realistic window and their sample covariance is compared with the
@@ -252,15 +253,17 @@ thecov prediction.
 
 * **Geometry**: a spherical cap between 400 and 900 Mpc/h with a smooth n(z) per tracer, three
   circular holes in the angular mask and a completeness gradient. The two tracers share the angular
-  mask but have different n(z), bias and stochasticity.
-* **Mocks**: a Gaussian delta_m on a grid, tracers delta_X = b_X delta_m + n_X, Poisson-sampled cell
+  mask but have different n(z) and bias.
+* **Mocks**: a Gaussian delta_m on a grid, tracers delta_X = b_X delta_m, Poisson-sampled cell
   by cell, then displaced by f (Psi . r^) r^ **along each galaxy's own line of sight**. Nothing in
   the generation assumes a global line of sight, so the local plane-parallel approximation is being
   tested, not assumed.
 * **Estimator**: Yamamoto-FKP with the Cartesian-moment FFT decomposition (1 FFT for l = 0, 6 more
-  for l = 2, 15 more for l = 4), CIC assignment with window deconvolution.
+  for l = 2, 15 more for l = 4), CIC or TSC assignment with window deconvolution, optionally
+  interlaced (`--interlace`, doubles the FFTs).
 * **Model**: exact, because the mocks are built from a known spectrum --
-  P_XY(k, mu) = (b_X + f mu^2)(b_Y + f mu^2) P_lin + delta_XY N_X.
+  P_XY(k, mu) = (b_X + f mu^2)(b_Y + f mu^2) P_lin (+ delta_XY N_X with `--stoch-scale`, off by
+  default: see Clipping below).
 
 ### Statistics
 
@@ -269,15 +272,38 @@ tested far more cheaply by chi^2_i = (d_i - dbar)^T C_thecov^-1 (d_i - dbar), wh
 n_dim (1 - 1/N_mock) with a relative error sqrt(2 / (n_dim N_mock)) -- about 1.2 % for 48 elements
 and 300 mocks -- and which is sensitive to the off-diagonal structure as well. The script also
 reports the eigenvalues of C^-1/2 Chat C^-1/2 (mean 1, spread sqrt(2/N_mock)), the diagonal ratios
-and the first off-diagonal correlations, and writes a plot plus `comparison.npz`. Runs can be
-extended with `--resume`.
+and the first off-diagonal correlations, and writes a plot plus `comparison.npz`.
+
+### Outputs, resuming and reuse
+
+Everything goes to `--out`, each file tagged with the options it depends on:
+
+| file | contents | written |
+|---|---|---|
+| `windows.npz` (+ `.json`) | thecov pair counts (the expensive part of the analytic side) | once computed |
+| `analytic.npz` | C_thecov and labels | once computed |
+| `mocks.npz` | data vectors **and their seeds** | every 10 mocks (5 with `--nproc 1`), atomically |
+| `comparison.npz`, `validation.png` | report | at the end |
+
+`--resume` runs exactly the seeds still missing (with several processes mocks finish out of order,
+so counting them is not enough) and reuses the analytic side; `--report-only` rebuilds the report
+from the stored files. A stored file made with different options is an error, never silently mixed,
+and an existing `--out` without either flag is refused. A `vectors.npy` from older versions is read
+with a warning, its seeds assumed contiguous (exact only if it came from one uninterrupted run).
 
 ### Systematics of the test itself (not of thecov)
 
 * **Box size.** The covariance couples modes separated by |q| ~ 1/R_survey and the mocks sample that
   structure at the box spacing 2 pi / L, so a small box biases the *mock* covariance. Run at two
   values of `--box-factor`.
-* **Aliasing.** Keep k_max below about 0.4 k_Nyquist; the script prints the ratio and warns.
+* **Aliasing.** The mocks are drawn on the estimator's own grid, so the galaxy field carries coherent
+  images of every mode at k + 2 k_Nyq n; without interlacing they fold back as a deterministic,
+  direction-dependent bias on P. `python -m diagnostics.aliasing` measures it on one common
+  catalogue against a finer grid (no cosmic variance): at 0.56 k_Nyquist plain CIC is off by +6 %
+  (AA) and -14 % (AB), TSC + interlacing by <= 0.2 %, and TSC + interlacing stays <= 0.4 % to
+  0.73 k_Nyquist. The driver refuses k_max above 0.45 (CIC), 0.6 (CIC + interlacing) or 0.7 k_Nyquist
+  (TSC + interlacing), and above the field's k_cut = 0.8 k_Nyquist; `--allow-aliasing` overrides.
+  This is what produced the k-only sawtooth in sigma_mock / sigma_thecov of earlier runs.
 * **The cell window.** Galaxies placed uniformly inside their cell realise the *cell-averaged*
   density, which suppresses the clustering by T(k) = prod sinc(n_i/N) on top of the CIC assignment
   window. The field generator pre-divides by T to cancel it exactly, and the RSD displacement is
@@ -289,10 +315,15 @@ extended with `--resume`.
   spectrum as a spurious constant alpha/nbar (5 % of P at k = 0.02 in the test set-up, 18 % by
   k = 0.1). `survey.Catalogues` gives each tracer its own randoms; the same care is needed with
   real catalogues.
-* **Clipping.** Poisson sampling needs a non-negative intensity, so 1 + b delta is clipped at zero.
-  This removes power: at sigma(b delta) ~ 0.9 the measured P is ~12 % low, which would be misread as
-  a covariance failure. The default amplitude keeps sigma(b delta) ~ 0.3; the driver prints it and
-  the clipped fraction at start-up and warns above 0.35. `--amplitude` rescales it.
+* **Clipping.** Poisson sampling needs a non-negative intensity, so 1 + x is clipped at zero. The
+  clipped field responds to the clustering with the factor P(x > -1) (Price's theorem), so P drops
+  by its square: 0.4 % at sigma(x) = 0.35, 12 % at 0.9 -- easily misread as a covariance failure.
+  sigma(b delta) grows as cells shrink (0.40 for tracer A at 7 Mpc/h cells; use `--amplitude 0.6`).
+  A white stochasticity field is worse: its per-cell sigma is sqrt(N_X / V_cell) ~ 1, and with it
+  16-26 % of cells were clipped and the clustering power fell to 0.55-0.75 of the model. It cannot
+  be realised with Gaussian cells, and in thecov it only adds to P^XX with the W^AA window (the
+  clustering code path), so it is off by default. The driver computes sigma(x) including any noise
+  field and refuses sigma > 0.35; `--allow-clipping` overrides.
 * **Non-Gaussianity.** The low amplitude also keeps the field close to Gaussian, which is what the
   formula assumes; raise `--amplitude` if you want to see the departure (but watch the clipping).
 

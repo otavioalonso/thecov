@@ -108,12 +108,14 @@ def one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme='cic', i
 
 def _worker(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace, stoch):
     v, n = one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace, stoch)
-    return v, n
+    return seed, v, n
 
 
 # --------------------------------------------------------------------------- analytic side
 def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, ds, ds_pair, stoch,
-                        verbose=True):
+                        windows_path=None, verbose=True):
+    """thecov's matrix for the mock set-up. With `windows_path`, the pair counts are loaded from it
+    when it exists and saved to it otherwise (the caller checks that the geometry matches)."""
     tracers = []
     for t in cat.tracers:
         rnd, alpha = cat.thecov_randoms(t)
@@ -126,14 +128,82 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
     cov = GaussianCovariance(tracers, k_edges, ells=ells, L_max=4, ds=ds, ds_pair=ds_pair,
                              shot_noise=True, n_sub=n_sub, n_near=n_near, s_split=80.0, seed=0)
     t0 = time.time()
-    cov.compute_windows(spectra, verbose=verbose).set_model(model)
-    if verbose:
-        print(f"[thecov] window functions: {time.time() - t0:.1f} s")
+    if windows_path is not None and os.path.exists(windows_path):
+        cov.load_windows(windows_path)
+        if verbose:
+            print(f"[thecov] window functions loaded from {windows_path}")
+    else:
+        cov.compute_windows(spectra, verbose=verbose)
+        if verbose:
+            print(f"[thecov] window functions: {time.time() - t0:.1f} s")
+        if windows_path is not None:
+            _atomic(windows_path, lambda f: cov.save_windows(f))
+    cov.set_model(model)
     t0 = time.time()
     C, labels = cov.covariance(spectra, ells=ells)
     if verbose:
         print(f"[thecov] covariance {C.shape[0]}x{C.shape[0]}: {time.time() - t0:.1f} s")
     return C, labels, cov
+
+
+# --------------------------------------------------------------------------- caching
+# Everything in <out>/ is tagged with the options it depends on; a mismatch is an error, never a
+# silent mix. Mocks are stored with their seeds, so resuming runs exactly the missing seeds (with
+# several processes the mocks finish out of order, and counting them was not enough).
+KEYS_WINDOWS = ('grid', 'box_factor', 'n_random_factor', 'tracers', 'ells',
+                'n_sub', 'n_near', 'ds', 'ds_pair')
+KEYS_ANALYTIC = KEYS_WINDOWS + ('kmin', 'kmax', 'dk', 'amplitude', 'stoch_scale')
+KEYS_MOCKS = ('grid', 'box_factor', 'n_random_factor', 'tracers', 'ells', 'kmin', 'kmax', 'dk',
+              'amplitude', 'stoch_scale', 'scheme', 'interlace')
+
+
+def _atomic(path, write):
+    """Write through a temporary file and rename, so an interrupted run never leaves a torn file."""
+    base, ext = os.path.splitext(path)
+    tmp = base + '.tmp' + ext
+    write(tmp)
+    os.replace(tmp, path)
+
+
+def _subset(cfg, keys):
+    return {k: cfg.get(k) for k in keys}
+
+
+def _check_config(stored, current, keys, what):
+    bad = [f"{k}: stored {stored.get(k)!r}, now {current.get(k)!r}" for k in keys
+           if stored.get(k) != current.get(k)]
+    if bad:
+        raise SystemExit(f"error: {what} in the output directory were made with different options:\n  "
+                         + "\n  ".join(bad) + "\nUse a new --out, or the original options.")
+
+
+def _load_mocks(out, cfg, n_dim, prior=None):
+    """(vectors, seeds) already stored in `out`, or empty arrays. `prior` is the config.json found
+    in `out`, the only record of the options behind a legacy vectors.npy."""
+    path = os.path.join(out, 'mocks.npz')
+    if os.path.exists(path):
+        with np.load(path, allow_pickle=False) as f:
+            stored = json.loads(str(f['config']))
+            _check_config(stored, cfg, KEYS_MOCKS, "stored mocks")
+            return f['vectors'], f['seeds']
+    legacy = os.path.join(out, 'vectors.npy')
+    if os.path.exists(legacy):
+        if prior is None:
+            raise SystemExit(f"error: {legacy} has no config.json next to it; cannot check its options")
+        _check_config(prior, cfg, KEYS_MOCKS, "stored mocks")
+        v = np.load(legacy)
+        # Older runs stored no seeds. The set is exactly seed0 .. seed0 + n - 1 only if that run
+        # was never interrupted and resumed; say so rather than guess silently.
+        print(f"WARNING: {legacy} has no seeds; assuming seeds {cfg['seed0']}..{cfg['seed0'] + len(v) - 1} "
+              f"(exact only if it came from one uninterrupted run)")
+        return v, cfg['seed0'] + np.arange(len(v))
+    return np.zeros((0, n_dim)), np.zeros(0, dtype=np.int64)
+
+
+def _save_mocks(out, cfg, vectors, seeds):
+    path = os.path.join(out, 'mocks.npz')
+    _atomic(path, lambda f: np.savez(f, vectors=np.asarray(vectors), seeds=np.asarray(seeds, dtype=np.int64),
+                                     config=np.array(json.dumps(_subset(cfg, KEYS_MOCKS)))))
 
 
 # --------------------------------------------------------------------------- report
@@ -244,12 +314,28 @@ def main():
                     help='run even if Poisson sampling clips the field (diagnostics only)')
     ap.add_argument('--allow-aliasing', action='store_true',
                     help='run even if k_max is too close to k_Nyquist (diagnostics only)')
-    ap.add_argument('--resume', action='store_true', help='append to an existing vectors.npy')
+    ap.add_argument('--resume', action='store_true',
+                    help='continue in an existing --out: run only the missing seeds, reuse the analytic side')
+    ap.add_argument('--report-only', action='store_true',
+                    help='no new mocks: rebuild the report from what is stored in --out')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    with open(os.path.join(args.out, 'config.json'), 'w') as fh:
-        json.dump(vars(args), fh, indent=2)
+    cfg = vars(args).copy()
+    cfg['tracers'], cfg['ells'] = list(args.tracers), list(args.ells)
+    reuse = args.resume or args.report_only
+    stored_any = any(os.path.exists(os.path.join(args.out, f))
+                     for f in ('mocks.npz', 'vectors.npy', 'analytic.npz', 'windows.npz'))
+    if stored_any and not reuse:
+        raise SystemExit(f"error: {args.out} already holds results; pass --resume or --report-only, "
+                         f"or choose a new --out")
+    cpath = os.path.join(args.out, 'config.json')
+    prior = None
+    if os.path.exists(cpath):
+        with open(cpath) as fh:
+            prior = json.load(fh)
+        for k in KEYS_MOCKS + KEYS_ANALYTIC:
+            prior.setdefault(k, ap.get_default(k.replace('-', '_')))
 
     fp = Footprint()
     grid = make_grid(fp, args.grid, args.box_factor)
@@ -307,37 +393,78 @@ def main():
             raise SystemExit("error: " + msg + " (--allow-clipping overrides)")
         print("WARNING: " + msg)
 
-    C, labels, _ = analytic_covariance(cat, k_edges, spectra, ells, args.amplitude,
-                                       args.n_sub, args.n_near, args.ds, args.ds_pair, stoch)
+    n_dim = len(spectra) * len(ells) * (len(k_edges) - 1)
+    done, done_seeds = _load_mocks(args.out, cfg, n_dim, prior)
+    if done.shape[1:] != (n_dim,):
+        raise SystemExit(f"error: stored mocks have {done.shape[1]} elements, expected {n_dim}")
+    if args.report_only and len(done) < 2:
+        raise SystemExit(f"error: --report-only needs stored mocks in {args.out}")
+    have = set(int(x) for x in done_seeds)
+    if len(have) != len(done_seeds):
+        raise SystemExit("error: stored mocks contain duplicated seeds")
 
-    path = os.path.join(args.out, 'vectors.npy')
-    done = np.load(path) if (args.resume and os.path.exists(path)) else np.zeros((0, C.shape[0]))
-    todo = [args.seed0 + i for i in range(len(done), args.n_mocks)]
+    apath = os.path.join(args.out, 'analytic.npz')
+    wpath = os.path.join(args.out, 'windows.npz')
+    if os.path.exists(wpath):
+        with open(wpath + '.json') as fh:
+            _check_config(json.load(fh), cfg, KEYS_WINDOWS, "stored window functions")
+    if os.path.exists(apath):
+        with np.load(apath, allow_pickle=False) as f:
+            _check_config(json.loads(str(f['config'])), cfg, KEYS_ANALYTIC, "the stored analytic covariance")
+            C, labels = f['C'], list(f['labels'])
+        print(f"[thecov] covariance {C.shape[0]}x{C.shape[0]} loaded from {apath}")
+    else:
+        if not os.path.exists(wpath):
+            with open(wpath + '.json', 'w') as fh:
+                json.dump(_subset(cfg, KEYS_WINDOWS), fh, indent=2)
+        C, labels, _ = analytic_covariance(cat, k_edges, spectra, ells, args.amplitude,
+                                           args.n_sub, args.n_near, args.ds, args.ds_pair, stoch,
+                                           windows_path=wpath)
+        _atomic(apath, lambda f: np.savez(f, C=C, labels=np.array([str(l) for l in labels]),
+                                          config=np.array(json.dumps(_subset(cfg, KEYS_ANALYTIC)))))
+        print(f"[thecov] saved {apath} and {wpath}")
+
+    if C.shape[0] != n_dim:
+        raise SystemExit(f"error: the analytic covariance is {C.shape[0]}x{C.shape[0]}, expected {n_dim}")
+    with open(cpath, 'w') as fh:                    # only once every stored file has been checked
+        json.dump(cfg, fh, indent=2)
+    if args.report_only:
+        print(f"\nreport from {len(done)} stored mocks")
+        report(done, C, labels, binner.k_eff, spectra, ells, args.out)
+        return
+    todo = [s for s in range(args.seed0, args.seed0 + args.n_mocks) if s not in have]
     print(f"\nrunning {len(todo)} mocks ({len(done)} already stored) on {args.nproc} process(es)")
 
     fn = partial(_worker, cat=cat, binner=binner, spectra=spectra, ells=ells, I_tab=I_tab,
                  amplitude=args.amplitude, scheme=args.scheme, interlace=args.interlace,
                  stoch=stoch)
-    results, t0 = [], time.time()
+    results, seeds, t0 = [], [], time.time()
+
+    def checkpoint():
+        _save_mocks(args.out, cfg, np.vstack([done] + results) if results else done,
+                    np.concatenate([done_seeds, np.asarray(seeds, dtype=np.int64)]))
+
     if args.nproc > 1:
         import multiprocessing as mp
         with mp.get_context('fork').Pool(args.nproc) as pool:
-            for i, (v, n) in enumerate(pool.imap_unordered(fn, todo, chunksize=1)):
-                results.append(v)
+            for i, (sd, v, n) in enumerate(pool.imap_unordered(fn, todo, chunksize=1)):
+                results.append(v[None, :])
+                seeds.append(sd)
                 if (i + 1) % 10 == 0:
                     el = time.time() - t0
                     print(f"  {i + 1}/{len(todo)}  {el:.0f} s  (eta {el / (i + 1) * (len(todo) - i - 1):.0f} s)")
-                    np.save(path, np.vstack([done] + results) if len(done) else np.array(results))
+                    checkpoint()
     else:
-        for i, s in enumerate(todo):
-            v, n = fn(s)
-            results.append(v)
+        for i, sd in enumerate(todo):
+            _, v, n = fn(sd)
+            results.append(v[None, :])
+            seeds.append(sd)
             if (i + 1) % 5 == 0:
                 el = time.time() - t0
                 print(f"  {i + 1}/{len(todo)}  {el:.0f} s  N_gal {n}")
-                np.save(path, np.vstack([done] + results) if len(done) else np.array(results))
-    vectors = np.vstack([done] + results) if len(done) else np.array(results)
-    np.save(path, vectors)
+                checkpoint()
+    checkpoint()
+    vectors = np.vstack([done] + results) if results else done
     print(f"mocks done in {time.time() - t0:.0f} s")
 
     report(vectors, C, labels, binner.k_eff, spectra, ells, args.out)
