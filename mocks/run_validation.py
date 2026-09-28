@@ -32,8 +32,10 @@ Systematics OF THE TEST (not of thecov)
   that shows up as a k-only sawtooth in sigma_mock / sigma_thecov. Use --interlace --scheme tsc,
   which is clean to 0.7 k_Nyquist. k_max must also stay below the field's k_cut = 0.8 k_Nyquist.
   The driver refuses to run otherwise unless --allow-aliasing is given.
-* Non-Gaussianity. The field amplitude is deliberately low so that 1 + delta stays positive and the
-  Gaussian covariance is the right answer; --sigma8-like rescales it if you want to probe that.
+* Clipping. Poisson sampling needs 1 + b delta + noise >= 0; clipping suppresses the clustering by
+  P(x > -1)^2. sigma(x) is computed at start-up INCLUDING the white stochasticity field, and the
+  driver refuses sigma > 0.35 (0.4 % power loss). sigma(b delta) grows as the cell shrinks: at
+  7 Mpc/h cells use --amplitude 0.6. The stochasticity is off by default (see STOCH).
 """
 from __future__ import annotations
 
@@ -52,7 +54,13 @@ from .field import GaussianField
 from .survey import Catalogues, Footprint, make_grid, make_mock, model_multipoles
 
 BIAS = {'A': 1.9, 'B': 1.2}
-STOCH = {'A': 300.0, 'B': 800.0}        # white "clustering" stochasticity, part of P^XX
+# White "clustering" stochasticity, part of P^XX; multiplied by --stoch-scale, which defaults to 0.
+# It cannot be realised with Gaussian cells: its per-cell sigma is sqrt(STOCH / V_cell) ~ 1 at
+# 7 Mpc/h cells, so 1 + x gets clipped in 16-26 % of cells and the mocks lose 25-45 % of their
+# clustering power (measured). In thecov it enters only as an additive term in P^XX with the
+# W^AA window -- the same code path as the clustering -- so leaving it out costs no coverage.
+STOCH = {'A': 300.0, 'B': 800.0}
+MAX_SIGMA_CLIP = 0.35                 # sigma(1 + x) above this: clipping removes > 0.4 % of P
 GROWTH = 0.78
 # Largest k_max / k_Nyquist at which the estimator's aliasing bias on P is negligible (<~0.4 %),
 # keyed by (scheme, interlace). Measured with diagnostics/aliasing.py (N=256 vs an N=512
@@ -77,10 +85,11 @@ def pk_lin(k, amplitude=1.0):
 
 
 # --------------------------------------------------------------------------- one realisation
-def one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme='cic', interlace=False):
+def one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme='cic', interlace=False,
+             stoch=None):
     rng = np.random.default_rng(seed)
     field = GaussianField(cat.grid, lambda k: pk_lin(k, amplitude), rng)
-    cats = make_mock(cat, field, BIAS, STOCH, GROWTH, rng, rsd=True)
+    cats = make_mock(cat, field, BIAS, stoch or {}, GROWTH, rng, rsd=True)
     fields = {}
     for t in cat.tracers:
         pos = cats[t]
@@ -97,20 +106,20 @@ def one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme='cic', i
     return np.concatenate(out), {t: len(cats[t]) for t in cat.tracers}
 
 
-def _worker(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace):
-    v, n = one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace)
+def _worker(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace, stoch):
+    v, n = one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace, stoch)
     return v, n
 
 
 # --------------------------------------------------------------------------- analytic side
-def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, ds, ds_pair,
+def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, ds, ds_pair, stoch,
                         verbose=True):
     tracers = []
     for t in cat.tracers:
         rnd, alpha = cat.thecov_randoms(t)
         tracers.append(Tracer(t, rnd, alpha))
     k = np.linspace(0.0, 1.2 * k_edges[-1], 400)
-    mult = model_multipoles(k, lambda kk: pk_lin(kk, amplitude), BIAS, STOCH, GROWTH, cat.tracers)
+    mult = model_multipoles(k, lambda kk: pk_lin(kk, amplitude), BIAS, stoch, GROWTH, cat.tracers)
     model = PowerSpectrumModel()
     for pair, m in mult.items():
         model.add(pair, {L: (k, v) for L, v in m.items()})
@@ -229,6 +238,10 @@ def main():
     ap.add_argument('--out', default='mock_validation')
     ap.add_argument('--scheme', choices=['cic', 'tsc'], default='cic', help='mass assignment')
     ap.add_argument('--interlace', action='store_true', help='interlaced estimator (see estimator.py)')
+    ap.add_argument('--stoch-scale', type=float, default=0.0,
+                    help='multiplies the white stochasticity STOCH (default 0: see STOCH)')
+    ap.add_argument('--allow-clipping', action='store_true',
+                    help='run even if Poisson sampling clips the field (diagnostics only)')
     ap.add_argument('--allow-aliasing', action='store_true',
                     help='run even if k_max is too close to k_Nyquist (diagnostics only)')
     ap.add_argument('--resume', action='store_true', help='append to an existing vectors.npy')
@@ -240,6 +253,7 @@ def main():
 
     fp = Footprint()
     grid = make_grid(fp, args.grid, args.box_factor)
+    stoch = {t: args.stoch_scale * STOCH[t] for t in args.tracers}
     cat = Catalogues(fp, grid, n_random_factor=args.n_random_factor, tracers=tuple(args.tracers))
     k_edges = np.arange(args.kmin, args.kmax + args.dk / 2, args.dk)
     binner = ShellBinner(grid, k_edges)
@@ -276,14 +290,25 @@ def main():
     from .field import GaussianField as _GF
     from .survey import clipping_diagnostics
     _d = _GF(grid, lambda k: pk_lin(k, args.amplitude), np.random.default_rng(0)).delta()
-    diag = clipping_diagnostics(_d, BIAS)
-    for t, (sig, frac) in diag.items():
-        flag = 'ok' if sig < 0.35 else 'TOO HIGH: clipping removes power'
-        print(f"  sigma(b_{t} delta) = {sig:.3f}, clipped cells = {frac:.2e}  ({flag})")
+    diag = clipping_diagnostics(_d, BIAS, stoch, grid)
     del _d
+    bad = []
+    for t, (sig, frac) in diag.items():
+        ok = sig < MAX_SIGMA_CLIP
+        print(f"  sigma(b_{t} delta + noise_{t}) = {sig:.3f}, clipped cells = {frac:.2e}  "
+              f"({'ok' if ok else 'TOO HIGH: clipping removes power'})")
+        if not ok:
+            bad.append(t)
+    if bad:
+        msg = (f"sigma(1 + x) > {MAX_SIGMA_CLIP} for tracer(s) {', '.join(bad)}: Poisson sampling clips "
+               f"the field and the mocks lose power. Lower --amplitude (sigma scales as its square "
+               f"root) or --stoch-scale, or raise the cell size.")
+        if not args.allow_clipping:
+            raise SystemExit("error: " + msg + " (--allow-clipping overrides)")
+        print("WARNING: " + msg)
 
     C, labels, _ = analytic_covariance(cat, k_edges, spectra, ells, args.amplitude,
-                                       args.n_sub, args.n_near, args.ds, args.ds_pair)
+                                       args.n_sub, args.n_near, args.ds, args.ds_pair, stoch)
 
     path = os.path.join(args.out, 'vectors.npy')
     done = np.load(path) if (args.resume and os.path.exists(path)) else np.zeros((0, C.shape[0]))
@@ -291,7 +316,8 @@ def main():
     print(f"\nrunning {len(todo)} mocks ({len(done)} already stored) on {args.nproc} process(es)")
 
     fn = partial(_worker, cat=cat, binner=binner, spectra=spectra, ells=ells, I_tab=I_tab,
-                 amplitude=args.amplitude, scheme=args.scheme, interlace=args.interlace)
+                 amplitude=args.amplitude, scheme=args.scheme, interlace=args.interlace,
+                 stoch=stoch)
     results, t0 = [], time.time()
     if args.nproc > 1:
         import multiprocessing as mp

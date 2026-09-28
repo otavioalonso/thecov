@@ -18,7 +18,7 @@ import numpy as np
 
 from mocks.estimator import MultipoleFields, ShellBinner, cross_multipole, shot_noise
 from mocks.field import GaussianField, Grid
-from mocks.run_validation import BIAS, GROWTH, STOCH, pk_lin
+from mocks.run_validation import BIAS, GROWTH, pk_lin
 from mocks.survey import Catalogues, Footprint, make_grid, make_mock
 
 
@@ -59,7 +59,7 @@ def main():
           f"k_max/k_Nyq = {args.kmax / grid.k_nyquist:.2f} (ref {args.kmax / ref.k_nyquist:.2f})")
     cat = Catalogues(fp, grid, n_random_factor=args.n_random_factor)
     rng = np.random.default_rng(args.seed)
-    cats = make_mock(cat, GaussianField(grid, pk_lin, rng), BIAS, STOCH, GROWTH, rng, rsd=True)
+    cats = make_mock(cat, GaussianField(grid, pk_lin, rng), BIAS, {}, GROWTH, rng, rsd=True)
     spectra = [('A', 'A'), ('A', 'B'), ('B', 'B')]
     k_edges = np.arange(args.kmin, args.kmax + args.dk / 2, args.dk)
     ells = tuple(args.ells)

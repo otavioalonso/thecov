@@ -164,15 +164,29 @@ class Catalogues:
         return float((n1 * n2 * w1 * w2).sum() * self.grid.V_cell)
 
 
-def clipping_diagnostics(delta, bias: dict):
-    """sigma(b delta) and the fraction of cells with 1 + b delta < 0, per tracer.
+def clipping_diagnostics(delta, bias: dict, stoch: dict | None = None, grid=None, rng=None):
+    """sigma(x) and the fraction of cells with 1 + x < 0, per tracer, for x = b delta + noise.
 
-    Poisson sampling needs a non-negative intensity, so 1 + b delta is clipped at zero. Clipping
-    removes power: at sigma = 0.9 the measured P is ~12 % low, which would look exactly like a
-    covariance failure. Keep sigma(b delta) <~ 0.35.
+    Poisson sampling needs a non-negative intensity, so 1 + x is clipped at zero. Clipping removes
+    power: the clipped field responds to the clustering with the factor P(x > -1) (Price's
+    theorem), so P is suppressed by its square -- 0.4 % at sigma = 0.35, 12 % at sigma = 0.9 --
+    which looks exactly like a covariance failure.
+
+    The white stochasticity field must be included: its per-cell sigma is sqrt(stoch / V_cell),
+    about 1 for stoch of a few hundred (Mpc/h)^3 and 7 Mpc/h cells, and with it 16-26 % of cells
+    were being clipped (clustering power down to 0.55-0.75 of the model). Pass `stoch` and `grid`
+    to include it.
     """
-    sd = float(np.std(delta))
-    return {t: (b * sd, float(np.mean(1.0 + b * delta < 0.0))) for t, b in bias.items()}
+    from .field import white_noise_field
+    rng = np.random.default_rng(1) if rng is None else rng
+    out = {}
+    for t, b in bias.items():
+        x = b * delta
+        s = 0.0 if stoch is None else stoch.get(t, 0.0)
+        if s > 0:
+            x = x + white_noise_field(grid, s, rng)
+        out[t] = (float(np.std(x)), float(np.mean(1.0 + x < 0.0)))
+    return out
 
 
 def make_mock(cat: Catalogues, field, bias: dict, stoch: dict, f: float,
