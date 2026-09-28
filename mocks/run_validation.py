@@ -27,7 +27,8 @@ Systematics OF THE TEST (not of thecov)
 * Box size. The covariance couples modes separated by |q| ~ 1/R_survey, and the mocks sample that
   structure at the box spacing 2 pi / L: a small box biases the *mock* covariance. Run at two values
   of --box-factor to check convergence.
-* Aliasing. Keep k_max <~ 0.4 k_Nyquist (reported at start-up).
+* Aliasing. k_max must stay below 0.45 k_Nyquist (and below the field's k_cut = 0.8 k_Nyquist);
+  the driver refuses to run otherwise unless --allow-aliasing is given.
 * Non-Gaussianity. The field amplitude is deliberately low so that 1 + delta stays positive and the
   Gaussian covariance is the right answer; --sigma8-like rescales it if you want to probe that.
 """
@@ -50,6 +51,8 @@ from .survey import Catalogues, Footprint, make_grid, make_mock, model_multipole
 BIAS = {'A': 1.9, 'B': 1.2}
 STOCH = {'A': 300.0, 'B': 800.0}        # white "clustering" stochasticity, part of P^XX
 GROWTH = 0.78
+MAX_KMAX_OVER_KNYQ = 0.45             # shot-noise aliasing negligible below this
+K_CUT = 0.8                           # GaussianField default: no power above K_CUT * k_Nyquist
 
 
 def pk_lin(k, amplitude=1.0):
@@ -214,6 +217,8 @@ def main():
     ap.add_argument('--ds', type=float, default=2.0)
     ap.add_argument('--ds-pair', type=float, default=10.0)
     ap.add_argument('--out', default='mock_validation')
+    ap.add_argument('--allow-aliasing', action='store_true',
+                    help='run even if k_max is too close to k_Nyquist (diagnostics only)')
     ap.add_argument('--resume', action='store_true', help='append to an existing vectors.npy')
     args = ap.parse_args()
 
@@ -232,8 +237,21 @@ def main():
 
     print(f"box L = {grid.L:.0f} Mpc/h, N = {grid.N}, cell = {grid.cell:.2f}, "
           f"k_Nyquist = {grid.k_nyquist:.3f}")
-    print(f"k_max / k_Nyquist = {args.kmax / grid.k_nyquist:.2f} "
-          f"({'ok' if args.kmax < 0.45 * grid.k_nyquist else 'TOO HIGH: aliasing'})")
+    ratio = args.kmax / grid.k_nyquist
+    print(f"k_max / k_Nyquist = {ratio:.2f}")
+    # Both failure modes produce a k-only sawtooth in sigma_mock / sigma_thecov that is identical
+    # across blocks and is easily misread as a covariance failure, so refuse to run them.
+    problems = []
+    if ratio > MAX_KMAX_OVER_KNYQ:
+        problems.append(f"k_max / k_Nyquist = {ratio:.2f} > {MAX_KMAX_OVER_KNYQ}: aliasing")
+    if args.kmax > K_CUT * grid.k_nyquist:
+        problems.append(f"k_max = {args.kmax:.3f} > k_cut = {K_CUT * grid.k_nyquist:.3f}: "
+                        f"the mock field has no clustering power in the top bins")
+    if problems:
+        msg = "; ".join(problems) + ". Raise --grid, lower --box-factor or --kmax."
+        if not args.allow_aliasing:
+            raise SystemExit("error: " + msg + " (--allow-aliasing overrides)")
+        print("WARNING: " + msg)
     for t in args.tracers:
         print(f"  tracer {t}: <N_gal> = {cat.n_gal_expected[t]:.0f}, N_ran = {len(cat.randoms[t])}, "
               f"alpha = {cat.alpha[t]:.4f}")
