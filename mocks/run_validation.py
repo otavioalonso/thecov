@@ -27,8 +27,11 @@ Systematics OF THE TEST (not of thecov)
 * Box size. The covariance couples modes separated by |q| ~ 1/R_survey, and the mocks sample that
   structure at the box spacing 2 pi / L: a small box biases the *mock* covariance. Run at two values
   of --box-factor to check convergence.
-* Aliasing. k_max must stay below 0.45 k_Nyquist (and below the field's k_cut = 0.8 k_Nyquist);
-  the driver refuses to run otherwise unless --allow-aliasing is given.
+* Aliasing. The mocks are drawn on the estimator's own grid, so without interlacing the grid images
+  fold back as a direction-dependent multiplicative bias (+6 % in P at 0.56 k_Nyquist with CIC)
+  that shows up as a k-only sawtooth in sigma_mock / sigma_thecov. Use --interlace --scheme tsc,
+  which is clean to 0.7 k_Nyquist. k_max must also stay below the field's k_cut = 0.8 k_Nyquist.
+  The driver refuses to run otherwise unless --allow-aliasing is given.
 * Non-Gaussianity. The field amplitude is deliberately low so that 1 + delta stays positive and the
   Gaussian covariance is the right answer; --sigma8-like rescales it if you want to probe that.
 """
@@ -51,9 +54,13 @@ from .survey import Catalogues, Footprint, make_grid, make_mock, model_multipole
 BIAS = {'A': 1.9, 'B': 1.2}
 STOCH = {'A': 300.0, 'B': 800.0}        # white "clustering" stochasticity, part of P^XX
 GROWTH = 0.78
-# Largest k_max / k_Nyquist at which the estimator's aliasing bias is negligible for the validation;
-# measured with diagnostics/aliasing.py on the production set-up.
-MAX_KMAX_OVER_KNYQ = {False: 0.45, True: 0.45}      # keyed by --interlace (True: provisional)
+# Largest k_max / k_Nyquist at which the estimator's aliasing bias on P is negligible (<~0.4 %),
+# keyed by (scheme, interlace). Measured with diagnostics/aliasing.py (N=256 vs an N=512
+# TSC-interlaced reference, same catalogue): at 0.56 k_Nyq plain CIC is off by +6 % (AA) and -14 %
+# (AB), CIC+interlacing by <=0.3 %, TSC+interlacing by <=0.2 %; TSC+interlacing stays <=0.4 %
+# (0.9 % for AB) to 0.73 k_Nyq. Plain CIC is already 2-3 % off at 0.45.
+MAX_KMAX_OVER_KNYQ = {('cic', False): 0.45, ('tsc', False): 0.45,
+                      ('cic', True): 0.6, ('tsc', True): 0.7}
 K_CUT = 0.8                           # GaussianField default: no power above K_CUT * k_Nyquist
 
 
@@ -247,10 +254,10 @@ def main():
     # Both failure modes produce a k-only sawtooth in sigma_mock / sigma_thecov that is identical
     # across blocks and is easily misread as a covariance failure, so refuse to run them.
     problems = []
-    limit = MAX_KMAX_OVER_KNYQ[args.interlace]
+    limit = MAX_KMAX_OVER_KNYQ[(args.scheme, args.interlace)]
     if ratio > limit:
-        problems.append(f"k_max / k_Nyquist = {ratio:.2f} > {limit} "
-                        f"({'with' if args.interlace else 'without'} interlacing): aliasing")
+        problems.append(f"k_max / k_Nyquist = {ratio:.2f} > {limit} for {args.scheme}"
+                        f"{'+interlacing' if args.interlace else ''}: aliasing")
     if args.kmax > K_CUT * grid.k_nyquist:
         problems.append(f"k_max = {args.kmax:.3f} > k_cut = {K_CUT * grid.k_nyquist:.3f}: "
                         f"the mock field has no clustering power in the top bins")
