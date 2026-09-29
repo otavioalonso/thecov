@@ -151,148 +151,289 @@ def _n_threads(n_threads):
     return max(1, int(n_threads))
 
 
+def _cell_tasks(pos1, pos2, r, same):
+    """Pairs of cubes (side >= r) that can hold pairs closer than r, for a cell-list search.
+
+    Returns (cubes1, cubes2, tasks): point indices per occupied cube and the (a, b) cube pairs to
+    search. With `same` (one catalogue) only half the neighbour stencil is listed, so every
+    unordered pair of points is found exactly once; otherwise the full stencil.
+    """
+    lo = np.minimum(pos1.min(axis=0), pos2.min(axis=0))
+
+    def cubes(pos):
+        ijk = np.floor((pos - lo) / r).astype(np.int64)
+        keys = ijk[:, 0] * 1_000_003 ** 2 + ijk[:, 1] * 1_000_003 + ijk[:, 2]
+        order = np.argsort(keys, kind='stable')
+        uk, start = np.unique(keys[order], return_index=True)
+        stop = np.append(start[1:], len(order))
+        out = {}
+        for k, a, b in zip(uk, start, stop):
+            c = order[a]
+            out[tuple(ijk[c])] = order[a:b]
+        return out
+    c1 = cubes(pos1)
+    c2 = c1 if same else cubes(pos2)
+    offsets = [(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)]
+    if same:
+        offsets = [o for o in offsets if o > (0, 0, 0)]     # half stencil; o = 0 handled apart
+    tasks = []
+    for a in c1:
+        if same:
+            tasks.append((a, a))
+        for o in offsets:
+            b = (a[0] + o[0], a[1] + o[1], a[2] + o[2])
+            if b in c2:
+                tasks.append((a, b))
+    return c1, c2, tasks
+
+
 class _Counter:
-    """Pair counts of one pair of HOST catalogues, for every window pair they sample.
+    """Pair counts of one UNORDERED pair of host catalogues, for every window pair they sample.
 
     Window pairs whose windows are sampled by the same randoms see exactly the same pairs (the
     subsample depends only on the host and the seed) and differ only in their weights, so one
-    neighbour search and one binning serve all of them: each is one weight column.
+    neighbour search and one binning serve all of them: each is one weight column. Each pair of
+    points is also found only once and binned from both ends: for hosts (H1, H2) the window pairs
+    with omega on H1 ("forward") take (x1 = x_i, s = x_j - x_i), those with omega on H2 ("reverse")
+    take (x1 = x_j, s = x_i - x_j); for a single host, every unordered pair feeds both orientations
+    of the same histogram, which is exactly the ordered-pair count.
     """
 
-    def __init__(self, windows, opts, backend, n_threads=None):
-        self.tws = windows
+    def __init__(self, fwd, rev, opts, backend, n_threads=None):
+        self.fwd, self.rev = list(fwd), list(rev)
+        self.same = (self.fwd[0].omega.host is self.fwd[0].omega_p.host) if self.fwd else False
+        if self.same and self.rev:
+            raise ValueError("a single-host group has no reverse members")
+        self.tws = self.fwd + self.rev
         self.backend = backend
         self.n_threads = _n_threads(n_threads)
         self.chunk_pairs = int(opts['chunk_pairs'])
 
     def _samples(self, n):
-        tw0 = self.tws[0]
-        pos1, _, a1 = tw0.omega.sample(n, tw0.seed)
-        pos2, _, a2 = tw0.omega_p.sample(n, tw0.seed)
-        w1 = np.stack([tw.omega.sample(n, tw.seed)[1] for tw in self.tws], axis=1)
-        w2 = np.stack([tw.omega_p.sample(n, tw.seed)[1] for tw in self.tws], axis=1)
-        return pos1, w1, a1, pos2, w2, a2
+        """Positions, tilde weights (forward: omega on H1 / omega' on H2; reverse: omega on H2 /
+        omega' on H1) and alpha_eff of the two host subsamples."""
+        tw0 = self.fwd[0] if self.fwd else self.rev[0]
+        h1 = tw0.omega if self.fwd else tw0.omega_p        # a window hosted by H1
+        h2 = tw0.omega_p if self.fwd else tw0.omega
+        pos1, _, a1 = h1.sample(n, tw0.seed)
+        pos2, _, a2 = h2.sample(n, tw0.seed)
+
+        def stack(ws, n1):
+            return np.stack([w.sample(n, tw0.seed)[1] for w in ws], axis=1) if ws else np.zeros((n1, 0))
+        wf1 = stack([tw.omega for tw in self.fwd], len(pos1))
+        wf2 = stack([tw.omega_p for tw in self.fwd], len(pos2))
+        wr1 = stack([tw.omega for tw in self.rev], len(pos2))       # hosted by H2
+        wr2 = stack([tw.omega_p for tw in self.rev], len(pos1))     # hosted by H1
+        return pos1, pos2, wf1, wf2, wr1, wr2, a1 * a2
 
     def _fold(self, fn, blocks):
         """Run fn over the blocks, split into one contiguous group per thread; each group sums its
-        results where they live (on the device for jax) and is copied back once."""
+        results where they live (on the device for jax) and is copied back once. fn may keep
+        state per group through the `finish` attribute of the returned closure factory."""
         groups = [g for g in np.array_split(np.arange(len(blocks)), self.n_threads) if len(g)]
 
         def run(g):
-            acc = None
+            worker = fn()
             for b in g:
-                out = fn(blocks[b])
-                if out is not None:
-                    acc = out if acc is None else tuple(a + o for a, o in zip(acc, out))
-            return None if acc is None else [np.asarray(a) for a in acc]
+                worker.feed(blocks[b])
+            return worker.result()
         if len(groups) == 1:
             return [run(groups[0])]
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(len(groups)) as ex:
             return list(ex.map(run, groups))
 
+    def _kernel_setup(self, hist):
+        jb = _jax()
+        import jax.numpy as jnp
+        edges = tuple(jnp.asarray(e) for e in (hist.r_edges, hist.s_edges, hist.mu_edges))
+        uni = tuple(jb.is_uniform(e) for e in (hist.r_edges, hist.s_edges, hist.mu_edges))
+        return jb, jnp, edges, uni, int(np.prod(hist.shape))
+
     # ------------------------------------------------------------------ far: all pairs of n_sub
-    def far(self, hist, n_sub, s_lo, s_hi, verbose):
-        pos1, w1, a1, pos2, w2, a2 = self._samples(n_sub)
+    def _far_one_orientation(self, hist, pos1, w1, pos2, w2, s_lo, s_hi):
+        """All ordered pairs (i in pos1, j in pos2), x1 = pos1[i]; the brute force is cheap."""
         r1all = np.linalg.norm(pos1, axis=1)
         n1, n2 = len(pos1), len(pos2)
         step = max(1, self.chunk_pairs // max(n2, 1))
         blocks = [(i0, min(n1, i0 + step)) for i0 in range(0, n1, step)]
-        if self.backend == 'jax':
-            jb = _jax()
-            import jax.numpy as jnp
+        jax_ = self.backend == 'jax'
+        if jax_:
+            jb, jnp, edges, uni, ncell = self._kernel_setup(hist)
             p2, ww2 = jnp.asarray(pos2), jnp.asarray(w2)
-            edges = tuple(jnp.asarray(e) for e in (hist.r_edges, hist.s_edges, hist.mu_edges))
-            ncell = int(np.prod(hist.shape))
-            uni = tuple(jb.is_uniform(e) for e in (hist.r_edges, hist.s_edges, hist.mu_edges))
+        counter = self
 
-            def one(b):
+        class Worker:
+            def __init__(self):
+                self.acc = None
+
+            def feed(self, b):
                 i0, i1 = b
-                if i1 - i0 < step:            # pad the last block: one compiled shape only
-                    pad = step - (i1 - i0)
-                    p1 = np.vstack([pos1[i0:i1], np.zeros((pad, 3))])
-                    ww1 = np.vstack([w1[i0:i1], np.zeros((pad, w1.shape[1]))])
-                    rr = np.concatenate([r1all[i0:i1], np.zeros(pad)])
+                if jax_:
+                    if i1 - i0 < step:        # pad the last block: one compiled shape only
+                        pad = step - (i1 - i0)
+                        p1 = np.vstack([pos1[i0:i1], np.zeros((pad, 3))])
+                        ww1 = np.vstack([w1[i0:i1], np.zeros((pad, w1.shape[1]))])
+                        rr = np.concatenate([r1all[i0:i1], np.zeros(pad)])
+                    else:
+                        p1, ww1, rr = pos1[i0:i1], w1[i0:i1], r1all[i0:i1]
+                    out = jb.far_block(jnp.asarray(p1), jnp.asarray(ww1), jnp.asarray(rr), p2, ww2, *edges,
+                                       hist.shape, ncell, float(s_lo), float(s_hi), uni)
                 else:
-                    p1, ww1, rr = pos1[i0:i1], w1[i0:i1], r1all[i0:i1]
-                return jb.far_block(jnp.asarray(p1), jnp.asarray(ww1), jnp.asarray(rr), p2, ww2, *edges,
-                                    hist.shape, ncell, float(s_lo), float(s_hi), uni)
-        else:
-            def one(b):
-                i0, i1 = b
-                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol)
-                d = pos2[None, :, :] - pos1[i0:i1, None, :]
-                s = np.linalg.norm(d, axis=-1)
-                keep = (s >= s_lo) & (s < s_hi)
-                if np.any(keep):
-                    x1 = np.broadcast_to(pos1[i0:i1, None, :], d.shape)[keep]
-                    r1 = np.broadcast_to(r1all[i0:i1, None], s.shape)[keep]
-                    w = (w1[i0:i1, None, :] * w2[None, :, :])[keep]
-                    h.add(x1, r1, d[keep], w)
-                return (h.w, h.wr, h.ws, h.wmu, h.n)
-        t0 = time.time()
-        for out in self._fold(one, blocks):
+                    h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol)
+                    d = pos2[None, :, :] - pos1[i0:i1, None, :]
+                    s = np.linalg.norm(d, axis=-1)
+                    keep = (s >= s_lo) & (s < s_hi)
+                    if np.any(keep):
+                        x1 = np.broadcast_to(pos1[i0:i1, None, :], d.shape)[keep]
+                        r1 = np.broadcast_to(r1all[i0:i1, None], s.shape)[keep]
+                        w = (w1[i0:i1, None, :] * w2[None, :, :])[keep]
+                        h.add(x1, r1, d[keep], w)
+                    out = (h.w, h.wr, h.ws, h.wmu, h.n)
+                self.acc = out if self.acc is None else tuple(a + o for a, o in zip(self.acc, out))
+
+            def result(self):
+                return None if self.acc is None else [np.asarray(a) for a in self.acc]
+        for out in counter._fold(Worker, blocks):
             if out is not None:
                 hist.add_arrays(*out)
-        if verbose:
-            print(f"  far pairs {self.tws[0].omega.key}x{self.tws[0].omega_p.key} (+{len(self.tws) - 1} "
-                  f"sharing them): {n1}x{n2} in {time.time() - t0:.1f}s")
-        return a1 * a2
 
-    # ------------------------------------------------------------------ near: KD-tree neighbours
-    def near(self, hist, n_near, s_split, verbose):
-        pos1, w1, a1, pos2, w2, a2 = self._samples(n_near)
+    def far(self, hf, hr, n_sub, s_lo, s_hi, verbose):
+        pos1, pos2, wf1, wf2, wr1, wr2, norm = self._samples(n_sub)
+        t0 = time.time()
+        if self.fwd:
+            self._far_one_orientation(hf, pos1, wf1, pos2, wf2, s_lo, s_hi)
+        if self.rev:
+            self._far_one_orientation(hr, pos2, wr1, pos1, wr2, s_lo, s_hi)
+        if verbose:
+            print(f"  far pairs {self._label()}: {len(pos1)}x{len(pos2)} in {time.time() - t0:.1f}s")
+        return norm
+
+    # ------------------------------------------------------------------ near: cell list + KD-trees
+    def near(self, hf, hr, n_near, s_split, verbose):
+        pos1, pos2, wf1, wf2, wr1, wr2, norm = self._samples(n_near)
         r1all = np.linalg.norm(pos1, axis=1)
-        tree2 = cKDTree(pos2)
-        # blocks of primaries sized so that each yields ~ a few chunks of pairs
-        dens = len(pos2) / max(float(np.prod(np.ptp(pos2, axis=0))), 1e-30)
-        per_point = max(1.0, dens * 4.0 / 3.0 * np.pi * s_split ** 3)
-        bsize = int(np.clip(4 * self.chunk_pairs / per_point, 64, 20000))
-        blocks = [(i0, min(len(pos1), i0 + bsize)) for i0 in range(0, len(pos1), bsize)]
-        jb = _jax() if self.backend == 'jax' else None
-        if jb is not None:
-            import jax.numpy as jnp
-            edges = tuple(jnp.asarray(e) for e in (hist.r_edges, hist.s_edges, hist.mu_edges))
-            ncell = int(np.prod(hist.shape))
-            uni = tuple(jb.is_uniform(e) for e in (hist.r_edges, hist.s_edges, hist.mu_edges))
+        r2all = np.linalg.norm(pos2, axis=1)
+        c1, c2, tasks = _cell_tasks(pos1, pos2, s_split, self.same)
+        trees1 = {a: cKDTree(pos1[ix]) for a, ix in c1.items()}
+        trees2 = trees1 if self.same else {b: cKDTree(pos2[ix]) for b, ix in c2.items()}
+        # biggest cube pairs first, so that the threads finish together
+        tasks.sort(key=lambda t: -len(c1[t[0]]) * len(c2[t[1]]))
+        tasks = [tasks[i::self.n_threads] for i in range(self.n_threads)]
+        tasks = [t for grp in tasks for t in grp]
         C = self.chunk_pairs
+        jax_ = self.backend == 'jax'
+        if jax_:
+            jb, jnp, edges, uni, ncell = self._kernel_setup(hf if self.fwd else hr)
+        same, fwd, rev = self.same, bool(self.fwd), bool(self.rev)
 
-        def one(b):
-            i0, i1 = b
-            # all pairs within s_split, as index arrays built in C (no per-point Python lists)
-            m = cKDTree(pos1[i0:i1]).sparse_distance_matrix(tree2, s_split, output_type='ndarray')
-            i = m['i'].astype(np.int64) + i0
-            j = m['j'].astype(np.int64)
-            if len(i) == 0:
+        def pairs(t):
+            a, b = t
+            if same and a == b:
+                m = trees1[a].query_pairs(s_split, output_type='ndarray')
+                if len(m) == 0:
+                    return None
+                return c1[a][m[:, 0]], c1[a][m[:, 1]]
+            m = trees1[a].sparse_distance_matrix(trees2[b], s_split, output_type='ndarray')
+            if len(m) == 0:
                 return None
-            if jb is None:
-                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol)
-                h.add(pos1[i], r1all[i], pos2[j] - pos1[i], w1[i] * w2[j])
-                return (h.w, h.wr, h.ws, h.wmu, h.n)
-            acc = None                           # summed on the device
-            for c0 in range(0, len(i), C):       # fixed-size, padded chunks: one compiled kernel
-                ii, jj = i[c0:c0 + C], j[c0:c0 + C]
-                nv = len(ii)
-                x1, r1, d, w = pos1[ii], r1all[ii], pos2[jj] - pos1[ii], w1[ii] * w2[jj]
+            return c1[a][m['i']], c2[b][m['j']]
+
+        if jax_:
+            # resident on the device for the whole group; only index pairs are sent per chunk
+            dev = dict(p1=jnp.asarray(pos1), r1=jnp.asarray(r1all), p2=jnp.asarray(pos2), r2=jnp.asarray(r2all),
+                       wf1=jnp.asarray(wf1), wf2=jnp.asarray(wf2), wr1=jnp.asarray(wr1), wr2=jnp.asarray(wr2))
+
+            def zeros(hist):
+                K = hist.ncol
+                return (jnp.zeros((K, ncell)), jnp.zeros((K, ncell)), jnp.zeros((K, ncell)),
+                        jnp.zeros((K, ncell)), jnp.zeros(ncell))
+
+        class Worker:
+            """Buffers pairs across cube pairs and bins them in fixed-size chunks."""
+
+            def __init__(self):
+                self.bi, self.bj, self.n = [], [], 0
+                if jax_:
+                    self.acc_f = zeros(hf) if fwd else None
+                    self.acc_r = zeros(hr) if rev else None
+                else:
+                    self.acc_f = PairHistogram(hf.r_edges, hf.s_edges, hf.mu_edges, hf.ncol) if fwd else None
+                    self.acc_r = PairHistogram(hr.r_edges, hr.s_edges, hr.mu_edges, hr.ncol) if rev else None
+
+            def _dispatch(self, i, j):
+                if not jax_:
+                    d = pos2[j] - pos1[i]
+                    if fwd:
+                        self.acc_f.add(pos1[i], r1all[i], d, wf1[i] * wf2[j])
+                        if same:      # the same unordered pair seen from its other end
+                            self.acc_f.add(pos1[j], r1all[j], -d, wf1[j] * wf2[i])
+                    if rev:
+                        self.acc_r.add(pos2[j], r2all[j], -d, wr1[j] * wr2[i])
+                    return
+                nv = len(i)
                 if nv < C:
-                    pad = C - nv
-                    x1 = np.vstack([x1, np.zeros((pad, 3))])
-                    d = np.vstack([d, np.ones((pad, 3))])
-                    r1 = np.concatenate([r1, np.ones(pad)])
-                    w = np.vstack([w, np.zeros((pad, w.shape[1]))])
+                    i = np.concatenate([i, np.zeros(C - nv, dtype=i.dtype)])
+                    j = np.concatenate([j, np.zeros(C - nv, dtype=j.dtype)])
+                ii, jj = jnp.asarray(i.astype(np.int32)), jnp.asarray(j.astype(np.int32))
                 valid = jnp.arange(C) < nv
-                out = jb.flat_pairs(jnp.asarray(x1), jnp.asarray(r1), jnp.asarray(d), jnp.asarray(w),
-                                    *edges, hist.shape, ncell, valid, uni)
-                acc = out if acc is None else tuple(a + o for a, o in zip(acc, out))
-            return acc
+                args = (hf.shape if fwd else hr.shape, ncell, valid, uni)
+                if fwd:
+                    self.acc_f = jb.indexed_pairs(dev['p1'], dev['r1'], dev['wf1'], dev['p2'], dev['wf2'], ii, jj,
+                                                  *edges, *args, self.acc_f)
+                    if same:      # the same unordered pair seen from its other end
+                        self.acc_f = jb.indexed_pairs(dev['p1'], dev['r1'], dev['wf1'], dev['p2'], dev['wf2'], jj, ii,
+                                                      *edges, *args, self.acc_f)
+                if rev:
+                    self.acc_r = jb.indexed_pairs(dev['p2'], dev['r2'], dev['wr1'], dev['p1'], dev['wr2'], jj, ii,
+                                                  *edges, *args, self.acc_r)
+
+            def _drain(self, final=False):
+                if self.n == 0:
+                    return
+                i, j = np.concatenate(self.bi), np.concatenate(self.bj)
+                full = (len(i) // C) * C
+                for c0 in range(0, full, C):
+                    self._dispatch(i[c0:c0 + C], j[c0:c0 + C])
+                i, j = i[full:], j[full:]
+                if final and len(i):
+                    self._dispatch(i, j)
+                    i, j = i[:0], j[:0]
+                self.bi, self.bj, self.n = [i], [j], len(i)
+
+            def feed(self, t):
+                p = pairs(t)
+                if p is None:
+                    return
+                self.bi.append(p[0]); self.bj.append(p[1]); self.n += len(p[0])
+                if self.n >= C:
+                    self._drain()
+
+            def result(self):
+                self._drain(final=True)
+
+                def conv(acc):
+                    if acc is None:
+                        return None
+                    if isinstance(acc, PairHistogram):
+                        return [acc.w, acc.wr, acc.ws, acc.wmu, acc.n]
+                    return [np.asarray(a) for a in acc]
+                return conv(self.acc_f), conv(self.acc_r)
         t0 = time.time()
-        for out in self._fold(one, blocks):
-            if out is not None:
-                hist.add_arrays(*out)
+        for out_f, out_r in self._fold(Worker, tasks):
+            if out_f is not None:
+                hf.add_arrays(*out_f)
+            if out_r is not None:
+                hr.add_arrays(*out_r)
         if verbose:
-            print(f"  near pairs {self.tws[0].omega.key}x{self.tws[0].omega_p.key} (+{len(self.tws) - 1} "
-                  f"sharing them): {len(pos1)} points in {time.time() - t0:.1f}s")
-        return a1 * a2
+            print(f"  near pairs {self._label()}: {len(pos1)}x{len(pos2)} points, {len(tasks)} cube pairs "
+                  f"in {time.time() - t0:.1f}s")
+        return norm
+
+    def _label(self):
+        names = [f"{tw.omega.key}x{tw.omega_p.key}" for tw in self.fwd] + \
+                [f"{tw.omega.key}x{tw.omega_p.key} (reversed)" for tw in self.rev]
+        return f"{names[0]} (+{len(names) - 1} sharing them)"
 
     # ------------------------------------------------------------------ driver
     def compute(self, verbose=False):
@@ -306,16 +447,24 @@ class _Counter:
         r_edges = tw0._radial_edges(p1, p2)
         # the finest mu grid any member needs (a finer grid is only more accurate)
         mu_edges = np.linspace(-1.0, 1.0, max(tw.n_mu for tw in self.tws) + 1)
-        K = len(self.tws)
         near = tw0.s_edges[1:] <= split + 1e-9
-        far = PairHistogram(r_edges, tw0.s_edges, mu_edges, K)
-        norm_f = self.far(far, tw0.n_sub, split, tw0.s_edges[-1], verbose)
-        nearh, norm_n = None, None
+
+        def hists(s_edges):
+            return (PairHistogram(r_edges, s_edges, mu_edges, max(len(self.fwd), 1)),
+                    PairHistogram(r_edges, s_edges, mu_edges, max(len(self.rev), 1)))
+        far_f, far_r = hists(tw0.s_edges)
+        norm_f = self.far(far_f, far_r, tw0.n_sub, split, tw0.s_edges[-1], verbose)
+        near_f = near_r = norm_n = None
         if np.any(near):
-            nearh = PairHistogram(r_edges, tw0.s_edges, mu_edges, K)
-            norm_n = self.near(nearh, tw0.n_near, split, verbose)
-        for c, tw in enumerate(self.tws):
-            tw._finish(split, far, norm_f, nearh, norm_n, col=c)
+            # near pairs only ever fall in the s bins below the split: a histogram over those alone
+            # is ~15x smaller and stays in cache, which is what the scatter-adds are bound by
+            n_nb = int(np.count_nonzero(near))
+            near_f, near_r = hists(tw0.s_edges[:n_nb + 1])
+            norm_n = self.near(near_f, near_r, tw0.n_near, split, verbose)
+        for c, tw in enumerate(self.fwd):
+            tw._finish(split, far_f, norm_f, near_f, norm_n, col=c)
+        for c, tw in enumerate(self.rev):
+            tw._finish(split, far_r, norm_f, near_r, norm_n, col=c)
 
 
 class TripolarWindow:
@@ -368,7 +517,7 @@ class TripolarWindow:
 
     # ------------------------------------------------------------------ driver
     def compute(self, verbose: bool = False):
-        _Counter([self], self._opts(), self.backend, self.n_threads).compute(verbose)
+        _Counter([self], [], self._opts(), self.backend, self.n_threads).compute(verbose)
         return self
 
     def _finish(self, split, far, norm_f, nearh, norm_n, col=0):
@@ -380,6 +529,9 @@ class TripolarWindow:
         acc, self.npairs, norm = acc_f, n_f.copy(), np.full(len(vol), norm_f)
         if nearh is not None and np.any(near):
             acc_n, w_n, n_n = nearh.contract(self.triples, col)
+            pad = len(vol) - len(n_n)            # the near histogram covers the near bins only
+            acc_n = {t: np.concatenate([v, np.zeros(pad)]) for t, v in acc_n.items()}
+            w_n, n_n = np.concatenate([w_n, np.zeros(pad)]), np.concatenate([n_n, np.zeros(pad)])
             for t in self.triples:
                 acc[t] = np.where(near, acc_n[t], acc_f[t])
             self.npairs[near] = n_n[near]
@@ -446,21 +598,24 @@ class WindowLibrary:
                 if key not in self._windows or not set(self._windows[key].triples) >= trip]
 
     def compute_all(self, verbose=False):
-        """Count all missing window pairs, grouped by the pair of host catalogues that samples them:
-        each group shares one neighbour search and one binning (one weight column per window pair)."""
+        """Count all missing window pairs, grouped by the UNORDERED pair of host catalogues that
+        samples them: each group shares one neighbour search and one binning (a weight column per
+        window pair), and each pair of points is found once and binned from both ends."""
         groups = {}
         for key in self.missing():
             wins, trip = self._requests[key]
             tw = TripolarWindow(wins[0], wins[1], sorted(trip), self.s_edges, **self.opts)
-            hosts = (wins[0].host.name, wins[1].host.name)
-            groups.setdefault(hosts, []).append((key, tw))
-        for hosts, members in groups.items():
+            h1, h2 = wins[0].host.name, wins[1].host.name
+            hosts = tuple(sorted((h1, h2)))
+            g = groups.setdefault(hosts, ([], []))
+            (g[0] if h1 == hosts[0] else g[1]).append((key, tw))
+        for hosts, (fwd, rev) in groups.items():
             if verbose:
-                print(f"pair counts for hosts {hosts}: {len(members)} window pairs "
-                      f"({', '.join(str(k) for k, _ in members)})")
-            tws = [tw for _, tw in members]
-            _Counter(tws, tws[0]._opts(), tws[0].backend, self.opts.get('n_threads')).compute(verbose)
-            for key, tw in members:
+                print(f"pair counts for hosts {hosts}: {len(fwd) + len(rev)} window pairs")
+            tws = [tw for _, tw in fwd + rev]
+            _Counter([tw for _, tw in fwd], [tw for _, tw in rev], tws[0]._opts(), tws[0].backend,
+                     self.opts.get('n_threads')).compute(verbose)
+            for key, tw in fwd + rev:
                 self._windows[key] = tw
         self._interp_cache = {}
 
