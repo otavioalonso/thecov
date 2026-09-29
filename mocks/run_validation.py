@@ -334,8 +334,11 @@ def main():
     if os.path.exists(cpath):
         with open(cpath) as fh:
             prior = json.load(fh)
+        # A key missing from an older config.json means the behaviour of the version that wrote it,
+        # not today's default: stochasticity was always on (scale 1), CIC without interlacing.
+        prior.setdefault('stoch_scale', 1.0)
         for k in KEYS_MOCKS + KEYS_ANALYTIC:
-            prior.setdefault(k, ap.get_default(k.replace('-', '_')))
+            prior.setdefault(k, ap.get_default(k))
 
     fp = Footprint()
     grid = make_grid(fp, args.grid, args.box_factor)
