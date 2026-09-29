@@ -110,8 +110,11 @@ covariance bins (down to k = 0 if the first bin starts there).
 * **Counting is split from contracting.** Because x' = x + s, the tripolar weight depends on a pair
   only through (r1, s, mu) with r1 = |x| and mu = x^ . s^ -- the azimuth about s^ vanishes
   identically, so there is no cos(m dphi) factor and no second unit-vector array. Pairs are
-  histogrammed into cells of (r1, s, mu), and S is evaluated once per cell at the cell's WEIGHTED
-  MEAN (first-order accurate, so the resolution is not critical in r1 or s). All triples share one
+  histogrammed into cells of (r1, s, mu), and S is evaluated once per cell at the cell's mean
+  (first-order accurate, so the resolution is not critical in r1 or s): by default the unweighted
+  mean, shared by all window pairs counted together (`cell_means='shared'`), or each window pair's
+  weighted mean (`'weighted'`). The two differ by 2e-4 in the mock covariance, against a cell-size
+  error of ~1e-3 and Monte-Carlo noise of ~1e-2. All triples share one
   set of counts, and the inner loop is one distance and one dot product. This is also the shape an
   external counter plugs into: Corrfunc/pycorr bin in exactly these variables (one call per radial
   shell), and a GPU kernel would need nothing more.
@@ -130,6 +133,16 @@ covariance bins (down to k = 0 if the first bin starts there).
   ~1e5 cells are summed in float64, and equally-spaced bin edges (the usual case) are indexed
   arithmetically instead of by searchsorted. Chunks of ~2e5 pairs are optimal; larger ones are
   slower, so `chunk_pairs` should not be raised for JAX.
+* **Where the time goes.** Window pairs whose windows are sampled by the same randoms (W^AA, W^AB
+  and S^A all live on A's randoms) see exactly the same pairs, so they are counted together: one
+  neighbour search and one binning per pair of host catalogues, one weight column per window pair.
+  Near pairs come from `cKDTree.sparse_distance_matrix` (C, releases the GIL, run on `n_threads`
+  threads, default min(16, cpu count)); far pairs from the brute-force JAX kernel. The binning is
+  then bound by scatter-adds (~1.2e8/s on CPU): K + 4 per pair for K window pairs with shared cell
+  means (4K + 1 with weighted ones). Mock survey, grid 256, n_near 2e5, 15 window pairs, 4 cores:
+  >50 min originally, 184 s after grouping and vectorising, 104 s with shared cell means. Finding
+  each unordered pair once (history: 891299f) halves the search but not the binning and gained
+  nothing on CPU; it would pay off on a GPU, where scatter-adds are cheap.
 * `s_split` is snapped to the nearest pair-count bin edge. A bin that straddled the split would get
   near pairs only below it and far pairs only above it, while being normalised by its whole volume,
   and would come out low by the missing volume fraction (15 % for a bin of width 25 split at 80).
