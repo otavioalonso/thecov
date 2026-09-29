@@ -140,16 +140,32 @@ class Catalogues:
             pos = sample_points(lam, grid, rng, self.cells[t])
             self.randoms[t] = pos
             self.nbar_ran[t] = self._nbar_at(t, pos)
-            self.w_ran[t] = 1.0 / (1.0 + self.nbar_ran[t] * self.P0_fkp)
+            self.w_ran[t] = self.weights_at(t, pos)
             self.alpha[t] = self.n_gal_expected[t] / len(pos)
 
     def _nbar_at(self, t, pos):
-        r = np.linalg.norm(pos, axis=1)
-        comp = self.fp.completeness(pos[:, 0], pos[:, 1], pos[:, 2], r)
-        return self.fp.radial(r, t) * comp
+        """nbar at arbitrary positions: the value of the cell containing them.
+
+        The mock's true mean density is the piecewise-constant grid nbar -- galaxies and randoms are
+        both drawn from it -- so NZ and the FKP weights must be evaluated from the same cells.
+        Evaluating the smooth footprint at the point instead left ~0.9 % of the points (boundary
+        cells whose centre is inside the mask) with nbar = 0 and hence w = 1 instead of ~0.2; they
+        carried 11-15 % of sum w^2, and the realised int nbar^2 w^2 exceeded the normalisation used
+        by the estimator and by thecov by 23 % (A) and 12 % (B).
+        """
+        g = self.grid
+        ijk = np.floor((pos - g.box_min) / g.cell).astype(np.int64)
+        inside = np.all((ijk >= 0) & (ijk < g.N), axis=1)
+        out = np.zeros(len(pos))
+        i = ijk[inside]
+        out[inside] = self.nbar[t][i[:, 0], i[:, 1], i[:, 2]]
+        return out
 
     def weights_at(self, t, pos):
-        return 1.0 / (1.0 + self._nbar_at(t, pos) * self.P0_fkp)
+        """FKP weights; zero outside the survey (nbar = 0), i.e. the mask is applied at the OBSERVED
+        position, as in a real survey: a galaxy that RSD moves out of the footprint is not seen."""
+        n = self._nbar_at(t, pos)
+        return np.where(n > 0, 1.0 / (1.0 + n * self.P0_fkp), 0.0)
 
     def thecov_randoms(self, t):
         """The dict expected by thecov.Tracer, plus its alpha."""

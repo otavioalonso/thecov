@@ -150,10 +150,13 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
 # Everything in <out>/ is tagged with the options it depends on; a mismatch is an error, never a
 # silent mix. Mocks are stored with their seeds, so resuming runs exactly the missing seeds (with
 # several processes the mocks finish out of order, and counting them was not enough).
-KEYS_WINDOWS = ('grid', 'box_factor', 'n_random_factor', 'tracers', 'ells',
+# Bumped whenever the mock survey itself changes (catalogues, nbar, weights), so that caches made
+# with an older definition are refused. 2: NZ and weights from the grid cells (see Catalogues).
+MOCK_VERSION = 2
+KEYS_WINDOWS = ('mock_version', 'grid', 'box_factor', 'n_random_factor', 'tracers', 'ells',
                 'n_sub', 'n_near', 'ds', 'ds_pair')
 KEYS_ANALYTIC = KEYS_WINDOWS + ('kmin', 'kmax', 'dk', 'amplitude', 'stoch_scale')
-KEYS_MOCKS = ('grid', 'box_factor', 'n_random_factor', 'tracers', 'ells', 'kmin', 'kmax', 'dk',
+KEYS_MOCKS = ('mock_version', 'grid', 'box_factor', 'n_random_factor', 'tracers', 'ells', 'kmin', 'kmax', 'dk',
               'amplitude', 'stoch_scale', 'scheme', 'interlace')
 
 
@@ -323,6 +326,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     cfg = vars(args).copy()
     cfg['tracers'], cfg['ells'] = list(args.tracers), list(args.ells)
+    cfg['mock_version'] = MOCK_VERSION
     reuse = args.resume or args.report_only
     stored_any = any(os.path.exists(os.path.join(args.out, f))
                      for f in ('mocks.npz', 'vectors.npy', 'analytic.npz', 'windows.npz'))
@@ -337,8 +341,10 @@ def main():
         # A key missing from an older config.json means the behaviour of the version that wrote it,
         # not today's default: stochasticity was always on (scale 1), CIC without interlacing.
         prior.setdefault('stoch_scale', 1.0)
+        prior.setdefault('mock_version', 1)
         for k in KEYS_MOCKS + KEYS_ANALYTIC:
-            prior.setdefault(k, ap.get_default(k))
+            if k != 'mock_version':
+                prior.setdefault(k, ap.get_default(k))
 
     fp = Footprint()
     grid = make_grid(fp, args.grid, args.box_factor)

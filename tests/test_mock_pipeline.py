@@ -202,3 +202,24 @@ def test_footprint_and_catalogues_are_consistent():
     for (X, Y) in [('A', 'A'), ('B', 'B'), ('A', 'B')]:
         I_ran = Window('W', trs[X], trs[Y]).integral()
         assert np.isclose(I_ran, cat.I(X, Y), rtol=0.05), (X, Y, I_ran / cat.I(X, Y))
+
+
+def test_weights_and_nz_are_those_of_the_realised_density():
+    """Galaxies and randoms are drawn from the piecewise-constant grid nbar, so NZ and the weights
+    must be the grid values at every point: then the density the mocks realise, the estimator's
+    normalisation and thecov's I are one and the same integral."""
+    from mocks.survey import Catalogues, Footprint, make_grid
+    fp = Footprint()
+    grid = make_grid(fp, 64, box_factor=2.0)
+    cat = Catalogues(fp, grid, n_random_factor=4.0, rng=np.random.default_rng(3))
+    for t in ('A', 'B'):
+        r, a, w = cat.randoms[t], cat.alpha[t], cat.w_ran[t]
+        ijk = np.floor((r - grid.box_min) / grid.cell).astype(int)
+        n_cell = cat.nbar[t][ijk[:, 0], ijk[:, 1], ijk[:, 2]]
+        assert np.all(n_cell > 0) and np.array_equal(cat.nbar_ran[t], n_cell)
+        assert np.allclose(w, 1.0 / (1.0 + n_cell * cat.P0_fkp))
+        I_realised = a * np.sum(n_cell * w ** 2)
+        assert np.isclose(I_realised, cat.I(t, t), rtol=0.02), (t, I_realised / cat.I(t, t))
+    # outside the survey the weight vanishes
+    far = np.array([[0.0, 0.0, 5.0], grid.box_min + 0.1])
+    assert np.all(cat.weights_at('A', far) == 0.0)

@@ -310,6 +310,13 @@ with a warning, its seeds assumed contiguous (exact only if it came from one uni
   taken from the galaxy's own cell so that it carries the same single power of T. Without this the
   measured P is ~10 % low at half-Nyquist and the covariance ~20 % low. `tests/test_mock_pipeline.py`
   verifies the cancellation.
+* **nbar and weights of the mock survey.** Galaxies and randoms are drawn from the piecewise-constant
+  grid nbar, so `NZ` and the FKP weights must be the grid value of the containing cell. Evaluating
+  the smooth footprint at the point instead left ~0.9 % of the points in boundary cells with
+  nbar = 0 and w = 1 (instead of ~0.2): they carried 11-15 % of sum w^2, and the realised
+  int nbar^2 w^2 exceeded the normalisation of the estimator and of thecov by 23 % (A) and 12 % (B),
+  biasing every mock P -- and sigma_mock -- high by that factor. Weights are zero outside the survey,
+  i.e. the mask applies at the observed (redshift-space) position.
 * **Independent randoms per tracer.** Sharing one random catalogue between two tracers makes the
   -alpha n_r piece of the FKP field common to both, so its Poisson noise survives in the CROSS
   spectrum as a spurious constant alpha/nbar (5 % of P at k = 0.02 in the test set-up, 18 % by
