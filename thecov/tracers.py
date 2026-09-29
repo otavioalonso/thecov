@@ -99,6 +99,16 @@ class Tracer:
         inside = d <= self.mask_factor * self.spacing[idx]
         return np.where(inside, self.nbar[idx], 0.0), np.where(inside, self.w[idx], 0.0)
 
+    def nbar_w_at_randoms_of(self, T: "Tracer"):
+        """nbar_w_at(T.pos), cached: the nearest-random lookup at every random of T is the costly
+        part of building the cross windows, and several of them need the same one."""
+        if T is self:
+            return self.nbar, self.w
+        cache = self.__dict__.setdefault('_at_cache', {})
+        if T.name not in cache:
+            cache[T.name] = self.nbar_w_at(T.pos)
+        return cache[T.name]
+
     def nw_at(self, positions: np.ndarray) -> np.ndarray:
         """nbar(x) * w(x) of this tracer at arbitrary positions (nearest random)."""
         nb, w = self.nbar_w_at(positions)
@@ -140,12 +150,17 @@ class Window:
         return self.tracers[0]
 
     def tilde_weights(self) -> np.ndarray:
-        """omega / nbar_host at the host randoms."""
+        """omega / nbar_host at the host randoms (cached on the host: for a cross window it needs a
+        nearest-random lookup of the other tracer at every host random)."""
         A = self.host
-        if self.kind == 'W':
-            B = self.tracers[1]
-            return A.w * B.nw_at(A.pos)
-        return (1.0 + A.alpha) * A.w ** 2
+        cache = A.__dict__.setdefault('_tilde_cache', {})
+        if self.key not in cache:
+            if self.kind == 'W':
+                nb, w = self.tracers[1].nbar_w_at_randoms_of(A)
+                cache[self.key] = A.w * nb * w
+            else:
+                cache[self.key] = (1.0 + A.alpha) * A.w ** 2
+        return cache[self.key]
 
     def value_at(self, positions: np.ndarray) -> np.ndarray:
         """omega(x) at arbitrary positions (nearest-random interpolation of nbar and w)."""
@@ -160,10 +175,24 @@ class Window:
         """int d^3x omega(x)  (e.g. I_AB for kind 'W')."""
         return self.host.alpha * float(np.sum(self.tilde_weights()))
 
+    def value_at_host_randoms(self, T: Tracer) -> np.ndarray:
+        """value_at(T.pos), cached on T (each needs a nearest-random lookup at every random of T)."""
+        cache = T.__dict__.setdefault('_value_cache', {})
+        if self.key not in cache:
+            if self.kind == 'W':
+                A, B = self.tracers
+                (na, wa), (nb, wb) = A.nbar_w_at_randoms_of(T), B.nbar_w_at_randoms_of(T)
+                cache[self.key] = na * wa * nb * wb
+            else:
+                A = self.host
+                nb, w = A.nbar_w_at_randoms_of(T)
+                cache[self.key] = (1.0 + A.alpha) * nb * w ** 2
+        return cache[self.key]
+
     def overlap_integral(self, other: "Window") -> float:
         """int d^3x omega(x) omega'(x): the s -> 0 anchor of the window pair function."""
         A = self.host
-        return A.alpha * float(np.sum(self.tilde_weights() * other.value_at(A.pos)))
+        return A.alpha * float(np.sum(self.tilde_weights() * other.value_at_host_randoms(A)))
 
     def sample(self, n_sub: int, seed: int = 0):
         """(positions, tilde weights, effective alpha) of a subsample of the host randoms."""
