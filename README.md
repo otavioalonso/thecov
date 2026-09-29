@@ -76,6 +76,26 @@ C, labels = cov.covariance(spectra)     # data vector ordered by spectrum, ell, 
 blk = cov.block(('A','A'), ('A','B'), 0, 2)   # a single (nbins x nbins) block
 ```
 
+### Using it with pypower / jaxpower
+
+thecov gives the covariance of the FKP estimator with the conventions of pypower and jaxpower:
+local line of sight at the first field (`los='firstpoint'`), which carries the Legendre weight;
+alpha = sum w_data / sum w_randoms; shot noise sum_g w_g^2 + alpha^2 sum_r w_r^2 (the realised
+value, so every self-pair is removed and no non-Gaussian 1/nbar^3 term arises). Two things must match:
+
+* **Normalisation.** C scales as 1 / (I_AB I_CD). By default thecov uses I_AB = int nbar_A nbar_B
+  w_A w_B from the randoms; pypower / jaxpower default to data x randoms painted on a 10 Mpc/h mesh,
+  which differs by a few per cent (2 % low for the mock survey, i.e. 4 % in the variance). Pass
+  the estimator's value: `cov.set_normalization('A', 'A', poles.wnorm)` (pypower) or the `norm` of
+  the jaxpower spectrum, before calling `covariance`.
+* **Randoms and NZ.** The `Tracer` randoms, weights and `NZ` must be the ones given to the
+  estimator, with `alpha` their expected data/randoms ratio.
+
+What the Gaussian formula does not contain: the integral constraint implied by the realised alpha
+(it affects the first bin or two, k ~ 1/R_survey), the fluctuation of a realised normalisation
+(the "local average" effect, below 0.1 % of the diagonal for the mock survey), and connected
+terms (trispectrum, super-sample covariance, bispectrum/nbar and P/nbar^2 discreteness terms).
+
 `labels[n] = (A, B, ell, i)` for row/column *n*. `covariance(..., symmetrize=True)` averages the
 matrix with its transpose (exact for the first Wick term; the residual asymmetry measures the
 x̂'→x̂ step in the second term and is ~1e-6 in the distant-observer limit).
@@ -260,7 +280,13 @@ thecov prediction.
   tested, not assumed.
 * **Estimator**: Yamamoto-FKP with the Cartesian-moment FFT decomposition (1 FFT for l = 0, 6 more
   for l = 2, 15 more for l = 4), CIC or TSC assignment with window deconvolution, optionally
-  interlaced (`--interlace`, doubles the FFTs).
+  interlaced (`--interlace`, doubles the FFTs), with the pypower / jaxpower conventions (realised
+  alpha and shot noise). `--estimator jaxpower` measures the mocks with jaxpower itself (monopoles
+  agree with the native estimator to 1e-4 on a common catalogue, quadrupoles to ~1 % of P0);
+  `--norm mesh` then uses jaxpower's default normalisation and rescales thecov to its mean.
+  Subtracting the *expected* shot noise instead (as earlier versions did) leaves the Poisson
+  fluctuation of sum_g w^2 in P: a fully correlated term ~ int nbar w^4 / I^2 in the monopole-auto
+  blocks, 7-15 % of the diagonal at k = 0.2-0.3 here, which no Gaussian formula contains.
 * **Model**: exact, because the mocks are built from a known spectrum --
   P_XY(k, mu) = (b_X + f mu^2)(b_Y + f mu^2) P_lin (+ delta_XY N_X with `--stoch-scale`, off by
   default: see Clipping below).

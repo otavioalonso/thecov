@@ -184,13 +184,22 @@ def cross_multipole(fields_A: MultipoleFields, fields_B: MultipoleFields, ell: i
     return (2 * ell + 1) / I_AB * binner.average(prod)
 
 
-def shot_noise(alpha_A, ran_w_A, I_AA, same_tracer=True):
-    """The FKP shot-noise constant (1 + alpha) int nbar w^2 / I, zero for a cross spectrum.
+def shot_noise(alpha_A, ran_w_A, I_AA, same_tracer=True, gal_w_A=None):
+    """The FKP shot-noise constant, zero for a cross spectrum.
 
-    int nbar w^2 is estimated from the randoms as alpha * sum_r w^2, which is why alpha must be the
-    ratio of the *expected* galaxy count to the random count: using a realisation-dependent alpha
-    would propagate the realisation's own number fluctuation into the subtracted constant.
+    With `gal_w_A` (the pypower / jaxpower convention, and the default of the validation) it is the
+    REALISED sum_g w_g^2 + alpha^2 sum_r w_r^2, divided by I: every self-pair is removed. Without it,
+    the expected value (1 + alpha) alpha sum_r w_r^2 / I is used; then the realised self-pair sum
+    stays in P and its Poisson fluctuation, variance int nbar w^4, adds a fully correlated term to
+    the monopole-auto covariance that is not part of the Gaussian formula.
     """
     if not same_tracer:
         return 0.0
+    if gal_w_A is not None:
+        return (float(np.sum(np.asarray(gal_w_A) ** 2)) + alpha_A ** 2 * float(np.sum(ran_w_A ** 2))) / I_AA
     return (1.0 + alpha_A) * alpha_A * float(np.sum(ran_w_A ** 2)) / I_AA
+
+
+def realised_alpha(gal_w, ran_w):
+    """sum w_data / sum w_randoms, as pypower / jaxpower compute it for each catalogue."""
+    return float(np.sum(gal_w)) / float(np.sum(ran_w))

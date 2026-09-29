@@ -103,10 +103,23 @@ class GaussianCovariance:
                             yield lam, lamp, Lam1, Lam2, Lam
 
     def I(self, A, B) -> float:
+        """The normalisation of P^AB: int W^AB from the randoms, unless set_normalization was used."""
         key = tuple(sorted((str(A), str(B))))
         if key not in self._I:
             self._I[key] = Window('W', self._tracer(A), self._tracer(B)).integral()
         return self._I[key]
+
+    def set_normalization(self, A, B, norm: float):
+        """Use the normalisation the power-spectrum estimator actually divided by.
+
+        The covariance scales as 1 / (I_AB I_CD), so it must match the estimator. pypower and
+        jaxpower default to painting data x randoms on a 10 Mpc/h mesh (their `wnorm` / `norm`),
+        which differs from int nbar_A nbar_B w_A w_B by a few per cent (2 % low in the mock
+        validation, i.e. 4 % in the variance). Pass their value here, e.g.
+        `cov.set_normalization('A', 'A', poles.wnorm)`.
+        """
+        self._I[tuple(sorted((str(A), str(B))))] = float(norm)
+        return self
 
     def _kernel(self, spec, L, lam):
         if spec[0] == 'S':

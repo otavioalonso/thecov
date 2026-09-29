@@ -43,13 +43,12 @@ import argparse
 import json
 import os
 import time
-from functools import partial
 
 import numpy as np
 
 from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 
-from .estimator import MultipoleFields, ShellBinner, cross_multipole, shot_noise
+from .estimator import MultipoleFields, ShellBinner, cross_multipole, realised_alpha, shot_noise
 from .field import GaussianField
 from .survey import Catalogues, Footprint, make_grid, make_mock, model_multipoles
 
@@ -85,30 +84,69 @@ def pk_lin(k, amplitude=1.0):
 
 
 # --------------------------------------------------------------------------- one realisation
-def one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme='cic', interlace=False,
-             stoch=None):
-    rng = np.random.default_rng(seed)
-    field = GaussianField(cat.grid, lambda k: pk_lin(k, amplitude), rng)
-    cats = make_mock(cat, field, BIAS, stoch or {}, GROWTH, rng, rsd=True)
-    fields = {}
-    for t in cat.tracers:
-        pos = cats[t]
-        fields[t] = MultipoleFields(cat.grid, pos, cat.weights_at(t, pos),
-                                    cat.randoms[t], cat.w_ran[t], cat.alpha[t], ells=ells,
-                                    scheme=scheme, interlace=interlace)
-    out = []
-    for (X, Y) in spectra:
-        for ell in ells:
-            P = cross_multipole(fields[X], fields[Y], ell, binner, I_tab[(X, Y)])
-            if X == Y and ell == 0:
-                P = P - shot_noise(cat.alpha[X], cat.w_ran[X], I_tab[(X, Y)])
-            out.append(P)
-    return np.concatenate(out), {t: len(cats[t]) for t in cat.tracers}
+class MockState:
+    """Everything a worker needs to make and measure one realisation (built once per process)."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        fp = Footprint()
+        self.grid = make_grid(fp, cfg['grid'], cfg['box_factor'])
+        self.cat = Catalogues(fp, self.grid, n_random_factor=cfg['n_random_factor'],
+                              tracers=tuple(cfg['tracers']))
+        self.k_edges = np.arange(cfg['kmin'], cfg['kmax'] + cfg['dk'] / 2, cfg['dk'])
+        self.ells = tuple(cfg['ells'])
+        self.spectra = [(X, Y) for i, X in enumerate(cfg['tracers']) for Y in cfg['tracers'][i:]]
+        self.I_tab = {sp: self.cat.I(*sp) for sp in self.spectra}
+        self.stoch = {t: cfg['stoch_scale'] * STOCH[t] for t in cfg['tracers']}
+        self.binner = ShellBinner(self.grid, self.k_edges)
+        self.jax = None
+        if cfg['estimator'] == 'jaxpower':
+            from .jaxpower_estimator import JaxpowerEstimator
+            self.jax = JaxpowerEstimator(self.grid, self.k_edges, self.ells, scheme=cfg['scheme'],
+                                         interlace=cfg['interlace'])
+
+    def measure(self, seed):
+        """(data vector, normalisation per spectrum, realised sum_g w^2 per tracer)."""
+        cfg, cat = self.cfg, self.cat
+        rng = np.random.default_rng(seed)
+        field = GaussianField(self.grid, lambda k: pk_lin(k, cfg['amplitude']), rng)
+        cats = make_mock(cat, field, BIAS, self.stoch, GROWTH, rng, rsd=True)
+        gal, gw = {}, {}
+        for t in cat.tracers:
+            w = cat.weights_at(t, cats[t])
+            keep = w > 0                      # moved out of the survey by RSD: not observed
+            gal[t], gw[t] = cats[t][keep], w[keep]
+        sumw2 = np.array([np.sum(gw[t] ** 2) for t in cat.tracers])
+        if self.jax is not None:
+            fixed = self.I_tab if cfg['norm'] == 'fixed' else None
+            v, norms = self.jax(gal, gw, cat.randoms, cat.w_ran, self.spectra, fixed_norm=fixed)
+            return v, np.array([norms[sp] for sp in self.spectra]), sumw2
+        # native estimator, pypower / jaxpower conventions: realised alpha and shot noise
+        alpha = {t: realised_alpha(gw[t], cat.w_ran[t]) for t in cat.tracers}
+        fields = {t: MultipoleFields(self.grid, gal[t], gw[t], cat.randoms[t], cat.w_ran[t], alpha[t],
+                                     ells=self.ells, scheme=cfg['scheme'], interlace=cfg['interlace'])
+                  for t in cat.tracers}
+        out = []
+        for (X, Y) in self.spectra:
+            for ell in self.ells:
+                P = cross_multipole(fields[X], fields[Y], ell, self.binner, self.I_tab[(X, Y)])
+                if X == Y and ell == 0:
+                    P = P - shot_noise(alpha[X], cat.w_ran[X], self.I_tab[(X, Y)], gal_w_A=gw[X])
+                out.append(P)
+        return np.concatenate(out), np.array([self.I_tab[sp] for sp in self.spectra]), sumw2
 
 
-def _worker(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace, stoch):
-    v, n = one_mock(seed, cat, binner, spectra, ells, I_tab, amplitude, scheme, interlace, stoch)
-    return seed, v, n
+_STATE = None
+
+
+def _init_worker(cfg):
+    global _STATE
+    _STATE = MockState(cfg)
+
+
+def _worker(seed):
+    v, norms, sumw2 = _STATE.measure(seed)
+    return seed, v, norms, sumw2
 
 
 # --------------------------------------------------------------------------- analytic side
@@ -152,12 +190,13 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
 # several processes the mocks finish out of order, and counting them was not enough).
 # Bumped whenever the mock survey itself changes (catalogues, nbar, weights), so that caches made
 # with an older definition are refused. 2: NZ and weights from the grid cells (see Catalogues).
-MOCK_VERSION = 2
+# 3: pypower / jaxpower conventions -- realised alpha and shot noise, galaxies with w = 0 dropped.
+MOCK_VERSION = 3
 KEYS_WINDOWS = ('mock_version', 'grid', 'box_factor', 'n_random_factor', 'tracers', 'ells',
                 'n_sub', 'n_near', 'ds', 'ds_pair')
 KEYS_ANALYTIC = KEYS_WINDOWS + ('kmin', 'kmax', 'dk', 'amplitude', 'stoch_scale')
 KEYS_MOCKS = ('mock_version', 'grid', 'box_factor', 'n_random_factor', 'tracers', 'ells', 'kmin', 'kmax', 'dk',
-              'amplitude', 'stoch_scale', 'scheme', 'interlace')
+              'amplitude', 'stoch_scale', 'scheme', 'interlace', 'estimator', 'norm')
 
 
 def _atomic(path, write):
@@ -180,33 +219,37 @@ def _check_config(stored, current, keys, what):
                          + "\n  ".join(bad) + "\nUse a new --out, or the original options.")
 
 
-def _load_mocks(out, cfg, n_dim, prior=None):
-    """(vectors, seeds) already stored in `out`, or empty arrays. `prior` is the config.json found
-    in `out`, the only record of the options behind a legacy vectors.npy."""
+def _load_mocks(out, cfg, n_dim, n_spec, n_tr, prior=None):
+    """What is already stored in `out`: dict of vectors, seeds, norms (per spectrum, the
+    normalisation each mock was divided by) and sumw2 (realised sum_g w^2 per tracer)."""
     path = os.path.join(out, 'mocks.npz')
     if os.path.exists(path):
         with np.load(path, allow_pickle=False) as f:
             stored = json.loads(str(f['config']))
             _check_config(stored, cfg, KEYS_MOCKS, "stored mocks")
-            return f['vectors'], f['seeds']
+            return {k: f[k] for k in ('vectors', 'seeds', 'norms', 'sumw2')}
     legacy = os.path.join(out, 'vectors.npy')
     if os.path.exists(legacy):
-        if prior is None:
-            raise SystemExit(f"error: {legacy} has no config.json next to it; cannot check its options")
-        _check_config(prior, cfg, KEYS_MOCKS, "stored mocks")
-        v = np.load(legacy)
-        # Older runs stored no seeds. The set is exactly seed0 .. seed0 + n - 1 only if that run
-        # was never interrupted and resumed; say so rather than guess silently.
-        print(f"WARNING: {legacy} has no seeds; assuming seeds {cfg['seed0']}..{cfg['seed0'] + len(v) - 1} "
-              f"(exact only if it came from one uninterrupted run)")
-        return v, cfg['seed0'] + np.arange(len(v))
-    return np.zeros((0, n_dim)), np.zeros(0, dtype=np.int64)
+        raise SystemExit(f"error: {legacy} was made by an older version of the mock survey "
+                         f"(mock_version < {MOCK_VERSION}); use a new --out")
+    return {'vectors': np.zeros((0, n_dim)), 'seeds': np.zeros(0, dtype=np.int64),
+            'norms': np.zeros((0, n_spec)), 'sumw2': np.zeros((0, n_tr))}
 
 
-def _save_mocks(out, cfg, vectors, seeds):
+def _save_mocks(out, cfg, store):
     path = os.path.join(out, 'mocks.npz')
-    _atomic(path, lambda f: np.savez(f, vectors=np.asarray(vectors), seeds=np.asarray(seeds, dtype=np.int64),
+    _atomic(path, lambda f: np.savez(f, vectors=np.asarray(store['vectors']),
+                                     seeds=np.asarray(store['seeds'], dtype=np.int64),
+                                     norms=np.asarray(store['norms']), sumw2=np.asarray(store['sumw2']),
                                      config=np.array(json.dumps(_subset(cfg, KEYS_MOCKS)))))
+
+
+def _rescale_to_norms(C, spectra, ells, nbins, I_tab, norms):
+    """thecov's matrix is normalised by I_AB = int W^AB; an estimator that divides by another
+    normalisation n_AB has covariance C I_AB I_CD / (n_AB n_CD). jaxpower's and pypower's default
+    (data x randoms on a 10 Mpc/h mesh) is ~2 % below I_AB here, i.e. ~4 % in the variance."""
+    f = np.repeat([I_tab[sp] / norms[i] for i, sp in enumerate(spectra)], len(ells) * nbins)
+    return C * np.outer(f, f)
 
 
 # --------------------------------------------------------------------------- report
@@ -311,6 +354,12 @@ def main():
     ap.add_argument('--out', default='mock_validation')
     ap.add_argument('--scheme', choices=['cic', 'tsc'], default='cic', help='mass assignment')
     ap.add_argument('--interlace', action='store_true', help='interlaced estimator (see estimator.py)')
+    ap.add_argument('--estimator', choices=['native', 'jaxpower'], default='native',
+                    help='native: mocks/estimator.py with the pypower / jaxpower conventions; '
+                         'jaxpower: measure the mocks with jaxpower itself')
+    ap.add_argument('--norm', choices=['fixed', 'mesh'], default='fixed',
+                    help='fixed: divide by int nbar^2 w^2 (thecov I_AB); mesh: jaxpower default '
+                         '(data x randoms on a 10 Mpc/h mesh), thecov rescaled to its mean')
     ap.add_argument('--stoch-scale', type=float, default=0.0,
                     help='multiplies the white stochasticity STOCH (default 0: see STOCH)')
     ap.add_argument('--allow-clipping', action='store_true',
@@ -323,6 +372,12 @@ def main():
                     help='no new mocks: rebuild the report from what is stored in --out')
     args = ap.parse_args()
 
+    if args.norm == 'mesh' and args.estimator != 'jaxpower':
+        raise SystemExit("error: --norm mesh needs --estimator jaxpower")
+    if args.estimator == 'jaxpower':
+        from .jaxpower_estimator import available
+        if not available():
+            raise SystemExit("error: --estimator jaxpower needs jaxpower (pip install git+https://github.com/adematti/jax-power)")
     os.makedirs(args.out, exist_ok=True)
     cfg = vars(args).copy()
     cfg['tracers'], cfg['ells'] = list(args.tracers), list(args.ells)
@@ -403,13 +458,13 @@ def main():
         print("WARNING: " + msg)
 
     n_dim = len(spectra) * len(ells) * (len(k_edges) - 1)
-    done, done_seeds = _load_mocks(args.out, cfg, n_dim, prior)
-    if done.shape[1:] != (n_dim,):
-        raise SystemExit(f"error: stored mocks have {done.shape[1]} elements, expected {n_dim}")
-    if args.report_only and len(done) < 2:
+    store = _load_mocks(args.out, cfg, n_dim, len(spectra), len(args.tracers), prior)
+    if store['vectors'].shape[1:] != (n_dim,):
+        raise SystemExit(f"error: stored mocks have {store['vectors'].shape[1]} elements, expected {n_dim}")
+    if args.report_only and len(store['vectors']) < 2:
         raise SystemExit(f"error: --report-only needs stored mocks in {args.out}")
-    have = set(int(x) for x in done_seeds)
-    if len(have) != len(done_seeds):
+    have = set(int(x) for x in store['seeds'])
+    if len(have) != len(store['seeds']):
         raise SystemExit("error: stored mocks contain duplicated seeds")
 
     apath = os.path.join(args.out, 'analytic.npz')
@@ -437,47 +492,70 @@ def main():
         raise SystemExit(f"error: the analytic covariance is {C.shape[0]}x{C.shape[0]}, expected {n_dim}")
     with open(cpath, 'w') as fh:                    # only once every stored file has been checked
         json.dump(cfg, fh, indent=2)
+
+    def finish(store):
+        v = store['vectors']
+        mean_norm = store['norms'].mean(axis=0)
+        print("\nnormalisation used / thecov I_AB: " + ", ".join(
+            f"{X}{Y} {mean_norm[i] / I_tab[(X, Y)]:.4f} (scatter {store['norms'][:, i].std() / mean_norm[i]:.1e})"
+            for i, (X, Y) in enumerate(spectra)))
+        Cn = _rescale_to_norms(C, spectra, ells, len(k_edges) - 1, I_tab, mean_norm)
+        for j, t in enumerate(args.tracers):
+            a = cat.alpha[t]
+            pred = a * np.sum(cat.w_ran[t] ** 4)            # Poisson: Var(sum_g w^2) = int nbar w^4
+            print(f"realised sum_g w^2 of {t}: var / int nbar w^4 = {store['sumw2'][:, j].var() / pred:.3f} "
+                  f"(Poisson: 1; fluctuations no longer enter P -- the shot noise is realised)")
+        report(v, Cn, labels, binner.k_eff, spectra, ells, args.out)
+
     if args.report_only:
-        print(f"\nreport from {len(done)} stored mocks")
-        report(done, C, labels, binner.k_eff, spectra, ells, args.out)
+        print(f"\nreport from {len(store['vectors'])} stored mocks")
+        finish(store)
         return
     todo = [s for s in range(args.seed0, args.seed0 + args.n_mocks) if s not in have]
-    print(f"\nrunning {len(todo)} mocks ({len(done)} already stored) on {args.nproc} process(es)")
+    print(f"\nrunning {len(todo)} mocks ({len(store['vectors'])} already stored) on {args.nproc} process(es)"
+          f", estimator {args.estimator}, normalisation {args.norm}")
 
-    fn = partial(_worker, cat=cat, binner=binner, spectra=spectra, ells=ells, I_tab=I_tab,
-                 amplitude=args.amplitude, scheme=args.scheme, interlace=args.interlace,
-                 stoch=stoch)
-    results, seeds, t0 = [], [], time.time()
+    new = {'vectors': [], 'seeds': [], 'norms': [], 'sumw2': []}
 
     def checkpoint():
-        _save_mocks(args.out, cfg, np.vstack([done] + results) if results else done,
-                    np.concatenate([done_seeds, np.asarray(seeds, dtype=np.int64)]))
+        if not new['seeds']:
+            return
+        merged = {k: np.concatenate([store[k], np.asarray(new[k]).reshape((-1,) + store[k].shape[1:])])
+                  for k in store}
+        _save_mocks(args.out, cfg, merged)
+        return merged
 
+    def collect(i, res):
+        sd, v, norms, sumw2 = res
+        for k, x in zip(('seeds', 'vectors', 'norms', 'sumw2'), (sd, v, norms, sumw2)):
+            new[k].append(x)
+        every = 10 if args.nproc > 1 else 5
+        if (i + 1) % every == 0:
+            el = time.time() - t0
+            print(f"  {i + 1}/{len(todo)}  {el:.0f} s  (eta {el / (i + 1) * (len(todo) - i - 1):.0f} s)")
+            checkpoint()
+
+    t0 = time.time()
     if args.nproc > 1:
         import multiprocessing as mp
-        with mp.get_context('fork').Pool(args.nproc) as pool:
-            for i, (sd, v, n) in enumerate(pool.imap_unordered(fn, todo, chunksize=1)):
-                results.append(v[None, :])
-                seeds.append(sd)
-                if (i + 1) % 10 == 0:
-                    el = time.time() - t0
-                    print(f"  {i + 1}/{len(todo)}  {el:.0f} s  (eta {el / (i + 1) * (len(todo) - i - 1):.0f} s)")
-                    checkpoint()
+        if args.estimator == 'jaxpower':
+            # JAX does not survive fork: spawn fresh workers, each rebuilding the (deterministic) mock
+            # survey, and keep XLA to one thread per worker so that nproc workers do not oversubscribe.
+            ctx = mp.get_context('spawn')
+            os.environ.setdefault('XLA_FLAGS', '--xla_cpu_multi_thread_eigen=false '
+                                               'intra_op_parallelism_threads=1')
+        else:
+            ctx = mp.get_context('fork')
+        with ctx.Pool(args.nproc, initializer=_init_worker, initargs=(cfg,)) as pool:
+            for i, res in enumerate(pool.imap_unordered(_worker, todo, chunksize=1)):
+                collect(i, res)
     else:
+        _init_worker(cfg)
         for i, sd in enumerate(todo):
-            _, v, n = fn(sd)
-            results.append(v[None, :])
-            seeds.append(sd)
-            if (i + 1) % 5 == 0:
-                el = time.time() - t0
-                print(f"  {i + 1}/{len(todo)}  {el:.0f} s  N_gal {n}")
-                checkpoint()
-    checkpoint()
-    vectors = np.vstack([done] + results) if results else done
+            collect(i, _worker(sd))
+    merged = checkpoint() or store
     print(f"mocks done in {time.time() - t0:.0f} s")
-
-    report(vectors, C, labels, binner.k_eff, spectra, ells, args.out)
-
+    finish(merged)
 
 if __name__ == '__main__':
     main()
