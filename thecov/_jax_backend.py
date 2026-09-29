@@ -95,26 +95,5 @@ def flat_pairs(x1, r1, d, w, r_edges, s_edges, mu_edges, shape, n_cells, valid, 
     return _scatter(idx, w, r1, s, mu, keep, n_cells)
 
 
-@partial(jax.jit, static_argnums=(10, 11, 13), donate_argnums=(14,))
-def indexed_pairs(xa, ra, wa, xb, wb, ia, ib, r_edges, s_edges, mu_edges, shape, n_cells, valid, uni, acc):
-    """Pairs given by index arrays into resident sample arrays, added into `acc`.
-
-    x1 = xa[ia], s = xb[ib] - xa[ia], w = wa[ia] * wb[ib] (wa, wb: (n, K)). Only the int32 indices
-    cross from the host per chunk; the gather, binning and accumulation fuse into one kernel, and
-    `acc` (the five running sums) is donated so it is updated in place.
-    """
-    x1 = xa[ia]
-    d = xb[ib] - x1
-    r1 = ra[ia]
-    w = wa[ia] * wb[ib]
-    s = jnp.sqrt(jnp.sum(d * d, axis=-1))
-    safe = jnp.where(s > 0, s, 1.0)
-    mu = jnp.clip(jnp.sum(x1 * d, axis=-1) / (jnp.where(r1 > 0, r1, 1.0) * safe), -1.0, 1.0)
-    idx, inside = _bin_index(r1, s, mu, r_edges, s_edges, mu_edges, shape, uni)
-    keep = valid & inside & (s > 0) & (r1 > 0)
-    out = _scatter(idx, w, r1, s, mu, keep, n_cells)
-    return tuple(a + o for a, o in zip(acc, out))
-
-
 def available() -> bool:
     return True
