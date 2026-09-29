@@ -74,17 +74,20 @@ class PairHistogram:
     only in their weights); the unweighted count is common to all columns.
     """
 
-    def __init__(self, r_edges, s_edges, mu_edges, ncol: int = 1):
+    def __init__(self, r_edges, s_edges, mu_edges, ncol: int = 1, shared: bool = False):
         self.r_edges = np.asarray(r_edges, dtype=float)
         self.s_edges = np.asarray(s_edges, dtype=float)
         self.mu_edges = np.asarray(mu_edges, dtype=float)
         self.shape = (len(self.r_edges) - 1, len(self.s_edges) - 1, len(self.mu_edges) - 1)
         self.ncol = int(ncol)
+        # shared: the cell means of (r1, s, mu) are unweighted and common to all columns
+        self.shared = bool(shared)
         n = int(np.prod(self.shape))
+        mshape = (n,) if self.shared else (self.ncol, n)
         self.w = np.zeros((self.ncol, n))      # sum of pair weights
-        self.wr = np.zeros((self.ncol, n))     # sum of w * r1
-        self.ws = np.zeros((self.ncol, n))     # sum of w * s
-        self.wmu = np.zeros((self.ncol, n))    # sum of w * mu
+        self.wr = np.zeros(mshape)             # sum of w * r1   (shared: of r1)
+        self.ws = np.zeros(mshape)             # sum of w * s    (shared: of s)
+        self.wmu = np.zeros(mshape)            # sum of w * mu   (shared: of mu)
         self.n = np.zeros(n)                   # unweighted count
 
     def add(self, x1, r1, d, w):
@@ -110,17 +113,22 @@ class PairHistogram:
         for c in range(self.ncol):
             ww = w[good, c]
             self.w[c] += np.bincount(idx, weights=ww, minlength=ln)
-            self.wr[c] += np.bincount(idx, weights=ww * rg, minlength=ln)
-            self.ws[c] += np.bincount(idx, weights=ww * sg, minlength=ln)
-            self.wmu[c] += np.bincount(idx, weights=ww * mg, minlength=ln)
+            if not self.shared:
+                self.wr[c] += np.bincount(idx, weights=ww * rg, minlength=ln)
+                self.ws[c] += np.bincount(idx, weights=ww * sg, minlength=ln)
+                self.wmu[c] += np.bincount(idx, weights=ww * mg, minlength=ln)
+        if self.shared:
+            self.wr += np.bincount(idx, weights=rg, minlength=ln)
+            self.ws += np.bincount(idx, weights=sg, minlength=ln)
+            self.wmu += np.bincount(idx, weights=mg, minlength=ln)
         self.n += np.bincount(idx, minlength=ln)
 
     def add_arrays(self, w, wr, ws, wmu, n):
         """Absorb the accumulations produced by an accelerated backend ((ncol, ncell) and (ncell,))."""
         self.w += np.asarray(w).reshape(self.w.shape)
-        self.wr += np.asarray(wr).reshape(self.w.shape)
-        self.ws += np.asarray(ws).reshape(self.w.shape)
-        self.wmu += np.asarray(wmu).reshape(self.w.shape)
+        self.wr += np.asarray(wr).reshape(self.wr.shape)
+        self.ws += np.asarray(ws).reshape(self.ws.shape)
+        self.wmu += np.asarray(wmu).reshape(self.wmu.shape)
         self.n += np.asarray(n)
 
     def contract(self, triples, col: int = 0):
@@ -134,9 +142,13 @@ class PairHistogram:
         if len(nz) == 0:
             return out, wsum, nsum
         w = wc[nz]
-        r1 = self.wr[col][nz] / w
-        s = self.ws[col][nz] / w
-        mu = self.wmu[col][nz] / w
+        if self.shared:
+            nn = self.n[nz]
+            r1, s, mu = self.wr[nz] / nn, self.ws[nz] / nn, self.wmu[nz] / nn
+        else:
+            r1 = self.wr[col][nz] / w
+            s = self.ws[col][nz] / w
+            mu = self.wmu[col][nz] / w
         S = tripolar_coplanar(triples, r1, s, mu)               # (n_triples, n_cells)
         ib = (nz // self.shape[2]) % nb
         for n, t in enumerate(triples):
@@ -216,11 +228,11 @@ class _Counter:
                 else:
                     p1, ww1, rr = pos1[i0:i1], w1[i0:i1], r1all[i0:i1]
                 return jb.far_block(jnp.asarray(p1), jnp.asarray(ww1), jnp.asarray(rr), p2, ww2, *edges,
-                                    hist.shape, ncell, float(s_lo), float(s_hi), uni)
+                                    hist.shape, ncell, float(s_lo), float(s_hi), uni, hist.shared)
         else:
             def one(b):
                 i0, i1 = b
-                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol)
+                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol, hist.shared)
                 d = pos2[None, :, :] - pos1[i0:i1, None, :]
                 s = np.linalg.norm(d, axis=-1)
                 keep = (s >= s_lo) & (s < s_hi)
@@ -266,7 +278,7 @@ class _Counter:
             if len(i) == 0:
                 return None
             if jb is None:
-                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol)
+                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol, hist.shared)
                 h.add(pos1[i], r1all[i], pos2[j] - pos1[i], w1[i] * w2[j])
                 return (h.w, h.wr, h.ws, h.wmu, h.n)
             acc = None                           # summed on the device
@@ -282,7 +294,7 @@ class _Counter:
                     w = np.vstack([w, np.zeros((pad, w.shape[1]))])
                 valid = jnp.arange(C) < nv
                 out = jb.flat_pairs(jnp.asarray(x1), jnp.asarray(r1), jnp.asarray(d), jnp.asarray(w),
-                                    *edges, hist.shape, ncell, valid, uni)
+                                    *edges, hist.shape, ncell, valid, uni, hist.shared)
                 acc = out if acc is None else tuple(a + o for a, o in zip(acc, out))
             return acc
         t0 = time.time()
@@ -308,13 +320,14 @@ class _Counter:
         mu_edges = np.linspace(-1.0, 1.0, max(tw.n_mu for tw in self.tws) + 1)
         K = len(self.tws)
         near = tw0.s_edges[1:] <= split + 1e-9
-        far = PairHistogram(r_edges, tw0.s_edges, mu_edges, K)
+        shared = tw0.cell_means == 'shared'
+        far = PairHistogram(r_edges, tw0.s_edges, mu_edges, K, shared)
         norm_f = self.far(far, tw0.n_sub, split, tw0.s_edges[-1], verbose)
         nearh, norm_n = None, None
         if np.any(near):
             # near pairs only fall in the s bins below the split: a histogram over those alone is
             # ~15x smaller (exact; a small gain in the scatter-bound binning)
-            nearh = PairHistogram(r_edges, tw0.s_edges[:int(np.count_nonzero(near)) + 1], mu_edges, K)
+            nearh = PairHistogram(r_edges, tw0.s_edges[:int(np.count_nonzero(near)) + 1], mu_edges, K, shared)
             norm_n = self.near(nearh, tw0.n_near, split, verbose)
         for c, tw in enumerate(self.tws):
             tw._finish(split, far, norm_f, nearh, norm_n, col=c)
@@ -326,7 +339,8 @@ class TripolarWindow:
     def __init__(self, omega: Window, omega_p: Window, triples, s_edges: np.ndarray,
                  n_sub: int = 5000, n_near: int = 200000, s_split: float = 80.0,
                  seed: int = 0, chunk_pairs: int = 200000, min_pairs: int = 20,
-                 n_shells: int = 16, n_mu=None, backend: str = 'auto', n_threads=None):
+                 n_shells: int = 16, n_mu=None, backend: str = 'auto', n_threads=None,
+                 cell_means: str = 'shared'):
         self.omega = omega
         self.omega_p = omega_p
         self.triples = sorted(set(tuple(int(x) for x in t) for t in triples))
@@ -346,6 +360,9 @@ class TripolarWindow:
         self.n_mu = int(n_mu) if n_mu is not None else max(24, 6 * lam_max)
         self.backend = _resolve_backend(backend)
         self.n_threads = n_threads
+        if cell_means not in ('weighted', 'shared'):
+            raise ValueError("cell_means must be 'weighted' or 'shared'")
+        self.cell_means = cell_means
         self.Q = None          # dict triple -> array over s bins
         self.npairs = None     # unweighted pairs per s bin actually used
         self.Q0 = None         # exact value at s = 0
@@ -423,11 +440,12 @@ class WindowLibrary:
     """
 
     def __init__(self, s_edges, n_sub=5000, n_near=200000, s_split=80.0, seed=0, chunk_pairs=200000,
-                 min_pairs=20, n_shells=16, n_mu=None, backend='auto', n_threads=None):
+                 min_pairs=20, n_shells=16, n_mu=None, backend='auto', n_threads=None,
+                 cell_means='shared'):
         self.s_edges = np.asarray(s_edges, dtype=float)
         self.opts = dict(n_sub=n_sub, n_near=n_near, s_split=s_split, seed=seed,
                          chunk_pairs=chunk_pairs, min_pairs=min_pairs, n_shells=n_shells,
-                         n_mu=n_mu, backend=backend, n_threads=n_threads)
+                         n_mu=n_mu, backend=backend, n_threads=n_threads, cell_means=cell_means)
         self._requests = {}
         self._windows = {}
         self._interp_cache = {}

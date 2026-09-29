@@ -192,7 +192,7 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
 # with an older definition are refused. 2: NZ and weights from the grid cells (see Catalogues).
 # 3: pypower / jaxpower conventions -- realised alpha and shot noise, galaxies with w = 0 dropped.
 MOCK_VERSION = 3
-KEYS_WINDOWS = ('mock_version', 'grid', 'box_factor', 'n_random_factor', 'tracers', 'ells',
+KEYS_WINDOWS = ('mock_version', 'cell_means', 'grid', 'box_factor', 'n_random_factor', 'tracers', 'ells',
                 'n_sub', 'n_near', 'ds', 'ds_pair')
 KEYS_ANALYTIC = KEYS_WINDOWS + ('kmin', 'kmax', 'dk', 'amplitude', 'stoch_scale')
 KEYS_MOCKS = ('mock_version', 'grid', 'box_factor', 'n_random_factor', 'tracers', 'ells', 'kmin', 'kmax', 'dk',
@@ -382,6 +382,7 @@ def main():
     cfg = vars(args).copy()
     cfg['tracers'], cfg['ells'] = list(args.tracers), list(args.ells)
     cfg['mock_version'] = MOCK_VERSION
+    cfg['cell_means'] = 'shared'           # thecov's default since the scatter-bound binning rewrite
     reuse = args.resume or args.report_only
     stored_any = any(os.path.exists(os.path.join(args.out, f))
                      for f in ('mocks.npz', 'vectors.npy', 'analytic.npz', 'windows.npz'))
