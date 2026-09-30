@@ -40,8 +40,8 @@ objects, so:
 * Set-up checks: the spectra's `num_shotnoise` equals the catalogue value; thecov's `int m^2` with `NW`
   is within 0.8-1.7% of the mesh `norm`; with the naive `NZ * WEIGHT` it is 7-8% high. The predicted
   shot noise matches the files to 0.4%.
-* Per-multipole blocks: `<chi2>/n` is within ~1-2 sigma of 1 with `NW` (NGC, SGC, GCcomb). The naive
-  window is 5-15% low (-4 sigma on NGC P0 and P2).
+* Per-multipole blocks: `<chi2>/n` is within ~1-2 sigma of 1 with `NW` (NGC, SGC, GCcomb). With the naive
+  window the covariance is 5-15% too large (`<chi2>/n` 0.84-0.87, -4 sigma, on NGC P0 and P2).
 * Full vector with 0.01-wide bins: `<chi2>/n` = 0.99-1.04 and eigenvalues inside Marchenko-Pastur.
 * Full vector with 0.005-wide bins: thecov's correlation matrix has 1-2 near-null directions
   (eigenvalue ~1e-3). They alternate in sign from bin to bin and combine P0+P2+P4, i.e. radial
