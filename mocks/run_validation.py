@@ -48,7 +48,7 @@ import numpy as np
 
 from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
 
-from .estimator import MultipoleFields, ShellBinner, cross_multipole, realised_alpha, shot_noise
+from .estimator import MultipoleEstimator, MultipoleFields, ShellBinner, cross_multipole, realised_alpha, shot_noise
 from .field import GaussianField
 from .survey import Catalogues, Footprint, make_grid, make_mock, model_multipoles
 
@@ -99,6 +99,12 @@ class MockState:
         self.I_tab = {sp: self.cat.I(*sp) for sp in self.spectra}
         self.stoch = {t: cfg['stoch_scale'] * STOCH[t] for t in cfg['tracers']}
         self.binner = ShellBinner(self.grid, self.k_edges)
+        self.est = None
+        if cfg['estimator'] == 'native' and set(self.ells) <= {0, 2}:
+            # set up once per worker: randoms painted once, geometry cached, single precision
+            self.est = MultipoleEstimator(self.grid, self.ells, cfg['scheme'], cfg['interlace'])
+            for t in self.cat.tracers:
+                self.est.set_randoms(t, self.cat.randoms[t], self.cat.w_ran[t])
         self.jax = None
         if cfg['estimator'] == 'jaxpower':
             from .jaxpower_estimator import JaxpowerEstimator
@@ -123,9 +129,12 @@ class MockState:
             return v, np.array([norms[sp] for sp in self.spectra]), sumw2
         # native estimator, pypower / jaxpower conventions: realised alpha and shot noise
         alpha = {t: realised_alpha(gw[t], cat.w_ran[t]) for t in cat.tracers}
-        fields = {t: MultipoleFields(self.grid, gal[t], gw[t], cat.randoms[t], cat.w_ran[t], alpha[t],
-                                     ells=self.ells, scheme=cfg['scheme'], interlace=cfg['interlace'])
-                  for t in cat.tracers}
+        if self.est is not None:
+            fields = {t: self.est.fields(t, gal[t], gw[t], alpha[t]) for t in cat.tracers}
+        else:
+            fields = {t: MultipoleFields(self.grid, gal[t], gw[t], cat.randoms[t], cat.w_ran[t], alpha[t],
+                                         ells=self.ells, scheme=cfg['scheme'], interlace=cfg['interlace'])
+                      for t in cat.tracers}
         out = []
         for (X, Y) in self.spectra:
             for ell in self.ells:
@@ -191,7 +200,8 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
 # Bumped whenever the mock survey itself changes (catalogues, nbar, weights), so that caches made
 # with an older definition are refused. 2: NZ and weights from the grid cells (see Catalogues).
 # 3: pypower / jaxpower conventions -- realised alpha and shot noise, galaxies with w = 0 dropped.
-MOCK_VERSION = 3
+# 4: field generated in single precision (same statistics, different realisation per seed).
+MOCK_VERSION = 4
 KEYS_WINDOWS = ('mock_version', 'cell_means', 'grid', 'box_factor', 'n_random_factor', 'tracers', 'ells',
                 'n_sub', 'n_near', 'ds', 'ds_pair')
 KEYS_ANALYTIC = KEYS_WINDOWS + ('kmin', 'kmax', 'dk', 'amplitude', 'stoch_scale')

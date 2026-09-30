@@ -109,9 +109,12 @@ class GaussianField:
         self._deltak = None
 
     def _generate_k(self):
+        # single precision (the grid dtype) with scipy.fft: ~2x faster than float64 numpy, and a
+        # Gaussian realisation needs no more than float32 accuracy
+        import scipy.fft
         g = self.grid
-        white = self.rng.standard_normal((g.N, g.N, g.N))
-        dk = np.fft.rfftn(white)
+        white = self.rng.standard_normal((g.N, g.N, g.N), dtype=np.float32)
+        dk = scipy.fft.rfftn(white)
         del white
         k = g.knorm()
         amp = np.zeros_like(k)
@@ -119,7 +122,7 @@ class GaussianField:
         amp[nz] = np.sqrt(np.maximum(self.pk(k[nz]), 0.0) / g.V_cell)
         if self.deconvolve_cell:
             amp /= cell_window(g)
-        dk *= amp
+        dk *= amp.astype(np.float32)
         dk[0, 0, 0] = 0.0                       # no mean mode
         self._deltak = dk
         return dk
@@ -129,7 +132,8 @@ class GaussianField:
         return self._deltak if self._deltak is not None else self._generate_k()
 
     def delta(self) -> np.ndarray:
-        return np.fft.irfftn(self.deltak, s=(self.grid.N,) * 3, axes=(0, 1, 2)).astype(self.grid.dtype)
+        import scipy.fft
+        return scipy.fft.irfftn(self.deltak, s=(self.grid.N,) * 3, axes=(0, 1, 2)).astype(self.grid.dtype, copy=False)
 
     def displacement(self, i: int) -> np.ndarray:
         """Psi_i(x) = irfftn(i k_i / k^2 delta_k) -- the Zel'dovich displacement component."""
@@ -139,7 +143,9 @@ class GaussianField:
         fac = np.zeros_like(k2)
         nz = k2 > 0
         fac[nz] = 1.0 / k2[nz]
-        return np.fft.irfftn(1j * kv * fac * self.deltak, s=(g.N,) * 3, axes=(0, 1, 2)).astype(g.dtype)
+        import scipy.fft
+        fac = (1j * kv * fac).astype(np.complex64)
+        return scipy.fft.irfftn(fac * self.deltak, s=(g.N,) * 3, axes=(0, 1, 2)).astype(g.dtype, copy=False)
 
     def free(self):
         self._deltak = None

@@ -223,3 +223,29 @@ def test_weights_and_nz_are_those_of_the_realised_density():
     # outside the survey the weight vanishes
     far = np.array([[0.0, 0.0, 5.0], grid.box_min + 0.1])
     assert np.all(cat.weights_at('A', far) == 0.0)
+
+
+def test_fast_estimator_matches_reference():
+    """MultipoleEstimator (cached randoms and geometry, single precision) must reproduce the float64
+    MultipoleFields on a common catalogue."""
+    from mocks.estimator import MultipoleEstimator, realised_alpha
+    g = box_grid(offset=3000.0)
+    binner = ShellBinner(g, K_EDGES)
+    rng = np.random.default_rng(11)
+    d = GaussianField(g, pk, rng).delta()
+    lam = np.full((g.N,) * 3, 4e-4 * g.V_cell)
+    gal = sample_points(lam * (1 + 1.5 * d), g, rng)
+    ran = sample_points(lam * 10, g, rng)
+    gw, rw = np.ones(len(gal)), np.ones(len(ran))
+    alpha = realised_alpha(gw, rw)
+    I = (4e-4) ** 2 * g.V_box
+    for interlace in (False, True):
+        ref = MultipoleFields(g, gal, gw, ran, rw, alpha, ells=(0, 2), scheme='tsc', interlace=interlace)
+        est = MultipoleEstimator(g, (0, 2), 'tsc', interlace)
+        est.set_randoms('X', ran, rw)
+        new = est.fields('X', gal, gw, alpha)
+        P0 = np.abs(cross_multipole(ref, ref, 0, binner, I))
+        for ell in (0, 2):
+            a = cross_multipole(ref, ref, ell, binner, I)
+            b = cross_multipole(new, new, ell, binner, I)
+            assert np.all(np.abs(a - b) < 1e-3 * P0), (interlace, ell, (a - b) / P0)
