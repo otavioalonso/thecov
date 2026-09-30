@@ -67,9 +67,10 @@ def radec(u):
     return ra, dec
 
 
-def main(out, n_mocks=60, N=128, seed=0, write_catalog_mock=0, random_z='data'):
-    """random_z: 'data' (each random takes the redshift of a random data object of the first mock, as
-    DESI does) or 'nz' (redshifts drawn from the smooth n(z))."""
+def main(out, n_mocks=60, N=128, seed=0, write_catalog_mock=0, random_z='data', fresh_randoms=False):
+    """random_z: 'data' (each random takes the redshift of a random data object, as DESI does) or 'nz'
+    (redshifts drawn from the smooth n(z)). fresh_randoms: a new random catalogue for every mock (as
+    the DESI mocks have) instead of one catalogue, built from the first mock, shared by all."""
     rng = np.random.default_rng(seed)
     chi_lo, chi_hi = comoving_distance([ZRANGE[0] - 0.05, ZRANGE[1] + 0.05])
     L = 2 * chi_hi * 1.05
@@ -154,7 +155,7 @@ def main(out, n_mocks=60, N=128, seed=0, write_catalog_mock=0, random_z='data'):
     randoms = None
     for m in range(n_mocks):
         data = make_data(m)
-        if randoms is None:            # one random catalogue, built from the first mock's redshifts
+        if randoms is None or fresh_randoms:    # shared: built from the first mock's redshifts
             randoms = make_randoms(data)
         if m == write_catalog_mock:
             for name in CAPS:
@@ -190,4 +191,5 @@ def main(out, n_mocks=60, N=128, seed=0, write_catalog_mock=0, random_z='data'):
 
 if __name__ == '__main__':
     print(main(sys.argv[1], n_mocks=int(sys.argv[2]) if len(sys.argv) > 2 else 60,
-               random_z=sys.argv[3] if len(sys.argv) > 3 else 'data'))
+               random_z=sys.argv[3] if len(sys.argv) > 3 else 'data',
+               fresh_randoms=len(sys.argv) > 4 and sys.argv[4] == 'fresh'))

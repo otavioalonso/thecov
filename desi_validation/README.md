@@ -34,3 +34,22 @@ objects, so:
   make it non-positive-definite; the notebook starts at `KMIN = 0.02`.
 * The model is the window-convolved mean of the mocks (an approximation at the lowest k).
 * Real mocks are non-Gaussian: expect an excess of mock variance and correlations growing with k.
+
+## Result on the synthetic set (LRG-like, z 0.4-0.6, two 22-degree caps, ~100 mocks, k 0.02-0.1)
+
+* Set-up checks: the spectra's `num_shotnoise` equals the catalogue value; thecov's `int m^2` with `NW`
+  is within 0.8-1.7% of the mesh `norm`; with the naive `NZ * WEIGHT` it is 7-8% high. The predicted
+  shot noise matches the files to 0.4%.
+* Per-multipole blocks: `<chi2>/n` is within ~1-2 sigma of 1 with `NW` (NGC, SGC, GCcomb). The naive
+  window is 5-15% low (-4 sigma on NGC P0 and P2).
+* Full vector with 0.01-wide bins: `<chi2>/n` = 0.99-1.04 and eigenvalues inside Marchenko-Pastur.
+* Full vector with 0.005-wide bins: thecov's correlation matrix has 1-2 near-null directions
+  (eigenvalue ~1e-3). They alternate in sign from bin to bin and combine P0+P2+P4, i.e. radial
+  modes. The mocks put 4-12 times more variance there, which gives `<chi2>/n` = 1.03-1.15 per cap
+  and 1.3-1.6 for GCcomb.
+  Not the cause: pair-count sampling, `L_max` (4 or 8), the s resolution, randoms taking the
+  data's redshifts vs a smooth n(z), and one random catalogue for all mocks vs a fresh one per mock.
+  Open. The notebook prints this diagnostic (`dc.eigen_directions`) and repeats the comparison with
+  bins twice as wide, so it can be checked on the DESI mocks.
+
+Options of the generator: `python -m desi_validation.synthetic <dir> <n_mocks> [data|nz] [fresh]`.
