@@ -163,3 +163,28 @@ def test_window_save_load_rejects_wrong_s_grid(tmp_path):
     cov2 = GaussianCovariance([A], k_edges, **dict(opts, ds_pair=25.0)).set_model(model)
     with pytest.raises(ValueError):
         cov2.load_windows(str(path))
+
+
+def test_per_object_weights_need_the_smooth_mean_density():
+    """With per-object weights (w_r = w(x) u_r, <u> = 1) the clustering window is m^2 with
+    m = nbar w <u>: evaluating nbar w with each random's OWN weight gives <u^2> m^2 instead. NW fixes
+    it; the shot-noise window keeps <w^2>."""
+    from thecov import Tracer
+    from thecov.tracers import Window
+    rng = np.random.default_rng(4)
+    n, L, nbar, alpha = 200000, 500.0, 3e-4, 0.1
+    pos = rng.random((n, 3)) * L + 1000.0
+    ws = 1.0 / (1.0 + nbar * 1e4)
+    u = rng.gamma(4.0, 0.25, n)                      # mean 1, variance 0.25
+    V = L ** 3
+    alpha = nbar * V / n
+    exact_W = (nbar * ws) ** 2 * V
+    exact_S = (1 + alpha) * nbar * ws ** 2 * np.mean(u ** 2) * V
+    old = Tracer('A', {'POSITION': pos, 'WEIGHT': ws * u, 'NZ': np.full(n, nbar)}, alpha)
+    assert np.isclose(Window('W', old, old).integral() / exact_W, np.mean(u ** 2), rtol=1e-3)
+    new = Tracer('A', {'POSITION': pos, 'WEIGHT': ws * u, 'NW': np.full(n, nbar * ws)}, alpha)
+    assert np.isclose(Window('W', new, new).integral() / exact_W, np.mean(u), rtol=1e-3)
+    assert np.isclose(Window('S', new).integral() / exact_S, 1.0, rtol=1e-3)
+    half = Tracer('A', {'POSITION': pos, 'WEIGHT': ws * u, 'NW': np.full(n, nbar * ws)}, alpha,
+                  shotnoise_scale=0.5)
+    assert np.isclose(Window('S', half).integral() / exact_S, 0.5, rtol=1e-3)

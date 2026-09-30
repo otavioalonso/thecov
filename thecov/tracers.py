@@ -3,9 +3,21 @@
 A tracer is described by its random catalogue: a dict with keys
     'POSITION' : (N, 3) comoving Cartesian coordinates with the observer at the origin,
     'WEIGHT'   : (N,)   total weight w(x) applied to the density field (FKP x completeness ...),
-    'NZ'       : (N,)   optional, mean density nbar(x) at each random.
-plus alpha = (weighted number of galaxies) / (weighted number of randoms), i.e. the
-random catalogue samples nbar / alpha.
+    'NZ'       : (N,)   optional, mean density nbar(x) at each random,
+    'NW'       : (N,)   optional, the mean WEIGHTED galaxy density m(x) = E[sum_g w_g delta_D(x - x_g)]
+                        at each random, a smooth function of position;
+plus alpha = (weighted number of galaxies) / (weighted number of randoms), i.e. the weighted random
+catalogue samples the weighted galaxy density.
+
+Per-object weights. The clustering window is W^{AB}(x) = m_A(x) m_B(x). When the weight is a smooth
+function of position, m = nbar w and 'NZ' suffices. When it varies from object to object (survey
+completeness, imaging-systematics and redshift-failure weights, as in DESI, where each random also
+inherits the weight of a random data object), nbar(x_r) w_r evaluated with a random's OWN weight
+gives the auto window ~ <w^2> instead of <w>^2, too large by 1 + var(w)/<w>^2. Pass the smooth 'NW'
+then; the windows use it in place of NZ * WEIGHT, while every random still carries its own weight as
+a sampling weight (sum_r w_r f(x_r) ~ int m f / alpha) and in the shot-noise window.
+`shotnoise_scale` multiplies the shot-noise window, e.g. to match (sum_d w^2 + alpha^2 sum_r w^2)
+when the random weights do not reproduce the distribution of the data weights.
 
 Cross windows W^{AB} are sampled by the randoms of A, with nbar_B w_B taken from the nearest random
 of B and set to zero when that random is farther than `mask_factor` x the LOCAL spacing of B's
@@ -29,16 +41,21 @@ from scipy.spatial import cKDTree
 
 class Tracer:
     def __init__(self, name: str, randoms: dict, alpha: float, nbar=None, knn: int = 64,
-                 mask_factor: float = 2.5, mask_knn: int = 8):
+                 mask_factor: float = 2.5, mask_knn: int = 8, shotnoise_scale: float = 1.0):
         self.name = str(name)
         self.pos = np.ascontiguousarray(randoms['POSITION'], dtype=float)
         if self.pos.ndim != 2 or self.pos.shape[1] != 3:
             raise ValueError("randoms['POSITION'] must have shape (N, 3)")
         self.w = np.asarray(randoms['WEIGHT'], dtype=float)
         self.alpha = float(alpha)
+        self.shotnoise_scale = float(shotnoise_scale)
         self._tree = None
+        nw = randoms.get('NW', None)
         if nbar is None:
             nbar = randoms.get('NZ', None)
+        if nbar is None and nw is not None:
+            with np.errstate(divide='ignore', invalid='ignore'):
+                nbar = np.where(self.w != 0, np.asarray(nw, dtype=float) / self.w, 0.0)
         if nbar is None:
             warnings.warn(f"Tracer {self.name}: no 'NZ' given; estimating nbar from the randoms "
                           f"with a {knn}-nearest-neighbour density estimate.")
@@ -48,6 +65,11 @@ class Tracer:
         self.nbar = np.asarray(nbar, dtype=float)
         if self.nbar.shape != (len(self.pos),):
             raise ValueError("nbar must have one value per random")
+        # m(x): the mean weighted galaxy density entering the clustering windows
+        self.has_nw = nw is not None
+        self.mw = np.asarray(nw, dtype=float) if self.has_nw else self.nbar * self.w
+        if self.mw.shape != (len(self.pos),):
+            raise ValueError("NW must have one value per random")
         self._sub_cache = {}
         # Footprint mask used when this tracer's density is needed at foreign positions: a position
         # is outside the footprint if it is farther than mask_factor x the LOCAL random spacing from
@@ -65,14 +87,22 @@ class Tracer:
         # (alpha, NZ) would mis-normalise them relative to each other.
         ratio = self._implied_alpha(knn) / self.alpha
         if abs(ratio - 1) > 0.15:
-            warnings.warn(f"Tracer {self.name}: alpha={self.alpha:.4g} but the random density and NZ imply "
-                          f"alpha~{self.alpha * ratio:.4g} (ratio {ratio:.2f}); nbar/alpha must equal the "
-                          f"density of the randoms.")
+            what = 'NW' if self.has_nw else 'NZ'
+            warnings.warn(f"Tracer {self.name}: alpha={self.alpha:.4g} but the random density and {what} imply "
+                          f"alpha~{self.alpha * ratio:.4g} (ratio {ratio:.2f}); "
+                          + ("NW must equal alpha x (random density) x (local mean random weight)."
+                             if self.has_nw else "nbar/alpha must equal the density of the randoms."))
 
     def _implied_alpha(self, k: int) -> float:
+        """alpha implied by NZ (or NW) and a k-nearest-neighbour density of the randoms: median over
+        a subsample of nbar / n_ran, or of m / (n_ran <w>_k) with <w>_k the mean weight of the
+        neighbours (excluding the random itself) when NW is given."""
         sub = self.pos[: min(self.size, 20000)]
-        d, _ = self.tree.query(sub, k=k + 1)
+        d, idx = self.tree.query(sub, k=k + 1)
         n_ran = k / (4.0 / 3.0 * np.pi * d[:, -1] ** 3)
+        if self.has_nw:
+            wmean = self.w[idx[:, 1:]].mean(axis=1)
+            return float(np.median(self.mw[: len(sub)] / (n_ran * wmean)))
         return float(np.median(self.nbar[: len(sub)] / n_ran))
 
     # -- geometry helpers ------------------------------------------------------
@@ -109,10 +139,27 @@ class Tracer:
             cache[T.name] = self.nbar_w_at(T.pos)
         return cache[T.name]
 
+    def mw_w_at(self, positions: np.ndarray):
+        """(m(x), w(x)) at arbitrary positions: the smooth mean weighted density and the weight of the
+        nearest random (both zero outside the footprint)."""
+        if positions is self.pos:
+            return self.mw, self.w
+        d, idx = self.tree.query(positions, k=1)
+        inside = d <= self.mask_factor * self.spacing[idx]
+        return np.where(inside, self.mw[idx], 0.0), np.where(inside, self.w[idx], 0.0)
+
+    def mw_w_at_randoms_of(self, T: "Tracer"):
+        """mw_w_at(T.pos), cached per tracer T."""
+        if T is self:
+            return self.mw, self.w
+        cache = self.__dict__.setdefault('_mw_cache', {})
+        if T.name not in cache:
+            cache[T.name] = self.mw_w_at(T.pos)
+        return cache[T.name]
+
     def nw_at(self, positions: np.ndarray) -> np.ndarray:
-        """nbar(x) * w(x) of this tracer at arbitrary positions (nearest random)."""
-        nb, w = self.nbar_w_at(positions)
-        return nb * w
+        """m(x) = nbar(x) w(x) (or NW) of this tracer at arbitrary positions (nearest random)."""
+        return self.mw_w_at(positions)[0]
 
     def subsample_indices(self, n: int, seed: int = 0) -> np.ndarray:
         key = (n, seed)
@@ -150,26 +197,36 @@ class Window:
         return self.tracers[0]
 
     def tilde_weights(self) -> np.ndarray:
-        """omega / nbar_host at the host randoms (cached on the host: for a cross window it needs a
-        nearest-random lookup of the other tracer at every host random)."""
+        """omega / nbar_host at the host randoms, i.e. the per-random weight with which the host
+        randoms sample omega (cached on the host: a cross window needs a nearest-random lookup of
+        the other tracer at every host random).
+
+        W^{AB}: w_r m_B(x_r) (m_B = nbar_B w_B, or NW), so that alpha sum_r -> int m_A m_B.
+        S^A:    scale (1 + alpha) w_r^2, each random with its OWN weight (the shot noise is <w^2>).
+        """
         A = self.host
         cache = A.__dict__.setdefault('_tilde_cache', {})
         if self.key not in cache:
             if self.kind == 'W':
-                nb, w = self.tracers[1].nbar_w_at_randoms_of(A)
-                cache[self.key] = A.w * nb * w
+                m, _ = self.tracers[1].mw_w_at_randoms_of(A)
+                cache[self.key] = A.w * m
             else:
-                cache[self.key] = (1.0 + A.alpha) * A.w ** 2
+                cache[self.key] = A.shotnoise_scale * (1.0 + A.alpha) * A.w ** 2
         return cache[self.key]
 
     def value_at(self, positions: np.ndarray) -> np.ndarray:
-        """omega(x) at arbitrary positions (nearest-random interpolation of nbar and w)."""
+        """omega(x) at arbitrary positions (nearest-random interpolation).
+
+        For S the nearest random's weight stands in for w(x): (1 + alpha) m w, whose average is
+        exact for a smooth weight and ~<w>^2/<w^2> low with per-object weights; it only enters the
+        s = 0 anchor of window pairs that involve S.
+        """
         if self.kind == 'W':
             A, B = self.tracers
             return A.nw_at(positions) * B.nw_at(positions)
         A = self.host
-        nb, w = A.nbar_w_at(positions)
-        return (1.0 + A.alpha) * nb * w ** 2
+        m, w = A.mw_w_at(positions)
+        return A.shotnoise_scale * (1.0 + A.alpha) * m * w
 
     def integral(self) -> float:
         """int d^3x omega(x)  (e.g. I_AB for kind 'W')."""
@@ -181,12 +238,11 @@ class Window:
         if self.key not in cache:
             if self.kind == 'W':
                 A, B = self.tracers
-                (na, wa), (nb, wb) = A.nbar_w_at_randoms_of(T), B.nbar_w_at_randoms_of(T)
-                cache[self.key] = na * wa * nb * wb
+                cache[self.key] = A.mw_w_at_randoms_of(T)[0] * B.mw_w_at_randoms_of(T)[0]
             else:
                 A = self.host
-                nb, w = A.nbar_w_at_randoms_of(T)
-                cache[self.key] = (1.0 + A.alpha) * nb * w ** 2
+                m, w = A.mw_w_at_randoms_of(T)
+                cache[self.key] = A.shotnoise_scale * (1.0 + A.alpha) * m * w
         return cache[self.key]
 
     def overlap_integral(self, other: "Window") -> float:
