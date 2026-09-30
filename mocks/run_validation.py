@@ -276,9 +276,28 @@ def report(vectors, C, labels, k_eff, spectra, ells, out_dir):
     # 2. eigenvalues of C^-1/2 Chat C^-1/2
     M = np.linalg.solve(L, np.linalg.solve(L, Chat).T).T
     ev = np.linalg.eigvalsh(0.5 * (M + M.T))
+    # a sample covariance of N draws in n dimensions spreads the eigenvalues of C^-1 Chat over the
+    # Marchenko-Pastur range even when C is exact -- not over +- sqrt(2/N)
+    q = n_dim / (n_mock - 1)
     print(f"\neigenvalues of C^-1/2 Chat C^-1/2: mean {ev.mean():.3f}, "
-          f"range [{ev.min():.3f}, {ev.max():.3f}] "
-          f"(sampling width ~ {np.sqrt(2.0 / n_mock):.3f} per mode)")
+          f"range [{ev.min():.3f}, {ev.max():.3f}]  "
+          f"(exact C: Marchenko-Pastur [{(1 - np.sqrt(q)) ** 2:.3f}, {(1 + np.sqrt(q)) ** 2:.3f}])")
+
+    # the chi^2 test restricted to each block, low and high k: localises a failure
+    nb = len(k_eff)
+    blocks = [f"{X}{Y}{ell}" for (X, Y) in spectra for ell in ells]
+    half = nb // 2
+    print(f"\nper-block <chi^2> / expected (k split at {k_eff[half]:.3f}; sigma in brackets):")
+    for b, name in enumerate(blocks):
+        cells = []
+        for sl in (slice(b * nb, (b + 1) * nb), slice(b * nb, b * nb + half), slice(b * nb + half, (b + 1) * nb)):
+            Lb = np.linalg.cholesky(C[sl, sl])
+            zb = np.linalg.solve(Lb, (vectors[:, sl] - mean[sl]).T)
+            dim = Lb.shape[0]
+            e = dim * (1.0 - 1.0 / n_mock)
+            m = np.sum(zb ** 2, axis=0).mean()
+            cells.append(f"{m / e:.3f} ({(m - e) / (e * np.sqrt(2.0 / (dim * n_mock))):+.1f})")
+        print(f"  {name:6s} all {cells[0]}   low-k {cells[1]}   high-k {cells[2]}")
 
     # 3. diagonal, per block
     print("\ndiagonal ratio  sigma_mock / sigma_analytic  (1 +- "
