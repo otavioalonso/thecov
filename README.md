@@ -313,6 +313,26 @@ and 300 mocks -- and which is sensitive to the off-diagonal structure as well. T
 reports the eigenvalues of C^-1/2 Chat C^-1/2 (mean 1, spread sqrt(2/N_mock)), the diagonal ratios
 and the first off-diagonal correlations, and writes a plot plus `comparison.npz`.
 
+### Result (mock_version 4)
+
+1000 mocks, grid 256, box-factor 2, k = 0.01-0.30 (dk = 0.01), l = 0, 2, tracers A, B and their
+cross (174 elements), TSC + interlacing, realised alpha and shot noise, amplitude 0.6:
+
+* <chi^2> = 174.26 against 173.83 +- 0.59 (+0.7 sigma); var(chi^2) 345.6 against ~347.7;
+* eigenvalues of C^-1/2 Chat C^-1/2 in [0.342, 1.991], the Marchenko-Pastur range for an exact C
+  being [0.339, 2.009];
+* every block, and each low-k and high-k half, within 1.5 sigma; sigma_mock / sigma_thecov has an rms
+  scatter of 0.025 about 1 against 0.022 expected from sampling alone.
+
+The only hint of a departure is in the first three k bins (k < 0.04), where the variance ratio
+averages ~0.98 and one element sits at 0.91: a variance deficit at k ~ 1/R_survey is what the
+integral constraint of the realised alpha, not modelled by thecov, would produce. It is marginal at
+this number of mocks.
+
+The same set-up with the expected (not realised) shot noise failed at +7.1 sigma, entirely in the
+monopole-auto blocks at high k: the Poisson fluctuation of sum_g w^2 left in P, reproduced without
+free parameters by int nbar w^4 / I^2 (and its correlation with P).
+
 ### Outputs, resuming and reuse
 
 Everything goes to `--out`, each file tagged with the options it depends on:

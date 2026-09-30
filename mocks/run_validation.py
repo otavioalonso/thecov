@@ -530,11 +530,23 @@ def main():
             f"{X}{Y} {mean_norm[i] / I_tab[(X, Y)]:.4f} (scatter {store['norms'][:, i].std() / mean_norm[i]:.1e})"
             for i, (X, Y) in enumerate(spectra)))
         Cn = _rescale_to_norms(C, spectra, ells, len(k_edges) - 1, I_tab, mean_norm)
+        k3 = grid.knorm()
         for j, t in enumerate(args.tracers):
-            a = cat.alpha[t]
-            pred = a * np.sum(cat.w_ran[t] ** 4)            # Poisson: Var(sum_g w^2) = int nbar w^4
-            print(f"realised sum_g w^2 of {t}: var / int nbar w^4 = {store['sumw2'][:, j].var() / pred:.3f} "
-                  f"(Poisson: 1; fluctuations no longer enter P -- the shot noise is realised)")
+            # Var(sum_g w^2) = int nbar w^4 (Poisson) + int int nbar w^2 nbar w^2 xi (clustering: the
+            # w^2-weighted count follows the large-scale density of the survey)
+            pois = cat.alpha[t] * np.sum(cat.w_ran[t] ** 4)
+            nb_, b = cat.nbar[t], BIAS[t]
+            w = np.where(nb_ > 0, 1.0 / (1.0 + nb_ * cat.P0_fkp), 0.0)
+            Pg = ((b * b + 2 * b * GROWTH / 3 + GROWTH ** 2 / 5)
+                  * np.where(k3 > 0, pk_lin(np.where(k3 > 0, k3, 1.0), args.amplitude), 0.0))
+            Wk = np.fft.rfftn(nb_ * w * w) * grid.V_cell
+            mult = np.full(Wk.shape, 2.0)
+            mult[..., 0] = 1.0
+            mult[..., -1] = 1.0
+            clus = float(np.sum(mult * Pg * np.abs(Wk) ** 2) / grid.V_box)
+            ratio = store['sumw2'][:, j].var() / (pois + clus)
+            print(f"realised sum_g w^2 of {t}: var / (Poisson {pois:.4g} + clustering {clus:.4g}) = {ratio:.3f} "
+                  f"(1 +- {np.sqrt(2.0 / len(v)):.3f}; it no longer enters P, the shot noise being realised)")
         report(v, Cn, labels, binner.k_eff, spectra, ells, args.out)
 
     if args.report_only:
