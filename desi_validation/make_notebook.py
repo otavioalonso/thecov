@@ -114,7 +114,7 @@ are kept per catalogue release and mock in `OUT`.
 """)
 
 code(r"""
-cfg_detail = dataclasses.replace(cfg, naive=True, nw_modes=('random-density', 'angular'))   # compare constructions of m
+cfg_detail = dataclasses.replace(cfg, naive=True, nw_modes=('random-density', 'patch'))   # compare constructions of m
 D = pl.run_bin(paths, DETAIL_BIN, cfg_detail, OUT, keep=True)
 spec, regs, ells = D['spectra'], D['regions'], cfg.ells
 nb = len(next(iter(spec.values()))['k'])
@@ -258,7 +258,10 @@ for r, rc in regs.items():
 md(r"""
 **Effective volume of the window.** The Gaussian clustering covariance scales as
 $1/V_{\rm eff}=\int m^4/(\int m^2)^2$ (the amplitude of $m$ cancels). Completeness weights vary on the
-sky with sharp boundaries (number of overlapping tiles); a 3D 32-neighbour average of the weights
+sky with sharp boundaries (number of overlapping tiles), and the randoms' $n(z)$ can differ across the
+sky (e.g. redshifts drawn from the data of their own imaging region: BASS/MzLS vs DECaLS in NGC).
+`patch` measures $\rho_r(z)$ per healpix patch (nside 8, ~54 deg$^2$) instead of per cap. A 3D
+32-neighbour average of the weights
 (`random-density`, radius ~15 Mpc/$h$) smooths them and underestimates $1/V_{\rm eff}$, an angular
 128-neighbour average (`angular`, ~0.1 deg) resolves them. `own-weight` (each random's own weight) is
 biased high by the weight scatter and bounds it from above. A difference of $x$% here is a difference
@@ -267,6 +270,13 @@ of up to $x$% in the clustering part of the covariance.
 
 code(r"""
 for r, rc in regs.items():
+    try:
+        nv = dc.nz_variation(rc, surface_density_deg2=cfg.surface_density)
+        print(f"{r}: n(z) shape across sky patches: rms deviation {nv['rms_patch_nz_deviation']:.4f} "
+              f"(Poisson {nv['poisson_expectation']:.4f}, {nv['n_patches']} patches); north fraction {nv['north_fraction']:.2f}"
+              + (f"; <z> north - south {nv['mean_z_north_minus_south']:+.4f}" if 'mean_z_north_minus_south' in nv else ''))
+    except ImportError:
+        print('healpy missing: no n(z) variation check')
     vm = dc.window_moments(rc, surface_density_deg2=cfg.surface_density)
     ref = vm['random-density']
     print(f"{r}: 1/V_eff relative to 'random-density': " + ', '.join(f'{k_} {v / ref:.4f}' for k_, v in vm.items()))

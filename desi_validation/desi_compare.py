@@ -352,6 +352,8 @@ def load_region_cs(paths: Paths, tracer_bin, region, n_random_files=1):
     info['weights'] = f'INDWEIGHT; split for diagnostics with WEIGHT_FKP = 1/(1 + NX x {P0:g})'
     data, randoms = canon(data), canon(randoms)
 
+    info.update(_pix_counts_all(randoms['RA'], randoms['DEC']))
+
     def cut(cat):
         m = (cat['Z'] > zr[0]) & (cat['Z'] < zr[1])
         return {c: v[m] for c, v in cat.items()}
@@ -384,6 +386,7 @@ def load_region(paths: Paths, tracer_bin, region, n_random_files=1, columns=DATA
     common = [c for c in rand[0] if all(c in r for r in rand)]
     randoms = {c: np.concatenate([r[c] for r in rand]) for c in common}
     n_all = int(len(randoms['Z']))
+    info.update(_pix_counts_all(randoms['RA'], randoms['DEC']))
 
     def cut(cat):
         m = (cat['Z'] > zmin) & (cat['Z'] < zmax)
@@ -459,6 +462,88 @@ def weight_diagnostics(rc: RegionCatalogs, tracer_bin, scheme='default-FKP', nz_
             row['NX_mean_randoms'] = float(np.mean(r['NX'][mr]))
         tab.append(row)
     out['per_z'] = tab
+    return out
+
+
+PIX_NSIDE_BASE = 64
+
+
+def _pix_counts_all(ra, dec, nside_base=PIX_NSIDE_BASE):
+    """Random counts at all redshifts per healpix pixel (NESTED, nside_base), for the area of sky
+    patches (random_density_patches). Empty if healpy is missing."""
+    try:
+        import healpy as hp
+    except ImportError:
+        return {}
+    pix = hp.ang2pix(nside_base, ra, dec, lonlat=True, nest=True)
+    return {'pix_nside_base': nside_base, 'pix_counts_all': np.bincount(pix, minlength=hp.nside2npix(nside_base))}
+
+
+def random_density_patches(rc: RegionCatalogs, nside=8, surface_density_deg2=2500.0, dz=0.01, min_fill=0.25,
+                           cosmo=None):
+    """Like random_density, but with n(z) measured separately in each sky patch (healpix pixel at
+    `nside`): rho_r(z, patch) = dN_patch/dz / (Omega_patch chi^2 dchi/dz), Omega_patch from the patch's
+    random count at all redshifts. Captures n(z) that varies across the sky (e.g. randoms taking their
+    redshifts from the data of their own imaging region), which a single rho_r(z) per cap cannot.
+    Patches with less than `min_fill` of a full pixel's randoms use the cap-wide rho_r(z)."""
+    import healpy as hp
+    if 'pix_counts_all' not in rc.info:
+        raise ValueError('no all-z healpix counts in the catalogue info (reload with healpy installed)')
+    base, cnt = rc.info['pix_nside_base'], rc.info['pix_counts_all']
+    f = (base // nside) ** 2
+    cnt_p = cnt.reshape(-1, f).sum(1)                            # NESTED: children are contiguous
+    omega_p = cnt_p / (surface_density_deg2 * rc.n_random_files) * (np.pi / 180.0) ** 2
+    full = surface_density_deg2 * rc.n_random_files * hp.nside2pixarea(nside, degrees=True)
+    r = rc.randoms
+    pix = hp.ang2pix(nside, r['RA'], r['DEC'], lonlat=True, nest=True)
+    z = r['Z']
+    edges = np.arange(z.min() - 1e-9, z.max() + dz, dz)
+    zb = np.clip(np.digitize(z, edges) - 1, 0, len(edges) - 2)
+    nzb = len(edges) - 1
+    counts = np.bincount(pix * nzb + zb, minlength=len(cnt_p) * nzb).reshape(len(cnt_p), nzb)
+    chi = comoving_distance(edges, cosmo)
+    shell = (chi[1:] ** 3 - chi[:-1] ** 3) / 3.0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rho_p = counts / (omega_p[:, None] * shell[None, :])
+    rho_glob, _ = random_density(rc, surface_density_deg2, dz=dz, cosmo=cosmo)
+    good = cnt_p[pix] >= min_fill * full
+    rho = np.where(good, rho_p[pix, zb], rho_glob)
+    return rho, dict(n_patches=int(np.sum(cnt_p >= min_fill * full)), frac_randoms_in_good=float(good.mean()))
+
+
+def nz_variation(rc, nside=8, dz=0.02, min_fill=0.5, surface_density_deg2=2500.0):
+    """How much the randoms' n(z) shape varies across the sky: per patch, n_p(z) / n(z) (both normalised
+    to unit integral over the bin), weighted rms over patches and z; and the same for the split at
+    DEC = 32.375 deg (BASS/MzLS north vs DECaLS, relevant for NGC)."""
+    import healpy as hp
+    r = rc.randoms
+    z = r['Z']
+    edges = np.arange(z.min() - 1e-9, z.max() + dz, dz)
+    zb = np.clip(np.digitize(z, edges) - 1, 0, len(edges) - 2)
+    nzb = len(edges) - 1
+    glob = np.bincount(zb, minlength=nzb) / len(z)
+    pix = hp.ang2pix(nside, r['RA'], r['DEC'], lonlat=True, nest=True)
+    npix = hp.nside2npix(nside)
+    counts = np.bincount(pix * nzb + zb, minlength=npix * nzb).reshape(npix, nzb)
+    tot = counts.sum(1)
+    full = surface_density_deg2 * rc.n_random_files * hp.nside2pixarea(nside, degrees=True) * len(z) / max(rc.n_randoms_all_z, 1)
+    good = tot >= min_fill * full
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = counts[good] / tot[good, None] / glob[None, :]
+    wts = counts[good]
+    dev = np.sqrt(np.nansum(wts * (ratio - 1) ** 2) / np.sum(wts))
+    # expected from Poisson noise alone
+    noise = np.sqrt(np.nansum(wts / np.maximum(counts[good], 1)) / np.sum(wts))
+    north = r['DEC'] > 32.375
+    out = dict(rms_patch_nz_deviation=float(dev), poisson_expectation=float(noise), n_patches=int(good.sum()),
+               north_fraction=float(north.mean()))
+    if 0.02 < north.mean() < 0.98:
+        nn = np.bincount(zb[north], minlength=nzb) / north.sum()
+        ns = np.bincount(zb[~north], minlength=nzb) / (~north).sum()
+        zc = 0.5 * (edges[1:] + edges[:-1])
+        with np.errstate(divide='ignore', invalid='ignore'):
+            out['north_over_south_nz'] = {f'{zc[i]:.3f}': float(nn[i] / ns[i]) for i in range(nzb) if ns[i] > 0}
+            out['mean_z_north_minus_south'] = float(np.mean(z[north]) - np.mean(z[~north]))
     return out
 
 
@@ -539,11 +624,15 @@ def local_mean_weight_angular(ra, dec, w, k=128, query=None, chunk=200000):
     return out
 
 
-def _m_values(rc, nw, sel, a_reg, rho, p, scheme='default-FKP', k_mean=32, k_ang=128):
+def _m_values(rc, nw, sel, a_reg, rho, p, scheme='default-FKP', k_mean=32, k_ang=128, nside=8,
+              surface_density_deg2=2500.0, cosmo=None):
     """m at the randoms `sel` for a construction `nw` (see build_tracer)."""
     r = rc.randoms
     if nw == 'random-density':
         return a_reg * rho[sel] * local_mean_weight(p[sel], total_weight(r, scheme)[sel], k=k_mean)
+    if nw == 'patch':
+        rho_p, _ = random_density_patches(rc, nside=nside, surface_density_deg2=surface_density_deg2, cosmo=cosmo)
+        return a_reg * rho_p[sel] * local_mean_weight(p[sel], total_weight(r, scheme)[sel], k=k_mean)
     if nw == 'angular':
         wfkp = np.asarray(r['WEIGHT_FKP'], float)
         wa = local_mean_weight_angular(r['RA'], r['DEC'], np.asarray(r['WEIGHT'], float), k=k_ang, query=sel)
@@ -556,7 +645,7 @@ def _m_values(rc, nw, sel, a_reg, rho, p, scheme='default-FKP', k_mean=32, k_ang
     raise ValueError(nw)
 
 
-def window_moments(rc, modes=('random-density', 'angular'), n_max=1_000_000, surface_density_deg2=2500.0,
+def window_moments(rc, modes=('random-density', 'patch', 'angular'), n_max=1_000_000, surface_density_deg2=2500.0,
                    scheme='default-FKP', seed=0, cosmo=None, **kwargs):
     """1 / V_eff = int m^4 / (int m^2)^2 for several constructions of m (integrals as sums over randoms
     of f / rho_r). The Gaussian clustering covariance scales with it; the amplitude of m cancels. Also
@@ -568,11 +657,17 @@ def window_moments(rc, modes=('random-density', 'angular'), n_max=1_000_000, sur
     wd, wr = total_weight(rc.data, scheme), total_weight(r, scheme)
     a_reg = wd.sum() / wr.sum()
     rho, _ = random_density(rc, surface_density_deg2, cosmo=cosmo)
+    try:                                        # integration measure: the local random density if available
+        meas, _ = random_density_patches(rc, surface_density_deg2=surface_density_deg2, cosmo=cosmo)
+    except (ImportError, ValueError):
+        meas = rho
+        modes = [m_ for m_ in modes if m_ != 'patch']
     p = sky_to_cartesian(r['RA'], r['DEC'], r['Z'], cosmo)
     out = {}
     for mode in list(modes) + ['own-weight']:
-        m = a_reg * rho[sel] * wr[sel] if mode == 'own-weight' else _m_values(rc, mode, sel, a_reg, rho, p, scheme, **kwargs)
-        out[mode] = float(np.sum(m ** 4 / rho[sel]) / np.sum(m ** 2 / rho[sel]) ** 2 * sel.mean())
+        m = a_reg * rho[sel] * wr[sel] if mode == 'own-weight' else _m_values(
+            rc, mode, sel, a_reg, rho, p, scheme, surface_density_deg2=surface_density_deg2, cosmo=cosmo, **kwargs)
+        out[mode] = float(np.sum(m ** 4 / meas[sel]) / np.sum(m ** 2 / meas[sel]) ** 2 * sel.mean())
     return out
 
 
@@ -586,13 +681,15 @@ def _median_ratio(m, r, sel):
 
 
 def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, surface_density_deg2=2500.0,
-                 k_mean=32, k_ang=128, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True,
+                 k_mean=32, k_ang=128, nside=8, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True,
                  shotnoise_target=None):
     """A thecov Tracer from one or several regions (several: the combined NGC+SGC catalogue of a
     single estimate, with each region's randoms renormalised to the global alpha, as in
     catalogs.normalize_and_concatenate).
 
     nw        : 'random-density' (default) -- m = alpha_region x rho_r(z) x <w_tot>_local (3D, k_mean);
+                'patch' -- as 'random-density' with rho_r(z) measured per sky patch (healpix `nside`),
+                for n(z) that varies across the sky (random_density_patches);
                 'angular' -- m = alpha_region x rho_r(z) x <WEIGHT>_sky (k_ang nearest randoms on the
                 sky, all z) x the random's own WEIGHT_FKP: resolves sharp completeness boundaries;
                 'nx' -- m = NX x WEIGHT_FKP x <WEIGHT>_local (relies on NX being the density the
@@ -625,7 +722,8 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
         p = sky_to_cartesian(r['RA'], r['DEC'], r['Z'], cosmo)
         rho, omega = random_density(rc, surface_density_deg2, cosmo=cosmo)
         sel = rng.random(len(wr)) < keep_frac          # subsample: m is unchanged, alpha rescales
-        m = _m_values(rc, nw, sel, a_reg, rho, p, scheme, k_mean=k_mean, k_ang=k_ang)
+        m = _m_values(rc, nw, sel, a_reg, rho, p, scheme, k_mean=k_mean, k_ang=k_ang, nside=nside,
+                      surface_density_deg2=surface_density_deg2, cosmo=cosmo)
         # renormalise this region's random weights to the global alpha (only matters for >1 region)
         wsc = wr[sel] * (a_reg / alpha_glob)
         pos.append(p[sel]); w.append(wsc)

@@ -143,7 +143,7 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
 
     # tracers and covariances
     modes = list(cfg.nw_modes) + (['none'] if cfg.naive else [])
-    suffix = {'random-density': '', 'none': '_naive', 'angular': '_ang', 'nx': '_nx'}
+    suffix = {'random-density': '', 'none': '_naive', 'angular': '_ang', 'nx': '_nx', 'patch': '_patch'}
     covs, info, tracers = {}, {}, {}
     for r in caps:
         for mode in modes:
