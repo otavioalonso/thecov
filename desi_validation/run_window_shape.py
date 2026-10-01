@@ -253,7 +253,9 @@ def main():
         for (r, mode), out in D['validation'].items():
             kv = kranges_var(out, cfg.ells)
             t2[f'{r} {mode}'] = dict(chi2=out['chi2_ratio'], chi2_sigma=out['chi2_sigma'], var_ratio=out['var_ratio_mean'],
-                                    z_mean=out['corr_resid_mean'], ev_max=out['ev_max'], **kv)
+                                    z_mean=out['corr_resid_mean'], ev_max=out['ev_max'], **kv,
+                                    n=out['n'], N=out['N'], chi2_i=np.asarray(out['_chi2']).tolist(),
+                                    mock_ids=pl.mock_ids(D['spectra'][r]))
         report.setdefault('test2', {})[b] = t2
         ex = {}
         for r in list(args.regions) + ['GCcomb']:
