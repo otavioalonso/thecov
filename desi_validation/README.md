@@ -1,12 +1,21 @@
 # thecov vs. DESI mock covariances
 
-* `desi_covariance_comparison.ipynb` — the comparison, one tracer bin per run (NGC, SGC, GCcomb).
-  Regenerate it with `python desi_validation/make_notebook.py` after editing that script.
-* `desi_compare.py` — loading (mpytools / h5py / fitsio), weight diagnostics, `Tracer` construction,
-  thecov covariance, comparison statistics. Reimplements what is needed from the old `catalogs.py`.
-* `synthetic.py` — a small data set in the same formats with a known answer
-  (`python -m desi_validation.synthetic <dir> 200`, ~30 min on 4 cores); run the notebook on it with
-  `THECOV_SYNTHETIC=1 THECOV_SYNTHETIC_DIR=<dir>`.
+* `desi_covariance_comparison.ipynb`: the validation. Part I looks at one bin in detail (weights,
+  the checks against the spectrum files, every test of the validation report, figures). Part II
+  loops over every tracer bin and region and writes the tables, `summary.json` and figures to `OUT`.
+  Default range: P0,2,4 in 0.005 bins, k = 0.02-0.3; also repeated with 0.01 bins. Regenerate it with
+  `python desi_validation/make_notebook.py` after editing that script.
+* `pipeline.py`: one tracer bin end to end (`run_bin`). It caches window pair counts and
+  covariances in `OUT/<bin>/`, detects whether GCcomb is the norm-weighted average of NGC and SGC or a
+  joint estimate, and checks the shot-noise convention of the files.
+* `validation.py`: the report's statistics (`validate`, `print_report`) and figures (`figures`,
+  `window_figure`).
+* `desi_compare.py`: loading (mpytools / h5py / fitsio), weight diagnostics, `Tracer` construction
+  with `NW`, and the thecov covariance.
+* `synthetic.py`: a small data set in the same formats with a known answer
+  (`python -m desi_validation.synthetic <dir> <n_mocks> [--random-z data|nz] [--fresh-randoms]
+  [--N 128] [--box-factor 1] [--regions NGC,SGC,GCcomb] [--amplitude 1]`). Its clustering is cut
+  at k ~ 0.1. Run the notebook on it with `THECOV_SYNTHETIC=1 THECOV_SYNTHETIC_DIR=<dir>`.
 
 ## Weights: what the covariance needs
 
@@ -52,4 +61,3 @@ objects, so:
   Open. The notebook prints this diagnostic (`dc.eigen_directions`) and repeats the comparison with
   bins twice as wide, so it can be checked on the DESI mocks.
 
-Options of the generator: `python -m desi_validation.synthetic <dir> <n_mocks> [data|nz] [fresh]`.

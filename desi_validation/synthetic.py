@@ -67,13 +67,14 @@ def radec(u):
     return ra, dec
 
 
-def main(out, n_mocks=60, N=128, seed=0, write_catalog_mock=0, random_z='data', fresh_randoms=False):
+def main(out, n_mocks=60, N=128, seed=0, write_catalog_mock=0, random_z='data', fresh_randoms=False, box_factor=1.0,
+         regions=('NGC', 'SGC', 'GCcomb'), amplitude=1.0):
     """random_z: 'data' (each random takes the redshift of a random data object, as DESI does) or 'nz'
     (redshifts drawn from the smooth n(z)). fresh_randoms: a new random catalogue for every mock (as
     the DESI mocks have) instead of one catalogue, built from the first mock, shared by all."""
     rng = np.random.default_rng(seed)
     chi_lo, chi_hi = comoving_distance([ZRANGE[0] - 0.05, ZRANGE[1] + 0.05])
-    L = 2 * chi_hi * 1.05
+    L = 2 * chi_hi * 1.05 * box_factor
     grid = Grid(np.array([-L / 2] * 3), L, N)
     x, y, z = grid.coords()
     r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
@@ -115,7 +116,7 @@ def main(out, n_mocks=60, N=128, seed=0, write_catalog_mock=0, random_z='data', 
 
     def make_data(m):
         rngm = np.random.default_rng(1000 + m)
-        f = GaussianField(grid, lambda k: 2.5e4 * (k / 0.05) / (1 + (k / 0.05) ** 2) ** 2, rngm)
+        f = GaussianField(grid, lambda k: amplitude * 2.5e4 * (k / 0.05) / (1 + (k / 0.05) ** 2) ** 2, rngm)
         d = f.delta().ravel()
         lam = lam_true * (1 + 1.8 * np.clip(d, -0.55, None)) * comp * grid.V_cell
         cnt = rngm.poisson(lam)
@@ -161,7 +162,7 @@ def main(out, n_mocks=60, N=128, seed=0, write_catalog_mock=0, random_z='data', 
             for name in CAPS:
                 write_cat(os.path.join(cat_dir, f'{TRACER}_{name}_clustering.dat.h5'), data[name])
                 write_cat(os.path.join(cat_dir, f'{TRACER}_{name}_0_clustering.ran.h5'), randoms[name])
-        for name in list(CAPS) + ['GCcomb']:
+        for name in regions:
             names = list(CAPS) if name == 'GCcomb' else [name]
             dd = {k_: np.concatenate([data[n][k_] for n in names]) for k_ in ('RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_FKP')}
             rr_ = {k_: np.concatenate([randoms[n][k_] for n in names]) for k_ in ('RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_FKP')}
@@ -190,6 +191,14 @@ def main(out, n_mocks=60, N=128, seed=0, write_catalog_mock=0, random_z='data', 
 
 
 if __name__ == '__main__':
-    print(main(sys.argv[1], n_mocks=int(sys.argv[2]) if len(sys.argv) > 2 else 60,
-               random_z=sys.argv[3] if len(sys.argv) > 3 else 'data',
-               fresh_randoms=len(sys.argv) > 4 and sys.argv[4] == 'fresh'))
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument('out'); p.add_argument('n_mocks', type=int, nargs='?', default=60)
+    p.add_argument('--random-z', default='data', choices=['data', 'nz'])
+    p.add_argument('--fresh-randoms', action='store_true')
+    p.add_argument('--regions', default='NGC,SGC,GCcomb')
+    p.add_argument('--amplitude', type=float, default=1.0)
+    p.add_argument('--N', type=int, default=128); p.add_argument('--box-factor', type=float, default=1.0)
+    a = p.parse_args()
+    print(main(a.out, n_mocks=a.n_mocks, N=a.N, random_z=a.random_z, fresh_randoms=a.fresh_randoms,
+               box_factor=a.box_factor, regions=a.regions.split(','), amplitude=a.amplitude))
