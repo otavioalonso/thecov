@@ -111,29 +111,53 @@ class Paths:
 
 
 # --------------------------------------------------------------------------- reading
-def read_catalog(fn, columns=None, group='LSS'):
-    """dict of numpy columns (those of `columns` that exist). mpytools if available, else h5py
-    (for .h5) or fitsio (for .fits)."""
-    wanted = list(columns) if columns is not None else None
+# alternative names of the columns used here (first match wins; matching is case-insensitive)
+COLUMN_ALIASES = {'Z': ('Z', 'Z_not4clus', 'Z_RSD', 'RSDZ', 'Z_COSMO', 'REDSHIFT'),
+                  'NX': ('NX', 'NZ'),
+                  'RA': ('RA',), 'DEC': ('DEC',)}
+REQUIRED_COLUMNS = ('RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_FKP')
+
+
+def _column_names(fn, group):
+    """(reader, names): the column names of the catalogue and a function name -> array."""
     if fn.endswith('.fits'):
         import fitsio
-        with fitsio.FITS(fn) as f:
-            names = f[1].get_colnames()
-            cols = [c for c in (wanted or names) if c in names]
-            return {c: np.asarray(f[1][c].read()) for c in cols}
+        f = fitsio.FITS(fn)
+        return (lambda c: np.asarray(f[1][c].read())), list(f[1].get_colnames())
     try:
         from mpytools import Catalog
-        cat = Catalog.read(fn, group=group)
-        names = cat.columns()
-        cols = [c for c in (wanted or names) if c in names]
-        return {c: np.asarray(cat[c]) for c in cols}
     except ImportError:
-        import h5py
-        with h5py.File(fn, 'r') as f:
-            g = f[group] if group in f else f
-            names = list(g.keys())
-            cols = [c for c in (wanted or names) if c in names]
-            return {c: np.asarray(g[c][...]) for c in cols}
+        Catalog = None
+    if Catalog is not None:
+        try:
+            cat = Catalog.read(fn, group=group)
+        except Exception:
+            cat = Catalog.read(fn)
+        return (lambda c: np.asarray(cat[c])), list(cat.columns())
+    import h5py
+    f = h5py.File(fn, 'r')
+    g = f[group] if group in f else f
+    return (lambda c: np.asarray(g[c][...])), [k for k in g.keys() if isinstance(g[k], h5py.Dataset)]
+
+
+def read_catalog(fn, columns=None, group='LSS', required=REQUIRED_COLUMNS):
+    """dict of numpy columns: those of `columns` that exist, found under the names of COLUMN_ALIASES
+    (case-insensitive) and returned under the canonical name. mpytools if available, else h5py (for
+    .h5) or fitsio (for .fits). Raises KeyError, listing the file's columns, if a `required` one is
+    missing."""
+    read, names = _column_names(fn, group)
+    lower = {n.lower(): n for n in names}
+    out = {}
+    for c in (list(columns) if columns is not None else names):
+        for alias in COLUMN_ALIASES.get(c, (c,)):
+            if alias.lower() in lower:
+                out[c] = read(lower[alias.lower()])
+                break
+    missing = [c for c in required if c not in out]
+    if missing:
+        raise KeyError(f'{fn}: no column for {missing} (tried {[COLUMN_ALIASES.get(c, (c,)) for c in missing]}); '
+                       f'columns are {sorted(names)}')
+    return out
 
 
 def comoving_distance(z, cosmo=None):
