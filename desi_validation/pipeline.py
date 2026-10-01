@@ -40,6 +40,7 @@ class Config:
     regions: tuple = ('NGC', 'SGC', 'GCcomb')
     shotnoise_from_files: bool = True    # S window integral = the spectra's mean num_shotnoise
     model_norm_correction: bool = True   # model P = mean P_hat x norm / int m^2
+    nw_modes: tuple = ('random-density',)   # constructions of m (desi_compare.build_tracer); first = primary
     naive: bool = False               # also build the naive NZ x WEIGHT covariance (comparison)
     coarse_check: bool = True         # repeat the validation with bins twice as wide
 
@@ -141,11 +142,12 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
     res['catalogue_info'] = {r: rc.info for r, rc in regs.items()}
 
     # tracers and covariances
-    modes = ['random-density'] + (['none'] if cfg.naive else [])
+    modes = list(cfg.nw_modes) + (['none'] if cfg.naive else [])
+    suffix = {'random-density': '', 'none': '_naive', 'angular': '_ang', 'nx': '_nx'}
     covs, info, tracers = {}, {}, {}
     for r in caps:
         for mode in modes:
-            name = f'{tracer_bin}_{r}' + ('_naive' if mode == 'none' else '')
+            name = f'{tracer_bin}_{r}' + suffix.get(mode, '_' + mode)
             sn = spec[r]['num_shotnoise'].mean() if (cfg.shotnoise_from_files and r in spec) else None
             tr, inf = dc.build_tracer(name, [regs[r]], nw=mode, n_randoms_max=cfg.n_randoms_max // 2,
                                       surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn)
@@ -155,17 +157,21 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
                 covs[(r, mode)] = C
                 inf.update(I_over_norm=ci['I_randoms'] / spec[r]['norm'].mean(),
                            shotnoise_catalogue_over_files=inf['shotnoise_numerator'] / spec[r]['num_shotnoise'].mean())
-    if 'GCcomb' in spec and all((r, 'random-density') in covs for r in CAPS):
+    primary = cfg.nw_modes[0]
+    if 'GCcomb' in spec:
         norms = [spec[r]['norm'].mean() for r in CAPS]
-        covs[('GCcomb', 'combined-regions')] = dc.combine_regions([covs[(r, 'random-density')] for r in CAPS], norms)
+        for mode in cfg.nw_modes:
+            if all((r, mode) in covs for r in CAPS):
+                key = 'combined-regions' if mode == primary else f'combined-regions [{mode}]'
+                covs[('GCcomb', key)] = dc.combine_regions([covs[(r, mode)] for r in CAPS], norms)
         if res['gccomb'][0] == 'joint':
             sn = spec['GCcomb']['num_shotnoise'].mean() if cfg.shotnoise_from_files else None
-            tr, inf = dc.build_tracer(f'{tracer_bin}_GCcomb', [regs[r] for r in CAPS], nw='random-density',
+            tr, inf = dc.build_tracer(f'{tracer_bin}_GCcomb' + suffix.get(primary, '_' + primary), [regs[r] for r in CAPS], nw=primary,
                                       n_randoms_max=cfg.n_randoms_max, surface_density_deg2=cfg.surface_density, verbose=False,
                                       shotnoise_target=sn)
-            tracers[('GCcomb', 'random-density')], info[('GCcomb', 'random-density')] = tr, inf
-            C, ci = covariance_cached(tr, spec['GCcomb'], cfg, os.path.join(od, f'cov_GCcomb_random-density_{cfg.binning_tag()}.npz'), log=log)
-            covs[('GCcomb', 'random-density')] = C
+            tracers[('GCcomb', primary)], info[('GCcomb', primary)] = tr, inf
+            C, ci = covariance_cached(tr, spec['GCcomb'], cfg, os.path.join(od, f'cov_GCcomb_{primary}_{cfg.binning_tag()}.npz'), log=log)
+            covs[('GCcomb', primary)] = C
             inf.update(I_over_norm=ci['I_randoms'] / spec['GCcomb']['norm'].mean())
     res['tracer_info'] = {f'{r}__{m}': {k: v for k, v in i.items() if k != 'regions'} | {'regions': i['regions']}
                           for (r, m), i in info.items()}
@@ -180,15 +186,17 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
             log(f'  {r} {mode}: {ex}')
     if cfg.coarse_check:
         for r in spec:
-            key = (r, 'random-density') if (r, 'random-density') in tracers else None
-            if key is None:
-                continue
-            s2 = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=2 * cfg.rebin, ells=cfg.ells)
-            C2, _ = covariance_cached(tracers[key], s2, cfg, os.path.join(od, f'cov_{r}_random-density_{cfg.binning_tag(2 * cfg.rebin)}.npz'), log=log)
-            try:
-                res['validation'][(r, 'random-density, bins x2')] = va.validate(s2['vectors'], C2, s2['k'], cfg.ells)
-            except ValueError as ex:
-                log(f'  {r} bins x2: {ex}')
+            s2 = None
+            for mode in cfg.nw_modes:
+                if (r, mode) not in tracers:
+                    continue
+                if s2 is None:
+                    s2 = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=2 * cfg.rebin, ells=cfg.ells)
+                C2, _ = covariance_cached(tracers[(r, mode)], s2, cfg, os.path.join(od, f'cov_{r}_{mode}_{cfg.binning_tag(2 * cfg.rebin)}.npz'), log=log)
+                try:
+                    res['validation'][(r, f'{mode}, bins x2')] = va.validate(s2['vectors'], C2, s2['k'], cfg.ells)
+                except ValueError as ex:
+                    log(f'  {r} {mode} bins x2: {ex}')
     res['covariances'] = covs
     log(f'{tracer_bin}: done in {time.time() - t0:.0f} s')
     if keep:
@@ -200,7 +208,7 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
     return res
 
 
-def summary_table(results, mode='random-density'):
+def summary_table(results, mode='random-density'):  # noqa: modes as in res['validation']
     """Rows (bin, region, numbers) for every validated case of the given mode."""
     rows = []
     for res in results:

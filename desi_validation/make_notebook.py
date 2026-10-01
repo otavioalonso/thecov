@@ -64,6 +64,7 @@ cfg = pl.Config(
     surface_density=2500.0,                # randoms per deg^2 per file
     target_near_pairs=2e9,                 # sets n_near: Monte-Carlo noise of the windows at s < 80
     n_sub_far=20000,                       # all pairs of n_sub_far randoms for s > 80
+    nw_modes=('random-density',),          # Part II construction of m; ('angular',) if Part I favours it
     naive=False,                           # Part II: the naive covariance is built only in Part I
     coarse_check=True)                     # also validate with 0.01 bins
 DETAIL_BIN = 'LRG1'                         # Part I
@@ -113,7 +114,7 @@ are kept per catalogue release and mock in `OUT`.
 """)
 
 code(r"""
-cfg_detail = dataclasses.replace(cfg, naive=True)
+cfg_detail = dataclasses.replace(cfg, naive=True, nw_modes=('random-density', 'angular'))   # compare constructions of m
 D = pl.run_bin(paths, DETAIL_BIN, cfg_detail, OUT, keep=True)
 spec, regs, ells = D['spectra'], D['regions'], cfg.ells
 nb = len(next(iter(spec.values()))['k'])
@@ -252,6 +253,23 @@ for r, rc in regs.items():
 """)
 
 md(r"""
+**Effective volume of the window.** The Gaussian clustering covariance scales as
+$1/V_{\rm eff}=\int m^4/(\int m^2)^2$ (the amplitude of $m$ cancels). Completeness weights vary on the
+sky with sharp boundaries (number of overlapping tiles); a 3D 32-neighbour average of the weights
+(`random-density`, radius ~15 Mpc/$h$) smooths them and underestimates $1/V_{\rm eff}$, an angular
+128-neighbour average (`angular`, ~0.1 deg) resolves them. `own-weight` (each random's own weight) is
+biased high by the weight scatter and bounds it from above. A difference of $x$% here is a difference
+of up to $x$% in the clustering part of the covariance.
+""")
+
+code(r"""
+for r, rc in regs.items():
+    vm = dc.window_moments(rc, surface_density_deg2=cfg.surface_density)
+    ref = vm['random-density']
+    print(f"{r}: 1/V_eff relative to 'random-density': " + ', '.join(f'{k_} {v / ref:.4f}' for k_, v in vm.items()))
+""")
+
+md(r"""
 ## I.4 Validation
 
 For each region: the report's numbers, then its figures — mean multipoles with the thecov
@@ -295,7 +313,8 @@ for i, r in enumerate(spec):
     N = len(spec[r]['vectors']); band = np.sqrt(2 / (N - 1))
     for j, ell in enumerate(ells):
         a = ax[i, j]; a.axhspan(1 - band, 1 + band, color='0.9'); a.axhline(1, color='k', lw=0.6)
-        for m, ls in (('random-density', '-o'), ('none', '--'), ('combined-regions', ':')):
+        for m, ls in (('random-density', '-o'), ('angular', '-s'), ('none', '--'), ('combined-regions', ':'),
+                      ('combined-regions [angular]', ':')):
             if (r, m) in V_:
                 a.plot(spec[r]['k'], V_[(r, m)]['_sigma_ratio'][j * nb:(j + 1) * nb] ** 2, ls, ms=2, lw=1, label=m)
         a.set_title(f'{r}, ell={ell}', fontsize=9); a.set_ylabel(r'$\sigma^2_{\rm mock}/\sigma^2_{\rm thecov}$')
@@ -318,7 +337,7 @@ the same numbers here, and the whole validation repeated with bins twice as wide
 
 code(r"""
 for (r, m), out in V_.items():
-    if m in ('random-density', 'combined-regions', 'random-density, bins x2'):
+    if m != 'none':
         print(f"{r:7s} {m:26s} corr. eigenvalues {np.round(out['null_eig'][:4], 4)}  mock/thecov variance {np.round(out['null_ratio'][:4], 2)}"
               f"   <chi2> {out['chi2_ratio']:.3f} ({out['chi2_sigma']:+.1f})")
 """)

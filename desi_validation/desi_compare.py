@@ -520,6 +520,60 @@ def local_mean_weight(pos, w, k=32):
     return out
 
 
+def local_mean_weight_angular(ra, dec, w, k=128, query=None, chunk=200000):
+    """Mean of w over the k nearest OTHER randoms on the sky (all redshifts), at the randoms `query`
+    (boolean mask or None = all). Completeness-type weights vary with sky position only, often with
+    sharp boundaries (number of overlapping tiles); an angular average resolves them far better than
+    a 3D one at the same number of neighbours (~0.1 deg instead of ~15 Mpc/h)."""
+    from scipy.spatial import cKDTree
+    ra_, dec_ = np.radians(ra), np.radians(dec)
+    u = np.stack([np.cos(dec_) * np.cos(ra_), np.cos(dec_) * np.sin(ra_), np.sin(dec_)], axis=1)
+    tree = cKDTree(u)
+    qi = np.arange(len(u)) if query is None else np.flatnonzero(query)
+    out = np.empty(len(qi))
+    for i0 in range(0, len(qi), chunk):
+        _, idx = tree.query(u[qi[i0:i0 + chunk]], k=k + 1, workers=-1)
+        out[i0:i0 + chunk] = w[idx[:, 1:]].mean(axis=1)
+    return out
+
+
+def _m_values(rc, nw, sel, a_reg, rho, p, scheme='default-FKP', k_mean=32, k_ang=128):
+    """m at the randoms `sel` for a construction `nw` (see build_tracer)."""
+    r = rc.randoms
+    if nw == 'random-density':
+        return a_reg * rho[sel] * local_mean_weight(p[sel], total_weight(r, scheme)[sel], k=k_mean)
+    if nw == 'angular':
+        wfkp = np.asarray(r['WEIGHT_FKP'], float)
+        wa = local_mean_weight_angular(r['RA'], r['DEC'], np.asarray(r['WEIGHT'], float), k=k_ang, query=sel)
+        return a_reg * rho[sel] * wa * wfkp[sel]
+    if nw == 'nx':
+        wmean_w = local_mean_weight(p[sel], np.asarray(r['WEIGHT'], float)[sel], k=k_mean)
+        return np.asarray(r['NX'], float)[sel] * np.asarray(r['WEIGHT_FKP'], float)[sel] * wmean_w
+    if nw == 'none':
+        return None
+    raise ValueError(nw)
+
+
+def window_moments(rc, modes=('random-density', 'angular'), n_max=1_000_000, surface_density_deg2=2500.0,
+                   scheme='default-FKP', seed=0, cosmo=None, **kwargs):
+    """1 / V_eff = int m^4 / (int m^2)^2 for several constructions of m (integrals as sums over randoms
+    of f / rho_r). The Gaussian clustering covariance scales with it; the amplitude of m cancels. Also
+    'own-weight' (each random's own weight in place of a local mean: biased high by the weight
+    scatter, an upper bound). Returns {mode: 1/V_eff}."""
+    rng = np.random.default_rng(seed)
+    r = rc.randoms
+    sel = rng.random(len(r['Z'])) < min(1.0, n_max / len(r['Z']))
+    wd, wr = total_weight(rc.data, scheme), total_weight(r, scheme)
+    a_reg = wd.sum() / wr.sum()
+    rho, _ = random_density(rc, surface_density_deg2, cosmo=cosmo)
+    p = sky_to_cartesian(r['RA'], r['DEC'], r['Z'], cosmo)
+    out = {}
+    for mode in list(modes) + ['own-weight']:
+        m = a_reg * rho[sel] * wr[sel] if mode == 'own-weight' else _m_values(rc, mode, sel, a_reg, rho, p, scheme, **kwargs)
+        out[mode] = float(np.sum(m ** 4 / rho[sel]) / np.sum(m ** 2 / rho[sel]) ** 2 * sel.mean())
+    return out
+
+
 def _median_ratio(m, r, sel):
     """median of m / (NX WEIGHT_FKP) over the randoms with NX > 0 (None without NX or m)."""
     if m is None or 'NX' not in r:
@@ -530,13 +584,15 @@ def _median_ratio(m, r, sel):
 
 
 def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, surface_density_deg2=2500.0,
-                 k_mean=32, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True,
+                 k_mean=32, k_ang=128, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True,
                  shotnoise_target=None):
     """A thecov Tracer from one or several regions (several: the combined NGC+SGC catalogue of a
     single estimate, with each region's randoms renormalised to the global alpha, as in
     catalogs.normalize_and_concatenate).
 
-    nw        : 'random-density' (default) -- m = alpha_region x rho_r(z) x <w_tot>_local;
+    nw        : 'random-density' (default) -- m = alpha_region x rho_r(z) x <w_tot>_local (3D, k_mean);
+                'angular' -- m = alpha_region x rho_r(z) x <WEIGHT>_sky (k_ang nearest randoms on the
+                sky, all z) x the random's own WEIGHT_FKP: resolves sharp completeness boundaries;
                 'nx' -- m = NX x WEIGHT_FKP x <WEIGHT>_local (relies on NX being the density the
                 randoms sample, i.e. alpha_unweighted x rho_r = NX; checked in weight_diagnostics);
                 'none' -- NZ = NX and each random's own weight (the naive set-up; biased by
@@ -567,16 +623,7 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
         p = sky_to_cartesian(r['RA'], r['DEC'], r['Z'], cosmo)
         rho, omega = random_density(rc, surface_density_deg2, cosmo=cosmo)
         sel = rng.random(len(wr)) < keep_frac          # subsample: m is unchanged, alpha rescales
-        wmean = local_mean_weight(p[sel], wr[sel], k=k_mean)
-        if nw == 'random-density':
-            m = a_reg * rho[sel] * wmean
-        elif nw == 'nx':
-            wmean_w = local_mean_weight(p[sel], np.asarray(r['WEIGHT'], float)[sel], k=k_mean)
-            m = np.asarray(r['NX'], float)[sel] * np.asarray(r['WEIGHT_FKP'], float)[sel] * wmean_w
-        elif nw == 'none':
-            m = None
-        else:
-            raise ValueError(nw)
+        m = _m_values(rc, nw, sel, a_reg, rho, p, scheme, k_mean=k_mean, k_ang=k_ang)
         # renormalise this region's random weights to the global alpha (only matters for >1 region)
         wsc = wr[sel] * (a_reg / alpha_glob)
         pos.append(p[sel]); w.append(wsc)
