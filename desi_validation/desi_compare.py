@@ -50,7 +50,8 @@ TRACER_SPECS = {
 FKP_P0 = {'LRG': 1e4, 'ELG': 4e3, 'QSO': 6e3, 'BGS': 7e3}
 
 DATA_COLUMNS = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_FKP', 'NX',
-                'WEIGHT_COMP', 'WEIGHT_SYS', 'WEIGHT_ZFAIL', 'FRAC_TLOBS_TILES', 'NTILE']
+                'WEIGHT_COMP', 'WEIGHT_SYS', 'WEIGHT_ZFAIL', 'FRAC_TLOBS_TILES', 'NTILE', 'TARGETID']
+SLIM_RANDOM_COLUMNS = ['TARGETID', 'TARGETID_DATA', 'WEIGHT', 'NX', 'RA', 'DEC', 'Z', 'WEIGHT_FKP']
 
 
 @dataclass
@@ -72,6 +73,10 @@ class Paths:
     h5_group: str = 'LSS'
     catalog_names: dict = field(default_factory=lambda: {'ELG_LOPnotqso': 'ELGnotqso',
                                                          'LRG+ELG_LOPnotqso': 'LRG+ELGnotqso'})
+    # Slim random catalogues (holi v3) store only TARGETID, TARGETID_DATA, WEIGHT, NX: RA/DEC come
+    # from a parent random file with TARGETID, RA, DEC (template with {tracer}, {region}, {i},
+    # {kind}, {mock}; {i} is the index of the slim file); Z is that of the data object TARGETID_DATA.
+    random_positions: str = None
 
     def _dir(self):
         return self.catalog_dir.format(kind=self.kind, mock=self.mock)
@@ -93,6 +98,12 @@ class Paths:
         fns = [fn for fn in glob.glob(self.randoms_fn(tracer, region, '*'))
                if os.path.basename(fn)[len(pre):-len(post)].isdigit()]
         return sorted(fns, key=idx)
+
+    def random_positions_fn(self, tracer, region, i):
+        if self.random_positions is None:
+            return None
+        return self.random_positions.format(tracer=self.catalog_tracer(tracer), region=region, i=i,
+                                            kind=self.kind, mock=self.mock)
 
     def spectra_fns(self, tracer, zrange, region):
         pattern = os.path.join(self.spectra_dir, 'mock*',
@@ -195,26 +206,103 @@ class RegionCatalogs:
     info: dict = field(default_factory=dict)
 
 
+def random_index(paths, tracer, region, fn):
+    pre, post = paths.randoms_name.split('{i}')
+    pre = pre.format(tracer=paths.catalog_tracer(tracer), region=region)
+    return int(os.path.basename(fn)[len(pre):-len(post)])
+
+
+def _lookup(keys, values_keys, values):
+    """values[j] where values_keys[j] == keys[i], for every i (KeyError if one is absent)."""
+    order = np.argsort(values_keys, kind='stable')
+    sk = values_keys[order]
+    j = np.clip(np.searchsorted(sk, keys), 0, len(sk) - 1)
+    bad = sk[j] != keys
+    if np.any(bad):
+        raise KeyError(f'{bad.sum()} of {len(keys)} ids not found (e.g. {keys[bad][:3]})')
+    return {c: v[order][j] for c, v in values.items()}
+
+
+def complete_slim_randoms(rand, data, paths, tracer, region, i, group='LSS'):
+    """Fill RA, DEC, Z and WEIGHT_FKP of a slim random catalogue (TARGETID, TARGETID_DATA, WEIGHT, NX):
+    Z from the data object it was drawn from, RA/DEC from paths.random_positions by TARGETID,
+    WEIGHT_FKP = 1 / (1 + NX P0) (checked against the data's own WEIGHT_FKP)."""
+    out = dict(rand)
+    info = {}
+    if 'Z' not in out:
+        if 'TARGETID_DATA' not in out or 'TARGETID' not in data:
+            raise KeyError('slim randoms need TARGETID_DATA (randoms) and TARGETID (data) to get Z')
+        out['Z'] = _lookup(out['TARGETID_DATA'], data['TARGETID'], {'Z': data['Z']})['Z']
+    if 'WEIGHT_FKP' not in out:
+        P0 = FKP_P0[next(t for t in FKP_P0 if tracer.startswith(t))]
+        out['WEIGHT_FKP'] = 1.0 / (1.0 + np.asarray(out['NX'], float) * P0)
+        dev = np.max(np.abs(data['WEIGHT_FKP'] - 1.0 / (1.0 + data['NX'] * P0)) / data['WEIGHT_FKP'])
+        info['WEIGHT_FKP_formula_max_rel_dev_on_data'] = float(dev)
+        if dev > 1e-3:
+            print(f'WARNING: data WEIGHT_FKP != 1/(1 + NX P0) with P0={P0:g} (max rel dev {dev:.2g}); '
+                  'the randoms\' WEIGHT_FKP rebuilt this way may not be those of the spectra')
+    if 'RA' not in out or 'DEC' not in out:
+        fn = paths.random_positions_fn(tracer, region, i)
+        if fn is None:
+            raise KeyError('slim random catalogue without RA/DEC: set paths.random_positions to the parent random '
+                           'files (TARGETID, RA, DEC); dc.find_random_sources(paths, tracer) lists candidates')
+        par = read_catalog(fn, ['TARGETID', 'RA', 'DEC'], group, required=('TARGETID', 'RA', 'DEC'))
+        out.update(_lookup(out['TARGETID'], par['TARGETID'], {'RA': par['RA'], 'DEC': par['DEC']}))
+        info['positions_from'] = fn
+    return out, info
+
+
+def find_random_sources(paths, tracer, roots=None, max_files=40):
+    """List random-like files (name contains 'ran') near the catalogues, and in the DA2 LSS
+    directories, with whether they hold TARGETID + RA + DEC (candidates for paths.random_positions)."""
+    ct = paths.catalog_tracer(tracer)
+    d = paths._dir()
+    roots = roots or [d, os.path.dirname(d), os.path.dirname(os.path.dirname(d)),
+                      '/global/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1/LSScats/*',
+                      '/global/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1']
+    seen = 0
+    for root in roots:
+        for fn in sorted(glob.glob(os.path.join(root, f'*{ct}*ran*')) + glob.glob(os.path.join(root, '*random*'))):
+            if seen >= max_files:
+                return
+            try:
+                _, names = _column_names(fn, paths.h5_group)
+                up = {n.upper() for n in names}
+                ok = {'TARGETID', 'RA', 'DEC'} <= up
+                print(f"{'OK ' if ok else '   '} {fn}  [{', '.join(sorted(names)[:12])}{', ...' if len(names) > 12 else ''}]")
+            except Exception as ex:
+                print(f'    {fn}  (unreadable: {type(ex).__name__})')
+            seen += 1
+
+
 def load_region(paths: Paths, tracer_bin, region, n_random_files=1, columns=DATA_COLUMNS):
     """One region (NGC or SGC) of one tracer bin: data and randoms cut to the redshift range.
 
     The region is given by the file; no RA/DEC region cut is applied (the example script's
     select_region is redundant on per-region files, and its SGC branch, `not (array) & (array)`,
-    raises for arrays)."""
+    raises for arrays). Slim random catalogues are completed with complete_slim_randoms."""
     tracer, (zmin, zmax) = TRACER_SPECS[tracer_bin]
     data = read_catalog(paths.data_fn(tracer, region), columns, paths.h5_group)
     rfns = paths.randoms_fns(tracer, region)[:n_random_files]
     if len(rfns) < n_random_files:
         raise FileNotFoundError(f'{n_random_files} random files wanted, {len(rfns)} found: '
                                 f'{paths.randoms_fn(tracer, region, "*")}')
-    rand = [read_catalog(fn, columns, paths.h5_group) for fn in rfns]
-    n_all = int(sum(len(r['Z']) for r in rand))
-    randoms = {c: np.concatenate([r[c] for r in rand]) for c in rand[0]}
+    rand, info = [], {}
+    for fn in rfns:
+        r = read_catalog(fn, list(dict.fromkeys(columns + SLIM_RANDOM_COLUMNS)), paths.h5_group, required=('WEIGHT',))
+        if not all(c in r for c in ('RA', 'DEC', 'Z', 'WEIGHT_FKP')):
+            r, inf = complete_slim_randoms(r, data, paths, tracer, region, random_index(paths, tracer, region, fn),
+                                           paths.h5_group)
+            info.setdefault('slim_randoms', []).append(inf)
+        rand.append(r)
+    common = [c for c in rand[0] if all(c in r for r in rand)]
+    randoms = {c: np.concatenate([r[c] for r in rand]) for c in common}
+    n_all = int(len(randoms['Z']))
 
     def cut(cat):
         m = (cat['Z'] > zmin) & (cat['Z'] < zmax)
         return {c: v[m] for c, v in cat.items()}
-    return RegionCatalogs(region, cut(data), cut(randoms), n_all, n_random_files)
+    return RegionCatalogs(region, cut(data), cut(randoms), n_all, n_random_files, info)
 
 
 # --------------------------------------------------------------------------- weights

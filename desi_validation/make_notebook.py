@@ -71,6 +71,11 @@ BINS = list(dc.TRACER_SPECS)                # Part II: every bin
 paths = dc.Paths(kind='holi_v3', mock=173)  # catalogues of one mock of the spectra's release
 # spectra name -> catalogue name where they differ (edit if a bin reports MISSING below)
 paths.catalog_names.update({'ELG_LOPnotqso': 'ELGnotqso', 'LRG+ELG_LOPnotqso': 'LRG+ELGnotqso'})
+# holi v3 random files are slim (TARGETID, TARGETID_DATA, WEIGHT, NX): Z comes from the data object
+# TARGETID_DATA, WEIGHT_FKP = 1/(1 + NX P0), and RA/DEC from parent random files with TARGETID, RA, DEC.
+# Set the template ({tracer}, {region}, {i} = index of the slim file, {kind}, {mock}); run
+# dc.find_random_sources(paths, 'LRG') to list candidates.
+paths.random_positions = None
 OUT = os.path.expanduser(f'~/thecov_desi/{paths.kind}_mock{paths.mock}')   # caches depend on the catalogues
 if SYNTHETIC:
     SYN = os.environ.get('THECOV_SYNTHETIC_DIR', os.path.expanduser('~/thecov_desi/synthetic'))
@@ -84,6 +89,9 @@ for b in BINS:
     print(f'{b:8s} {t:22s} z={zr}  spectra: ' + ', '.join(f'{r} {len(paths.spectra_fns(t, zr, r))}' for r in cfg.regions))
 print('catalogues, e.g.', paths.data_fn(dc.TRACER_SPECS[DETAIL_BIN][0], 'NGC'))
 paths.check(BINS)
+if paths.random_positions is None and not SYNTHETIC:
+    print('\npaths.random_positions not set; candidate parent random files (OK = has TARGETID, RA, DEC):')
+    dc.find_random_sources(paths, dc.TRACER_SPECS[DETAIL_BIN][0])
 """)
 
 md(r"""
@@ -119,6 +127,7 @@ md(r"""
 
 code(r"""
 diag = D['diagnostics']
+print('catalogue info:', D.get('catalogue_info'))
 fmt = lambda v: (f'{v:.5g}' if isinstance(v, float) else str(tuple(round(x, 4) for x in v)) if isinstance(v, (tuple, list)) else str(v))
 print(f"{'':42s}" + ''.join(f'{r:>28s}' for r in diag))
 for k_ in [k_ for k_ in next(iter(diag.values())) if k_ != 'per_z']:

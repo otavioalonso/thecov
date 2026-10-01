@@ -138,6 +138,7 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
     res['diagnostics'] = {r: {k: v for k, v in dc.weight_diagnostics(rc, tracer_bin).items()
                               if k not in ('data_columns', 'random_columns')} for r, rc in regs.items()}
     res['poisson_var_num_shotnoise'] = {r: poisson_var_num_shotnoise(rc) for r, rc in regs.items()}
+    res['catalogue_info'] = {r: rc.info for r, rc in regs.items()}
 
     # tracers and covariances
     modes = ['random-density'] + (['none'] if cfg.naive else [])
