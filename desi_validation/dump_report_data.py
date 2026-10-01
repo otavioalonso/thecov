@@ -95,7 +95,7 @@ def main():
         for r, rc in D['regions'].items():
             wd = dc.weight_diagnostics(rc, b)
             mb['weights'][r] = {k: v for k, v in wd.items() if not k.endswith('columns')}
-            mb['veff'][r] = dc.window_moments(rc, modes=tuple(args.modes) + ('none',),
+            mb['veff'][r] = dc.window_moments(rc, modes=tuple(args.modes),     # + 'own-weight' = naive
                                               surface_density_deg2=cfg.surface_density)
             log(f"{b} {r}: <w^2>/<w>^2 data {wd['data_w2_over_wmean2']:.4f} randoms {wd['randoms_w2_over_wmean2']:.4f}; "
                 f"1/V_eff " + ', '.join(f'{m}: {v:.4g}' for m, v in mb['veff'][r].items()))
