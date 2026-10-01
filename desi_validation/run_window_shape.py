@@ -3,6 +3,8 @@
     python -m desi_validation.run_window_shape                 # everything, LRG1 + QSO control
     python -m desi_validation.run_window_shape --skip-mesh     # without the FFT-mesh test (faster)
     python -m desi_validation.run_window_shape --isotropic     # also the P2 = P4 = 0 mesh/thecov check
+    python -m desi_validation.run_window_shape --skip-mesh --control \
+        --cs-version <complete version> --spectra-dir <dir with mock*/ spectra>   # e.g. complete mocks
 
 Run from the repository root (or set THECOV_DIR), in an interactive allocation, with the notebook's
 environment. Output: a report on stdout (paste it back) and OUT/window_shape_report.json.
@@ -32,7 +34,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.environ.get('THECOV_DIR', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from desi_validation import desi_compare as dc, pipeline as pl, mesh_gaussian as mg  # noqa: E402
+from desi_validation import desi_compare as dc, pipeline as pl, mesh_gaussian as mg, validation as va  # noqa: E402
 
 T0 = time.time()
 KRANGES = ((0.02, 0.05), (0.05, 0.1), (0.1, 0.2), (0.2, 0.3))
@@ -203,12 +205,26 @@ def main():
     ap.add_argument('--isotropic', action='store_true')
     ap.add_argument('--modes', nargs='+', default=['random-density', 'nx'],
                     help="constructions of m to compare, the first is the reference (random-density, nx, patch, angular)")
+    ap.add_argument('--cs-version', default=None,
+                    help="clustering_statistics catalogue version (default holi-v3-altmtl), e.g. a complete-mock version")
+    ap.add_argument('--spectra-dir', default=None, help='directory with mock*/ spectra of that version')
+    ap.add_argument('--mock', type=int, default=None, help='mock whose catalogues set the window (default 173)')
     ap.add_argument('--synthetic', default=None, help=argparse.SUPPRESS)     # testing on the synthetic set
     args = ap.parse_args()
     global MODES
     MODES = list(args.modes)
 
     paths, cfg, OUT = setup()
+    if args.cs_version or args.spectra_dir or args.mock is not None:
+        if args.cs_version:
+            paths.cs_version = args.cs_version
+        if args.spectra_dir:
+            paths.spectra_dir = args.spectra_dir
+        if args.mock is not None:
+            paths.mock = args.mock
+        # separate caches: windows and covariances depend on the catalogues
+        OUT = os.path.expanduser(f'~/thecov_desi/{paths.cs_version}_mock{paths.mock}')
+        log(f'catalogues: version {paths.cs_version}, mock {paths.mock}; spectra: {paths.spectra_dir}; caches: {OUT}')
     if args.synthetic:
         paths = dc.Paths(catalog_dir=args.synthetic + '/catalogs', spectra_dir=args.synthetic + '/spectra', loader='files')
         dc.TRACER_SPECS.clear(); dc.TRACER_SPECS['TEST'] = ('LRG', (0.4, 0.6))
@@ -239,6 +255,18 @@ def main():
             t2[f'{r} {mode}'] = dict(chi2=out['chi2_ratio'], chi2_sigma=out['chi2_sigma'], var_ratio=out['var_ratio_mean'],
                                     z_mean=out['corr_resid_mean'], ev_max=out['ev_max'], **kv)
         report.setdefault('test2', {})[b] = t2
+        ex = {}
+        for r in list(args.regions) + ['GCcomb']:
+            key = (r, MODES[0]) if (r, MODES[0]) in D['covariances'] else (r, 'combined-regions')
+            if key in D['covariances'] and r in D['spectra']:
+                o = va.excess_structure(D['spectra'][r]['vectors'], D['covariances'][key])
+                ex[r] = dict(top=o['top_eigenvalues'][:4], noise_edge=o['noise_edge'],
+                             sigma_A=o['templates']['amplitude (mean vector)']['sigma'],
+                             chi2_after=o['templates']['amplitude (mean vector)']['chi2_after'])
+                log(f"{b} {r} [{key[1]}] excess: top whitened eigenvalues {np.round(ex[r]['top'], 2).tolist()} "
+                    f"(noise edge {ex[r]['noise_edge']:.2f}); common amplitude sigma_A {ex[r]['sigma_A']:.4f}, "
+                    f"<chi2>/n with it {ex[r]['chi2_after']:.4f}")
+        report.setdefault('excess', {})[b] = ex
         keys = [k_ for k_ in next(iter(t2.values())) if k_.startswith('P')]
         print(f"{'case':38s}{'<chi2>/n':>16s}{'var':>7s}{'z':>7s}" + ''.join(f'{k_:>13s}' for k_ in keys))
         for case, row in t2.items():
