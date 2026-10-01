@@ -195,17 +195,26 @@ plt.tight_layout()
 md(r"""
 ## I.3 Tracers: checks against the estimator
 
-* $\int m^2/$`norm` — equal up to the few-per-cent difference of the mesh normalisation (irrelevant:
-  the covariance is normalised by `norm`); the naive window is high by $\sim\langle w^2\rangle/\langle w\rangle^2$.
-* predicted shot-noise numerator / the files' mean `num_shotnoise` — should be 1 (one mock's catalogue
-  vs the mean over mocks: agreement to the mock-to-mock scatter).
+* $\int m^2/$`norm` — the mesh normalisation of jaxpower (data × randoms on 10 Mpc/$h$ cells) is
+  smoothed over the fine veto masks, so it falls short of $\int m^2$ by up to ~20% on DESI footprints
+  (1.23 for LRG1 holi). The estimator's mean is then $(\int m^2/{\rm norm})\times P$; with
+  `model_norm_correction` (default) the model fed to thecov is the mocks' mean times
+  ${\rm norm}/\int m^2$, and the covariance is normalised by `norm` (both needed: without the first,
+  the clustering terms are too large by $(\int m^2/{\rm norm})^2$). The naive window is in addition high
+  by $\sim\langle w^2\rangle/\langle w\rangle^2$.
+* catalogue shot-noise numerator / the files' mean `num_shotnoise` — differs from 1 by $\simeq\alpha$ if
+  fewer random files are loaded here than the spectra used ($\alpha^2\sum_r w^2\approx\alpha\sum_d w^2$). With
+  `shotnoise_from_files` (default) the shot-noise window is scaled to the files' value instead.
+* the warning "alpha ... implied ... ratio ~1.2" from `thecov.Tracer` compares NW with a kNN estimate
+  of the random density, which the fine veto masks bias low by the same mechanism; `median
+  m/(NX WEIGHT_FKP)` ≈ 1 and the area from the random count are the reliable checks of $m$.
 """)
 
 code(r"""
 for key, ti in D['tracer_info'].items():
     print(f"{key:28s} alpha {ti['alpha']:.4g}, shot-noise scale {ti['shotnoise_scale']:.4f}, "
           f"int m^2 / norm = {ti.get('I_over_norm', float('nan')):.4f}, "
-          f"shot noise predicted / files = {ti.get('shotnoise_pred_over_files', float('nan')):.4f}")
+          f"catalogue shot noise / files = {ti.get('shotnoise_catalogue_over_files', float('nan')):.4f}")
 """)
 
 md(r"""
@@ -288,7 +297,7 @@ Tripolar window functions $Q_{\Lambda_1\Lambda_2\Lambda}(s)$ of the clustering (
 
 code(r"""
 for r in ('NGC', 'SGC'):
-    fn = os.path.join(OUT, DETAIL_BIN, f'windows_{DETAIL_BIN}_{r}.npz')
+    fn = pl.windows_path(OUT, DETAIL_BIN, f'{DETAIL_BIN}_{r}')
     if os.path.exists(fn):
         va.window_figure(fn, title=f'{DETAIL_BIN} {r}'); plt.show()
 """)
@@ -402,9 +411,10 @@ plt.tight_layout(); fig.savefig(os.path.join(OUT, 'fig_all_bins.pdf'))
 
 md(r"""
 ### Reading the results
-* **Set-up checks first** (Part I, and `summary.json` → `tracer_info`, `spectra_checks`): a
-  shot-noise ratio $\neq1$ or a $\int m^2/$norm far from $\sim0.95$–$1.05$ means a weight or column
-  problem, not a covariance problem.
+* **Set-up checks first** (Part I, and `summary.json` → `tracer_info`, `spectra_checks`):
+  `median m/(NX WEIGHT_FKP)` ≈ 1, the area, and a catalogue shot noise within ≈ α of the files'.
+  A uniform offset of the variance ratio at all $k$ and $\ell$ points to an amplitude input (model
+  normalisation, shot noise), not to the window.
 * **Low $k$** ($k_{\max}\lesssim0.1$): Gaussian terms dominate; $\langle\chi^2\rangle$ should be close to 1
   and the eigenvalues inside Marchenko–Pastur, up to the near-null directions of I.6 (compare with
   `bins x2`).

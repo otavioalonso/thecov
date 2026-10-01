@@ -262,7 +262,8 @@ def local_mean_weight(pos, w, k=32):
 
 
 def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, surface_density_deg2=2500.0,
-                 k_mean=32, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True):
+                 k_mean=32, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True,
+                 shotnoise_target=None):
     """A thecov Tracer from one or several regions (several: the combined NGC+SGC catalogue of a
     single estimate, with each region's randoms renormalised to the global alpha, as in
     catalogs.normalize_and_concatenate).
@@ -274,6 +275,9 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
                 <w^2>/<w>^2 when WEIGHT varies per object; kept for comparison).
     shotnoise : 'realised' -- scale S so that its integral is sum_d w^2 + alpha^2 sum_r w^2 of the
                 catalogue; 'randoms' -- (1 + alpha) alpha sum_r w^2.
+    shotnoise_target : if given, the integral of S instead (use the spectra's mean `num_shotnoise`:
+                the catalogue value depends on how many random files are loaded here, through
+                alpha^2 sum_r w^2 ~ alpha sum_d w^2, while the spectra used their own number).
     Returns (tracer, info).
     """
     from thecov import Tracer
@@ -326,6 +330,8 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
         randoms['NW'] = np.concatenate(mw)
     sn_rand = (1 + alpha) * alpha * float(np.sum(w ** 2))
     scale = sn_real / sn_rand if shotnoise == 'realised' else 1.0
+    if shotnoise_target is not None:
+        scale = float(shotnoise_target) / sn_rand
     tr = Tracer(name, randoms, alpha, shotnoise_scale=scale)
     info.update(alpha=alpha, shotnoise_scale=scale, shotnoise_numerator=sn_real, keep_frac=keep_frac,
                 nw=nw, n_randoms=len(w))
@@ -365,24 +371,30 @@ def read_spectra(fns, kmax=0.4, rebin=5, ells=(0, 2, 4), kmin=0.0):
                 shotnoise=np.array(sns), num_shotnoise=np.array(nsns), nmodes=nmodes, files=list(fns))
 
 
-def model_from_mocks(spec):
+def model_from_mocks(spec, scale=1.0):
     """P_l(k) for thecov from the mean of the mocks (window-convolved, shot noise subtracted: an
-    approximation at low k), on a grid that reaches k = 0 and the last bin edge."""
+    approximation at low k) times `scale`, on a grid that reaches k = 0 and the last bin edge.
+
+    The estimator divides |F|^2 by its own `norm`, so its mean is (int m^2 / norm) x the (window-
+    convolved) P; the power spectrum thecov needs is the mean times norm / int m^2. The two differ by
+    the smoothing of the mesh normalisation, which is large (~20%) for a footprint with fine veto
+    masks, and the clustering terms of the covariance go as its square."""
     from thecov import PowerSpectrumModel
     nb = len(spec['k'])
     mean = spec['vectors'].mean(axis=0)
     kk = np.concatenate([[0.0], spec['k'], [spec['k_edges'][-1]]])
     poles = {}
     for i, ell in enumerate(spec['ells']):
-        p = mean[i * nb:(i + 1) * nb]
+        p = scale * mean[i * nb:(i + 1) * nb]
         poles[ell] = (kk, np.concatenate([[p[0]], p, [p[-1]]]))
     return poles
 
 
 def thecov_covariance(tracer, spec, n_sub=20000, n_near=1_000_000, ds=2.0, ds_pair=10.0, s_split=80.0,
-                      L_max=4, norm=None, windows_file=None, verbose=True, **kwargs):
+                      L_max=4, norm=None, windows_file=None, verbose=True, model_norm_correction=True, **kwargs):
     """thecov's matrix for the data vector of `spec` (same k bins and ells), normalised by the
-    estimator's `norm` (default: the mean over the mocks). Returns (C, cov)."""
+    estimator's `norm` (default: the mean over the mocks). The model is the mocks' mean, times
+    norm / int m^2 if model_norm_correction (see model_from_mocks). Returns (C, cov)."""
     from thecov import GaussianCovariance, PowerSpectrumModel
     name = tracer.name
     cov = GaussianCovariance([tracer], spec['k_edges'], ells=spec['ells'], L_max=L_max, ds=ds, ds_pair=ds_pair,
@@ -394,11 +406,12 @@ def thecov_covariance(tracer, spec, n_sub=20000, n_near=1_000_000, ds=2.0, ds_pa
         cov.compute_windows(sp, verbose=verbose)
         if windows_file:
             cov.save_windows(windows_file)
-    model = PowerSpectrumModel()
-    model.add((name, name), model_from_mocks(spec))
-    cov.set_model(model)
+    norm = float(np.mean(spec['norm'])) if norm is None else float(norm)
     I_thecov = cov.I(name, name)
-    cov.set_normalization(name, name, float(np.mean(spec['norm'])) if norm is None else float(norm))
+    model = PowerSpectrumModel()
+    model.add((name, name), model_from_mocks(spec, scale=norm / I_thecov if model_norm_correction else 1.0))
+    cov.set_model(model)
+    cov.set_normalization(name, name, norm)
     C, _ = cov.covariance(sp, ells=spec['ells'])
     cov.I_randoms = I_thecov
     return C, cov

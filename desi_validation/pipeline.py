@@ -18,6 +18,12 @@ from . import desi_compare as dc
 from . import validation as va
 
 CAPS = ('NGC', 'SGC')
+# bump when what is cached changes (v2: S window scaled to the spectra's num_shotnoise)
+CACHE_VERSION = 'v2'
+
+
+def windows_path(out_dir, tracer_bin, name):
+    return os.path.join(out_dir, tracer_bin, f'windows_{name}_{CACHE_VERSION}.npz')
 
 
 @dataclass
@@ -32,11 +38,14 @@ class Config:
     target_near_pairs: float = 2e9
     n_sub_far: int = 20000
     regions: tuple = ('NGC', 'SGC', 'GCcomb')
+    shotnoise_from_files: bool = True    # S window integral = the spectra's mean num_shotnoise
+    model_norm_correction: bool = True   # model P = mean P_hat x norm / int m^2
     naive: bool = False               # also build the naive NZ x WEIGHT covariance (comparison)
     coarse_check: bool = True         # repeat the validation with bins twice as wide
 
     def binning_tag(self, rebin=None):
-        return f'k{self.kmin:g}-{self.kmax:g}_r{rebin or self.rebin}'
+        return (f'k{self.kmin:g}-{self.kmax:g}_r{rebin or self.rebin}_sn{int(self.shotnoise_from_files)}'
+                f'_mc{int(self.model_norm_correction)}_{CACHE_VERSION}')
 
 
 # --------------------------------------------------------------------------- spectra helpers
@@ -93,8 +102,9 @@ def covariance_cached(tracer, spec, cfg: Config, path, n_near=None, log=print):
     if n_near is None:
         n_near, _ = dc.suggest_n_near(tracer, target_pairs=cfg.target_near_pairs)
     t0 = time.time()
-    wfile = os.path.join(os.path.dirname(path), f'windows_{tracer.name}.npz')
-    C, cov = dc.thecov_covariance(tracer, spec, n_sub=cfg.n_sub_far, n_near=n_near, verbose=False, windows_file=wfile)
+    wfile = os.path.join(os.path.dirname(path), f'windows_{tracer.name}_{CACHE_VERSION}.npz')
+    C, cov = dc.thecov_covariance(tracer, spec, n_sub=cfg.n_sub_far, n_near=n_near, verbose=False, windows_file=wfile,
+                                  model_norm_correction=cfg.model_norm_correction)
     np.savez(path, C=C, k=spec['k'], I_randoms=cov.I_randoms)
     log(f'    {os.path.basename(path)}: n_near {n_near}, {time.time() - t0:.0f} s')
     return C, dict(I_randoms=cov.I_randoms, cached=False, cov=cov)
@@ -135,20 +145,23 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
     for r in caps:
         for mode in modes:
             name = f'{tracer_bin}_{r}' + ('_naive' if mode == 'none' else '')
+            sn = spec[r]['num_shotnoise'].mean() if (cfg.shotnoise_from_files and r in spec) else None
             tr, inf = dc.build_tracer(name, [regs[r]], nw=mode, n_randoms_max=cfg.n_randoms_max // 2,
-                                      surface_density_deg2=cfg.surface_density, verbose=False)
+                                      surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn)
             tracers[(r, mode)], info[(r, mode)] = tr, inf
             if r in spec:
                 C, ci = covariance_cached(tr, spec[r], cfg, os.path.join(od, f'cov_{r}_{mode}_{cfg.binning_tag()}.npz'), log=log)
                 covs[(r, mode)] = C
                 inf.update(I_over_norm=ci['I_randoms'] / spec[r]['norm'].mean(),
-                           shotnoise_pred_over_files=inf['shotnoise_numerator'] / spec[r]['num_shotnoise'].mean())
+                           shotnoise_catalogue_over_files=inf['shotnoise_numerator'] / spec[r]['num_shotnoise'].mean())
     if 'GCcomb' in spec and all((r, 'random-density') in covs for r in CAPS):
         norms = [spec[r]['norm'].mean() for r in CAPS]
         covs[('GCcomb', 'combined-regions')] = dc.combine_regions([covs[(r, 'random-density')] for r in CAPS], norms)
         if res['gccomb'][0] == 'joint':
+            sn = spec['GCcomb']['num_shotnoise'].mean() if cfg.shotnoise_from_files else None
             tr, inf = dc.build_tracer(f'{tracer_bin}_GCcomb', [regs[r] for r in CAPS], nw='random-density',
-                                      n_randoms_max=cfg.n_randoms_max, surface_density_deg2=cfg.surface_density, verbose=False)
+                                      n_randoms_max=cfg.n_randoms_max, surface_density_deg2=cfg.surface_density, verbose=False,
+                                      shotnoise_target=sn)
             tracers[('GCcomb', 'random-density')], info[('GCcomb', 'random-density')] = tr, inf
             C, ci = covariance_cached(tr, spec['GCcomb'], cfg, os.path.join(od, f'cov_GCcomb_random-density_{cfg.binning_tag()}.npz'), log=log)
             covs[('GCcomb', 'random-density')] = C
