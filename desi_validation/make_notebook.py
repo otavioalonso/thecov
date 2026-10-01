@@ -236,20 +236,23 @@ for key, ti in D['tracer_info'].items():
 """)
 
 md(r"""
-**Why $\int m^2\neq$ norm.** jaxpower's `norm` is $\alpha\sum_{\rm cells}D_cR_c/V_c$ on 10 Mpc/$h$ cells.
-Recomputed here on this mock's catalogue for shrinking cells: at 10 Mpc/$h$ it should reproduce the
-files' `norm` (which also confirms that the catalogue and weights are those of the spectra); as the
-cells shrink it should approach thecov's $\int m^2$, if the difference is the dilution of cells that
-straddle the footprint edges and veto holes. This is what justifies the model correction
-${\rm norm}/\int m^2$.
+**Why $\int m^2\neq$ norm, and do data and randoms share the footprint?** jaxpower's `norm` is
+DR $=\alpha\sum_{\rm cells}D_cR_c/V_c$ on 10 Mpc/$h$ cells; recomputed here on this mock's catalogue
+it should reproduce the files' `norm` at 10 Mpc/$h$ (confirming that the catalogue and weights are
+those of the spectra). RR $=\alpha^2\sum_c(R_c^2-\sum_{r\in c}w_r^2)/V_c$ is the same for randoms
+alone. Both shrink equally with cell dilution at edges and holes, so **DR/RR should be 1 at every cell
+size**; DR/RR < 1 in small cells means the randoms occupy places where data cannot be (a veto applied
+to one but not the other), and then the window built from the randoms is too uniform and the
+covariance too small. Both tend to $\int m^2$ as the cells shrink.
 """)
 
 code(r"""
 for r, rc in regs.items():
-    mn = dc.mesh_normalization(rc, (10.0, 5.0, 2.5, 1.25))
+    mn = dc.mesh_normalization(rc, (10.0, 5.0, 2.5, 1.25, 0.6))
     I_ = D['tracer_info'][f'{r}__random-density']['I_over_norm'] * spec[r]['norm'].mean()
-    print(f"{r}: files' norm {spec[r]['norm'].mean():.5g}; thecov int m^2 {I_:.5g}; "
-          + ', '.join(f'{cs:g} Mpc/h: {v:.5g} ({v / I_:.3f} of int m^2)' for cs, v in mn.items()))
+    print(f"{r}: files' norm {spec[r]['norm'].mean():.5g}; thecov int m^2 {I_:.5g}")
+    for cs, v in mn.items():
+        print(f"   {cs:5g} Mpc/h: DR {v['DR']:.5g} ({v['DR'] / I_:.3f} of int m^2), RR {v['RR']:.5g} ({v['RR'] / I_:.3f}), DR/RR {v['DR'] / v['RR']:.4f}")
 """)
 
 md(r"""
@@ -340,6 +343,33 @@ for (r, m), out in V_.items():
     if m != 'none':
         print(f"{r:7s} {m:26s} corr. eigenvalues {np.round(out['null_eig'][:4], 4)}  mock/thecov variance {np.round(out['null_ratio'][:4], 2)}"
               f"   <chi2> {out['chi2_ratio']:.3f} ({out['chi2_sigma']:+.1f})")
+""")
+
+md(r"""
+**Structure of the excess.** A Gaussian covariance that is right up to its effective volume leaves the
+correlation coefficients unchanged; an excess with positive correlation residuals ($\bar z>0$) and
+eigenvalues above Marchenko–Pastur is a low-rank, correlated component instead (super-sample modes,
+a fluctuation of the amplitude from mock to mock, repeated structure from box replication, coupling
+of fibre assignment to the density). Below: the top eigenvalues of $C^{-1/2}(\hat C-C)C^{-1/2}$
+(noise alone stays below `noise_edge`), the fraction of its trace in the top modes, and the fitted
+fractional rms $\sigma_A$ of a common amplitude fluctuation $\sigma_A^2\,\bar P\bar P^T$ with
+$\langle\chi^2\rangle/n$ once it is added. The same for each multipole's template alone.
+""")
+
+code(r"""
+for r in spec:
+    key = (r, 'random-density') if (r, 'random-density') in D['covariances'] else (r, 'combined-regions')
+    V, C = spec[r]['vectors'], D['covariances'][key]
+    mean = V.mean(0)
+    tpl = {'amplitude (all ells)': mean}
+    for j, ell in enumerate(ells):
+        t = np.zeros_like(mean); t[j * nb:(j + 1) * nb] = mean[j * nb:(j + 1) * nb]; tpl[f'amplitude P{ell} only'] = t
+    o = va.excess_structure(V, C, templates=tpl)
+    print(f"{r} [{key[1]}]: top whitened eigenvalues of the excess {np.round(o['top_eigenvalues'][:6], 2)} "
+          f"(noise edge {o['noise_edge']:.2f}); fraction of its trace in top 1/3/10 modes "
+          + '/'.join(f"{v:.2f}" for v in o['frac_top'].values()))
+    for name, t in o['templates'].items():
+        print(f"   {name:22s} sigma_A = {t['sigma']:.4f}; with it: <chi2>/n {t['chi2_after']:.3f}, mean variance ratio {t['var_ratio_after']:.3f}")
 """)
 
 md(r"""

@@ -147,6 +147,36 @@ def validate(V, C, k, ells, kmax_list=None, n_lowk=3, n_boot=300, seed=0):
     return out
 
 
+def excess_structure(V, C, templates=None, n_top=10):
+    """Structure of the excess Chat - C, whitened by C: its eigenvalues (sampling noise alone keeps
+    them below ~(1 + sqrt(q))^2 - 1, q = n / (N - 1): 'noise_edge'), the fraction of its trace in the top 1, 3 and 10 modes, and fits of
+    rank-1 terms s^2 t t^T for templates t (default: the mean vector, i.e. a common fluctuation of the
+    amplitude of each mock, as from super-sample modes or mock-to-mock changes of the selection).
+    Returns a dict; 'sigma' are the fitted fractional rms of each template (NaN if the fit is < 0),
+    'var_ratio_after' the mean variance ratio once that term is added to C."""
+    N, n = V.shape
+    Ch = np.cov(V, rowvar=False)
+    L = np.linalg.cholesky(C)
+    Li = np.linalg.inv(L)
+    E = Li @ (Ch - C) @ Li.T
+    ev = np.linalg.eigvalsh(0.5 * (E + E.T))[::-1]
+    tr = np.trace(E)
+    q = n / (N - 1)
+    out = dict(top_eigenvalues=ev[:n_top].tolist(), trace=float(tr), noise_edge=float((1 + np.sqrt(q)) ** 2 - 1),
+               frac_top={m: float(ev[:m].sum() / tr) if tr != 0 else float('nan') for m in (1, 3, 10)})
+    mean = V.mean(0)
+    templates = templates or {'amplitude (mean vector)': mean}
+    out['templates'] = {}
+    for name, t in templates.items():
+        u = Li @ t                                 # whitened template
+        s2 = float(u @ E @ u / (u @ u) ** 2)        # least squares for s^2 in E ~ s^2 u u^T along u
+        C2 = C + max(s2, 0) * np.outer(t, t)
+        out['templates'][name] = dict(sigma=float(np.sqrt(s2)) if s2 > 0 else float('nan'),
+                                      var_ratio_after=float(np.mean(np.diag(Ch) / np.diag(C2))),
+                                      chi2_after=float(chi2_stats(V, C2)[0]))
+    return out
+
+
 def summary_row(out):
     """One line of numbers for the cross-tracer table."""
     row = dict(N=out['N'], n=out['n'], chi2=out['chi2_ratio'], chi2_sig=out['chi2_sigma'], ks_p=out['ks_p'],
