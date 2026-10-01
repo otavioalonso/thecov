@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import multiprocessing as mp
 import dataclasses
 import json
 import os
@@ -160,6 +161,54 @@ class Grid:
         return sfft.irfftn(F, s=self.shape, workers=self.workers)
 
 
+_G = {}          # read-only state shared with the worker processes (inherited through fork)
+
+
+def _realisation(i):
+    """one Gaussian realisation, single-threaded; returns {window: {f: P0_hat(k)}}"""
+    g = _G
+    grid = g['grid']
+    rng = np.random.default_rng(np.random.SeedSequence([g['seed'], g['region_id'], i]))
+    fft_kw = dict(workers=1)
+    delta = sfft.irfftn(sfft.rfftn(rng.standard_normal(grid.shape, dtype=np.float32), **fft_kw) * g['amp'],
+                        s=grid.shape, **fft_kw).astype(np.float32)
+    noise = g['noise_amp'] * rng.standard_normal(grid.shape, dtype=np.float32)
+    out = {}
+    for name, mm in g['windows'].items():             # same delta and noise for every window: paired
+        F = sfft.rfftn(mm * delta + noise, **fft_kw)
+        p = (F.real ** 2 + F.imag ** 2).ravel() * g['herm']
+        del F
+        sum1 = np.bincount(g['idx1'], p, g['n1'] + 1)[:-1]
+        out[name] = {f: (coarse_sum(sum1, cm) if cm is not None else
+                         np.bincount(g['idx'][f], p, g['nedges'][f])[:-1]) * g['scale'] / g['nmodes'][f] - g['sn']
+                     for f, cm in g['cmap'].items()}
+    return i, out
+
+
+def n_workers(cells, requested=None, bytes_per_cell=48, mem_fraction=0.7):
+    """worker processes that fit in memory (~48 bytes per cell per realisation in flight)"""
+    if requested:
+        return requested
+    try:
+        mem = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_AVPHYS_PAGES')
+    except (ValueError, OSError):
+        mem = 64e9
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count()
+    return max(1, min(cpus, int(mem_fraction * mem / (bytes_per_cell * cells))))
+
+
+def coarse_sum(x, cm):
+    """sums of the fine-bin values x over the coarse bins whose edges are the fine edges cm"""
+    c = np.concatenate([[0.0], np.cumsum(x)])
+    return c[cm[1:]] - c[cm[:-1]]
+
+
+def coarse_map(e1, ef):
+    """indices of the fine edges e1 at the coarse edges ef, if they nest (else None)."""
+    pos = [int(np.argmin(np.abs(e1 - e))) for e in ef]
+    return pos if np.allclose(e1[pos], ef, rtol=0, atol=1e-6) else None
+
+
 # ----------------------------------------------------------------------------- main
 def setup(args):
     paths = dc.Paths(kind='holi_v3', mock=173)
@@ -255,40 +304,59 @@ def run_region(paths, cfg, OUT, b, r, args):
     amp = np.sqrt(np.maximum(Pin, 0) / vc).astype(np.float32)
     del Pin
     noise_amp = np.sqrt(S / vc).astype(np.float32)
-    idx = {f: shell_index(grid, specs[f]['k_edges']) for f in specs}
+    e1 = np.asarray(specs[1]['k_edges'])
+    cmap = {f: coarse_map(e1, np.asarray(specs[f]['k_edges'])) for f in specs}
+    cmap = {f: (None if c is None else np.asarray(c)) for f, c in cmap.items()}
+    own = [f for f in specs if cmap[f] is None]            # binnings that do not nest in the 0.005 bins
+    idx = {f: shell_index(grid, specs[f]['k_edges']) for f in [1] + own}
     herm = grid.herm.ravel()
-    nmodes = {f: np.bincount(idx[f], herm, len(specs[f]['k_edges']))[:-1] for f in specs}
-
-    rng = np.random.default_rng(args.seed + (0 if r == 'NGC' else 1000))
+    nm1 = np.bincount(idx[1], herm, len(e1))[:-1]
+    nmodes = {f: (coarse_sum(nm1, np.asarray(cmap[f])) if cmap[f] is not None else
+                  np.bincount(idx[f], herm, len(specs[f]['k_edges']))[:-1]) for f in specs}
+    nproc = n_workers(int(np.prod(grid.shape)), args.workers)
+    _G.update(grid=grid, amp=amp, noise_amp=noise_amp, windows=windows, herm=herm, idx1=idx[1], n1=len(e1) - 1,
+              idx=idx, cmap=cmap, nedges={f: len(specs[f]['k_edges']) for f in specs}, nmodes=nmodes,
+              scale=vc ** 2 / norm, sn=num_sn / norm, seed=args.seed, region_id=args.regions_all.index(r))
     P_hat = {w: {f: np.zeros((args.nreal, len(specs[f]['k']))) for f in specs} for w in windows}
+    log(f'  {args.nreal} realisations on {nproc} worker processes')
     t0 = time.time()
-    for i in range(args.nreal):
-        delta = grid.irfft(grid.rfft(rng.standard_normal(grid.shape, dtype=np.float32)) * amp).astype(np.float32)
-        noise = noise_amp * rng.standard_normal(grid.shape, dtype=np.float32)
-        for name, mm in windows.items():              # same delta and noise for every window: paired
-            p = np.abs(grid.rfft(mm * delta + noise)) ** 2 * (vc ** 2 / norm)
-            p = p.ravel() * herm
-            for f in specs:
-                P_hat[name][f][i] = np.bincount(idx[f], p, len(specs[f]['k_edges']))[:-1] / nmodes[f] - num_sn / norm
-        if i in (0, 4) or (i + 1) % 50 == 0:
-            log(f'  realisation {i + 1}/{args.nreal} ({(time.time() - t0) / (i + 1):.1f} s each)')
+    with mp.get_context('fork').Pool(nproc) as pool:
+        for n, (i, out) in enumerate(pool.imap_unordered(_realisation, range(args.nreal))):
+            for w in out:
+                for f in out[w]:
+                    P_hat[w][f][i] = out[w][f]
+            if n in (0, nproc - 1) or (n + 1) % 50 == 0:
+                log(f'  {n + 1}/{args.nreal} done ({time.time() - t0:.0f} s)')
+    _G.clear()
 
-    res = dict(norm=norm, num_sn=num_sn, I_thecov_over_norm=I_thecov / norm, windows=wstats,
-               nreal=args.nreal, cell=args.cell, nside=args.nside, binnings={})
+    static = dict(norm=norm, num_sn=num_sn, I_thecov_over_norm=I_thecov / norm, windows=wstats,
+                  cell=args.cell, nside=args.nside, binnings={})
     for f, s in specs.items():
         nb = len(s['k'])
         Vm = s['vectors'][:, :nb]
-        d = dict(k=s['k'].tolist(), mean_mocks=Vm.mean(0).tolist(), var_mocks=Vm.var(0, ddof=1).tolist(),
-                 var_thecov=var_thecov[f].tolist(), nmodes_grid=nmodes[f].tolist(),
-                 nmodes_files=None if s.get('nmodes') is None else np.asarray(s['nmodes']).tolist())
+        static['binnings'][f'x{f}'] = dict(
+            k=s['k'].tolist(), mean_mocks=Vm.mean(0).tolist(), var_mocks=Vm.var(0, ddof=1).tolist(),
+            var_thecov=var_thecov[f].tolist(), nmodes_grid=nmodes[f].tolist(),
+            nmodes_files=None if s.get('nmodes') is None else np.asarray(s['nmodes']).tolist())
+    return static, {f'{w}|x{f}': P_hat[w][f] for w in windows for f in specs}
+
+
+def finalize(static, P):
+    """results from the static part and the realisations P {'window|xf': (nreal, nbins)}"""
+    res = copy.deepcopy(static)
+    windows = sorted({key.split('|')[0] for key in P}, key=lambda w: w != 'maps')
+    res['nreal'] = len(next(iter(P.values())))
+    for key_f, d in res['binnings'].items():
+        nb = len(d['k'])
+        P_hat = {w: {key_f: P[f'{w}|{key_f}']} for w in windows}
+        f = key_f
         for name in windows:
             d[f'mean_grf_{name}'] = P_hat[name][f].mean(0).tolist()
             d[f'var_grf_{name}'] = P_hat[name][f].var(0, ddof=1).tolist()
-        if len(windows) == 2:                         # paired ratio maps / thecov_m, with its error
+        if len(windows) == 2:                         # paired ratio maps / thecov_m
             a, b_ = P_hat['maps'][f], P_hat['thecov_m'][f]
             d['var_ratio_maps_over_thecov_m'] = (a.var(0, ddof=1) / b_.var(0, ddof=1)).tolist()
             d['corr_maps_thecov_m'] = [float(np.corrcoef(a[:, j], b_[:, j])[0, 1]) for j in range(nb)]
-        res['binnings'][f'x{f}'] = d
     return res
 
 
@@ -325,7 +393,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bin', default='LRG1')
     ap.add_argument('--regions', nargs='+', default=['NGC', 'SGC'])
-    ap.add_argument('--nreal', type=int, default=300)
+    ap.add_argument('--nreal', type=int, default=300, help='realisations (per task with --array)')
     ap.add_argument('--cell', type=float, default=6.0, help='mesh cell [Mpc/h]; Nyquist pi/cell')
     ap.add_argument('--pad', type=float, default=1.5, help='box / footprint extent (avoids periodic wrap)')
     ap.add_argument('--sub', type=int, default=2, help='sub-points per cell side for m and S')
@@ -333,6 +401,8 @@ def main():
     ap.add_argument('--dz', type=float, default=0.002)
     ap.add_argument('--random-files', type=int, default=10, help='random files for the window maps')
     ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--workers', type=int, default=None,
+                    help='parallel realisations (default: as many as fit in 70%% of the free memory, at most the cores)')
     ap.add_argument('--maps-only', action='store_true', help="skip the run with thecov's own m")
     ap.add_argument('--cs-version', default=None)
     ap.add_argument('--spectra-dir', default=None)
@@ -342,10 +412,10 @@ def main():
     paths, cfg, OUT = setup(args)
     if args.synthetic:
         args.bin = 'TEST'
-    out = {}
+    args.regions_all = list(args.regions)
     for r in args.regions:
-        res = run_region(paths, cfg, OUT, args.bin, r, args)
-        out[r] = res
+        static, P = run_region(paths, cfg, OUT, args.bin, r, args)
+        res = finalize(static, P)
         fn = os.path.join(OUT, args.bin, f'gaussian_footprint_{r}.json')
         os.makedirs(os.path.dirname(fn), exist_ok=True)
         json.dump(res, open(fn, 'w'))
