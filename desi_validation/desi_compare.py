@@ -321,7 +321,7 @@ def load_region_cs(paths: Paths, tracer_bin, region, n_random_files=1):
     def read_any(kind, zrange):
         """keep_columns plus NX and WEIGHT if the reader provides them, else keep_columns only."""
         kw = dict(expand=expand) if kind == 'randoms' else {}
-        for cols in (keep + ['NX', 'WEIGHT'], keep):
+        for cols in (keep + ['NX'], keep):
             try:
                 cat = read_clustering_catalog(kind=kind, **kw, **dict(opts, zrange=zrange, keep_columns=cols))
                 return {c: np.asarray(cat[c]) for c in cols}
@@ -340,13 +340,16 @@ def load_region_cs(paths: Paths, tracer_bin, region, n_random_files=1):
         print(f'[{tracer_bin} {region}] catalogues read with the bin zrange only; footprint area from healpix '
               f'({info["omega_sr"] * (180 / np.pi) ** 2:.0f} deg^2)')
 
+    P0 = FKP_P0[next(t for t in FKP_P0 if tracer.startswith(t))]
+
     def canon(cat):
-        # total weight INDWEIGHT = WEIGHT x WEIGHT_FKP; keep WEIGHT/WEIGHT_FKP separately when possible
-        if 'WEIGHT' in cat:
-            cat['WEIGHT_FKP'] = cat['INDWEIGHT'] / np.where(cat['WEIGHT'] != 0, cat['WEIGHT'], 1.0)
-        else:
-            cat['WEIGHT'], cat['WEIGHT_FKP'] = cat['INDWEIGHT'], np.ones_like(cat['INDWEIGHT'])
+        # The total weight is INDWEIGHT (= WEIGHT x WEIGHT_FKP, what the spectra use). For the
+        # diagnostics only, split it with WEIGHT_FKP = 1 / (1 + NX P0) where NX > 0 (else WEIGHT_FKP = 1).
+        nx = np.asarray(cat.get('NX', np.zeros_like(cat['INDWEIGHT'])), float)
+        cat['WEIGHT_FKP'] = np.where(nx > 0, 1.0 / (1.0 + nx * P0), 1.0)
+        cat['WEIGHT'] = cat['INDWEIGHT'] / cat['WEIGHT_FKP']
         return cat
+    info['weights'] = f'INDWEIGHT; split for diagnostics with WEIGHT_FKP = 1/(1 + NX x {P0:g})'
     data, randoms = canon(data), canon(randoms)
 
     def cut(cat):
@@ -421,7 +424,10 @@ def weight_diagnostics(rc: RegionCatalogs, tracer_bin, scheme='default-FKP', nz_
     # FKP weights against NX
     for name, cat in (('data', d), ('randoms', r)):
         if 'NX' in cat and 'WEIGHT_FKP' in cat:
-            p0 = (1.0 / np.asarray(cat['WEIGHT_FKP'], float) - 1.0) / np.asarray(cat['NX'], float)
+            nx = np.asarray(cat['NX'], float)
+            out[f'NX_zero_fraction_{name}'] = float(np.mean(nx <= 0))
+            ok = nx > 0
+            p0 = (1.0 / np.asarray(cat['WEIGHT_FKP'], float)[ok] - 1.0) / nx[ok]
             out[f'P0_implied_{name}'] = (float(np.median(p0)), float(np.percentile(p0, 5)), float(np.percentile(p0, 95)))
     out['P0_expected'] = next((v for key, v in FKP_P0.items() if tracer.startswith(key)), None)
     # weight moments: the per-object spread that makes <w^2> != <w>^2
@@ -487,6 +493,15 @@ def local_mean_weight(pos, w, k=32):
     return out
 
 
+def _median_ratio(m, r, sel):
+    """median of m / (NX WEIGHT_FKP) over the randoms with NX > 0 (None without NX or m)."""
+    if m is None or 'NX' not in r:
+        return None
+    d = np.asarray(r['NX'], float)[sel] * np.asarray(r['WEIGHT_FKP'], float)[sel]
+    ok = d > 0
+    return float(np.median(m[ok] / d[ok])) if ok.any() else None
+
+
 def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, surface_density_deg2=2500.0,
                  k_mean=32, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True,
                  shotnoise_target=None):
@@ -543,9 +558,7 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
         nz.append(np.asarray(r['NX'], float)[sel] if 'NX' in r else np.zeros(sel.sum()))
         info['regions'][rc.region] = dict(alpha=a_reg, omega_deg2=omega * (180 / np.pi) ** 2,
                                           n_randoms_used=int(sel.sum()), n_randoms=len(wr),
-                                          median_m_over_NXwFKP=(float(np.median(m / (np.asarray(r['NX'], float)[sel]
-                                                               * np.asarray(r['WEIGHT_FKP'], float)[sel])))
-                                                               if (m is not None and 'NX' in r) else None))
+                                          median_m_over_NXwFKP=_median_ratio(m, r, sel))
     pos, w, nz = np.concatenate(pos), np.concatenate(w), np.concatenate(nz)
     # the subsample carries ~keep_frac of the weight; renormalise exactly: alpha sum_r w = sum_d w
     alpha = sum(wsum_d) / float(np.sum(w))
