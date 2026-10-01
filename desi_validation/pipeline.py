@@ -42,7 +42,8 @@ class Config:
     model_norm_correction: bool = True   # model P = mean P_hat x norm / int m^2
     nw_modes: tuple = ('random-density',)   # constructions of m (desi_compare.build_tracer); first = primary
     naive: bool = False               # also build the naive NZ x WEIGHT covariance (comparison)
-    coarse_check: bool = True         # repeat the validation with bins twice as wide
+    coarse_check: bool = True         # repeat the validation with wider bins
+    coarse_factors: tuple = (2,)      # ... this many times wider (2 -> 0.01 h/Mpc)
 
     def binning_tag(self, rebin=None):
         return (f'k{self.kmin:g}-{self.kmax:g}_r{rebin or self.rebin}_sn{int(self.shotnoise_from_files)}'
@@ -184,23 +185,36 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
             res['validation'][(r, mode)] = va.validate(s['vectors'], C, s['k'], cfg.ells)
         except ValueError as ex:
             log(f'  {r} {mode}: {ex}')
+    coarse = {}                                  # (region, mode, factor) -> (spectra, C)
     if cfg.coarse_check:
-        for r in spec:
-            s2 = None
-            for mode in cfg.nw_modes:
-                if (r, mode) not in tracers:
-                    continue
-                if s2 is None:
-                    s2 = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=2 * cfg.rebin, ells=cfg.ells)
-                C2, _ = covariance_cached(tracers[(r, mode)], s2, cfg, os.path.join(od, f'cov_{r}_{mode}_{cfg.binning_tag(2 * cfg.rebin)}.npz'), log=log)
-                try:
-                    res['validation'][(r, f'{mode}, bins x2')] = va.validate(s2['vectors'], C2, s2['k'], cfg.ells)
-                except ValueError as ex:
-                    log(f'  {r} {mode} bins x2: {ex}')
+        for f in cfg.coarse_factors:
+            for r in spec:
+                s2 = None
+                for mode in cfg.nw_modes:
+                    if (r, mode) not in tracers:
+                        continue
+                    if s2 is None:
+                        s2 = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=f * cfg.rebin, ells=cfg.ells)
+                    C2, _ = covariance_cached(tracers[(r, mode)], s2, cfg, os.path.join(od, f'cov_{r}_{mode}_{cfg.binning_tag(f * cfg.rebin)}.npz'), log=log)
+                    coarse[(r, mode, f)] = (s2, C2)
+            if 'GCcomb' in spec and res['gccomb'][0] != 'joint':     # GCcomb = norm-weighted NGC + SGC
+                s2 = None
+                for mode in cfg.nw_modes:
+                    if all((r, mode, f) in coarse for r in CAPS):
+                        if s2 is None:
+                            s2 = dc.read_spectra(paths.spectra_fns(tracer, zr, 'GCcomb'), kmin=cfg.kmin, kmax=cfg.kmax, rebin=f * cfg.rebin, ells=cfg.ells)
+                        key = 'combined-regions' if mode == primary else f'combined-regions [{mode}]'
+                        coarse[('GCcomb', key, f)] = (s2, dc.combine_regions([coarse[(r, mode, f)][1] for r in CAPS],
+                                                                              [spec[r]['norm'].mean() for r in CAPS]))
+        for (r, mode, f), (s2, C2) in coarse.items():
+            try:
+                res['validation'][(r, f'{mode}, bins x{f}')] = va.validate(s2['vectors'], C2, s2['k'], cfg.ells)
+            except ValueError as ex:
+                log(f'  {r} {mode} bins x{f}: {ex}')
     res['covariances'] = covs
     log(f'{tracer_bin}: done in {time.time() - t0:.0f} s')
     if keep:
-        res.update(regions=regs, tracers=tracers, spectra=spec)
+        res.update(regions=regs, tracers=tracers, spectra=spec, coarse=coarse)
     else:
         del regs, tracers
         gc.collect()
