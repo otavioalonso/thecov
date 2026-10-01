@@ -480,6 +480,33 @@ def random_density(rc: RegionCatalogs, surface_density_deg2=2500.0, dz=0.005, co
     return rho[idx], omega
 
 
+def mesh_normalization(rc, cellsizes=(10.0, 5.0, 2.5, 1.25), scheme='default-FKP', cosmo=None, offset=0.0):
+    """alpha sum_cells D_c R_c / V_c (the pypower/jaxpower normalisation, data x randoms in cells of
+    side `cellsize`) for several cell sizes, with sparse cell indices (memory ~ number of objects).
+    At 10 Mpc/h it should reproduce the spectra's `norm`; as the cells shrink it tends to int m^2
+    (thecov's I), the difference being the dilution of cells straddling the footprint edges and the
+    veto holes. Returns {cellsize: norm}."""
+    wd, wr = total_weight(rc.data, scheme), total_weight(rc.randoms, scheme)
+    alpha = wd.sum() / wr.sum()
+    pd = sky_to_cartesian(rc.data['RA'], rc.data['DEC'], rc.data['Z'], cosmo)
+    pr = sky_to_cartesian(rc.randoms['RA'], rc.randoms['DEC'], rc.randoms['Z'], cosmo)
+    lo = np.minimum(pd.min(0), pr.min(0)) - 1.0
+    out = {}
+    for cs in cellsizes:
+        def keys(p):
+            i = np.floor((p - lo + offset) / cs).astype(np.int64)
+            n = np.int64(1 << 20)                       # > cells per axis for any survey
+            return (i[:, 0] * n + i[:, 1]) * n + i[:, 2]
+        kd, kr = keys(pd), keys(pr)
+        ud, invd = np.unique(kd, return_inverse=True)
+        Dc = np.bincount(invd, weights=wd)
+        ur, invr = np.unique(kr, return_inverse=True)
+        Rc = np.bincount(invr, weights=wr)
+        common, i_d, i_r = np.intersect1d(ud, ur, assume_unique=True, return_indices=True)
+        out[float(cs)] = float(alpha * np.sum(Dc[i_d] * Rc[i_r]) / cs ** 3)
+    return out
+
+
 def local_mean_weight(pos, w, k=32):
     """Mean weight of the k nearest OTHER randoms at each random (a smooth <w>(x), unbiased by the
     random's own weight; a mean, not a density, so footprint edges do not bias it)."""

@@ -235,6 +235,23 @@ for key, ti in D['tracer_info'].items():
 """)
 
 md(r"""
+**Why $\int m^2\neq$ norm.** jaxpower's `norm` is $\alpha\sum_{\rm cells}D_cR_c/V_c$ on 10 Mpc/$h$ cells.
+Recomputed here on this mock's catalogue for shrinking cells: at 10 Mpc/$h$ it should reproduce the
+files' `norm` (which also confirms that the catalogue and weights are those of the spectra); as the
+cells shrink it should approach thecov's $\int m^2$, if the difference is the dilution of cells that
+straddle the footprint edges and veto holes. This is what justifies the model correction
+${\rm norm}/\int m^2$.
+""")
+
+code(r"""
+for r, rc in regs.items():
+    mn = dc.mesh_normalization(rc, (10.0, 5.0, 2.5, 1.25))
+    I_ = D['tracer_info'][f'{r}__random-density']['I_over_norm'] * spec[r]['norm'].mean()
+    print(f"{r}: files' norm {spec[r]['norm'].mean():.5g}; thecov int m^2 {I_:.5g}; "
+          + ', '.join(f'{cs:g} Mpc/h: {v:.5g} ({v / I_:.3f} of int m^2)' for cs, v in mn.items()))
+""")
+
+md(r"""
 ## I.4 Validation
 
 For each region: the report's numbers, then its figures — mean multipoles with the thecov
@@ -331,11 +348,24 @@ for r in spec:
     key = (r, 'random-density') if (r, 'random-density') in D['covariances'] else (r, 'combined-regions')
     if os.path.exists(fn) and key in D['covariances']:
         Cold, Cnew = np.loadtxt(fn), D['covariances'][key]
-        if Cold.shape == Cnew.shape:
-            rat = np.diag(Cold) / np.diag(Cnew)
-            print(r, 'old/new diagonal, mean per ell:', [rat[j * nb:(j + 1) * nb].mean().round(3) for j in range(len(ells))])
-        else:
-            print(r, 'old covariance has shape', Cold.shape, '(different binning)')
+        if Cold.shape != Cnew.shape:
+            # old binning: every 5th 0.001 bin from k = 0 -> 0.005-wide bins from 0; pick ours
+            nb_old = Cold.shape[0] // len(ells)
+            k_old = (np.arange(nb_old) + 0.5) * 0.005
+            sel = np.array([np.argmin(np.abs(k_old - k_)) for k_ in spec[r]['k']])
+            if np.max(np.abs(k_old[sel] - spec[r]['k'])) > 1e-3:
+                print(r, 'old covariance', Cold.shape, ': k bins do not match'); continue
+            idx = np.concatenate([j * nb_old + sel for j in range(len(ells))])
+            Cold = Cold[np.ix_(idx, idx)]
+        rat = np.diag(Cold) / np.diag(Cnew)
+        print(r, 'old/new diagonal, mean per ell:', [rat[j * nb:(j + 1) * nb].mean().round(3) for j in range(len(ells))])
+        try:
+            o = va.validate(spec[r]['vectors'], Cold, spec[r]['k'], ells)
+            print(f"   old covariance vs mocks: <chi2>/n {o['chi2_ratio']:.3f} ({o['chi2_sigma']:+.1f}); variance ratio per ell "
+                  + ', '.join(f'{l}: {v:.3f}' for l, v in o['var_ratio_per_ell'].items())
+                  + f"; z mean {o['corr_resid_mean']:+.2f}")
+        except ValueError as ex:
+            print('   old covariance:', ex)
 """)
 
 md(r"""
