@@ -244,6 +244,11 @@ def main():
     for b in args.bins:
         header(f'{b}: thecov with m from ' + ', '.join(MODES) + ' (new pair counts for windows not cached yet)')
         D = pl.run_bin(paths, b, cfg2, OUT, log=log, keep=True)
+        if 'validation' not in D:
+            tracer, zr = dc.TRACER_SPECS[b]
+            pattern = os.path.join(paths.spectra_dir, 'mock*', paths.spectra_name.format(tracer=tracer, zmin=zr[0], zmax=zr[1], region='NGC'))
+            log(f'{b}: no spectra matching {pattern} -- check --spectra-dir (full path) and the file names; skipping {b}')
+            continue
         results[b] = D
         header(f'Test 1 [{b}]: n(z) variation across the sky and 1/V_eff of the window')
         report.setdefault('test1', {})[b] = test_nz_and_veff({r: D['regions'][r] for r in args.regions}, cfg, b)
