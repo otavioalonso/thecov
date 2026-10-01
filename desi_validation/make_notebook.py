@@ -68,9 +68,10 @@ cfg = pl.Config(
     coarse_check=True)                     # also validate with 0.01 bins
 DETAIL_BIN = 'LRG1'                         # Part I
 BINS = list(dc.TRACER_SPECS)                # Part II: every bin
-OUT = os.path.expanduser('~/thecov_desi')
-
-paths = dc.Paths()                          # CHECK kind / mock of the catalogues vs the spectra's mock set
+paths = dc.Paths(kind='holi_v3', mock=173)  # catalogues of one mock of the spectra's release
+# spectra name -> catalogue name where they differ (edit if a bin reports MISSING below)
+paths.catalog_names.update({'ELG_LOPnotqso': 'ELGnotqso', 'LRG+ELG_LOPnotqso': 'LRG+ELGnotqso'})
+OUT = os.path.expanduser(f'~/thecov_desi/{paths.kind}_mock{paths.mock}')   # caches depend on the catalogues
 if SYNTHETIC:
     SYN = os.environ.get('THECOV_SYNTHETIC_DIR', os.path.expanduser('~/thecov_desi/synthetic'))
     paths = dc.Paths(catalog_dir=SYN + '/catalogs', spectra_dir=SYN + '/spectra')
@@ -82,6 +83,7 @@ for b in BINS:
     t, zr = dc.TRACER_SPECS[b]
     print(f'{b:8s} {t:22s} z={zr}  spectra: ' + ', '.join(f'{r} {len(paths.spectra_fns(t, zr, r))}' for r in cfg.regions))
 print('catalogues, e.g.', paths.data_fn(dc.TRACER_SPECS[DETAIL_BIN][0], 'NGC'))
+paths.check(BINS)
 """)
 
 md(r"""
@@ -91,9 +93,9 @@ The whole pipeline for `DETAIL_BIN` (catalogues, diagnostics, spectra, tracers, 
 validation), keeping everything for inspection. The naive covariance is built too, for comparison.
 Pair counts and covariances are cached in `OUT/<bin>/`.
 
-**Mock versions.** In the example script the geometry comes from `holi_v1/altmtl201` while the spectra
-are `holi-v3-altmtl`: the covariance must be computed for the footprint, $n(z)$ and weights of the
-mocks whose spectra are compared (`dc.Paths(kind=..., mock=...)`).
+**Mock versions.** The catalogues (`holi_v3/altmtl173`) must be of the release whose spectra are
+compared (`holi-v3-altmtl`): the covariance depends on their footprint, $n(z)$ and weights. Caches
+are kept per catalogue release and mock in `OUT`.
 """)
 
 code(r"""

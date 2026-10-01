@@ -36,8 +36,8 @@ objects, so:
 
 ## Caveats found in the example script
 
-* The geometry path is `holi_v1/altmtl201` while the spectra are `holi-v3-altmtl`: use the
-  catalogues of the mocks whose spectra are compared.
+* The example took the geometry from `holi_v1/altmtl201` while the spectra are `holi-v3-altmtl`; the
+  default is now `holi_v3/altmtl173` (catalogue tracer names: `ELGnotqso` for `ELG_LOPnotqso`).
 * `select_region('SGC')` uses `not array`, which raises; per-region files need no RA/DEC cut anyway.
 * The first k bins (`k L <~ 1`) are outside the regime of any windowed Gaussian covariance and can
   make it non-positive-definite; the notebook starts at `KMIN = 0.02`.

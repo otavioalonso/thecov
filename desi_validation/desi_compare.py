@@ -55,11 +55,13 @@ DATA_COLUMNS = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_FKP', 'NX',
 
 @dataclass
 class Paths:
-    """Where things live. The defaults are those of the example script; `kind` and the spectra
-    directory refer to DIFFERENT mock releases there (holi_v1 for the geometry, holi-v3-altmtl for
-    the spectra): make sure the geometry is that of the mocks whose spectra you compare with."""
-    kind: str = 'holi_v1'
-    mock: int = 201
+    """Where things live. Catalogues: one mock of the same release as the spectra (holi v3:
+    holi_v3/altmtl{mock}/loa-v1/mock{mock}/LSScats). Tracer names differ between the catalogues and
+    the spectra (e.g. ELGnotqso vs ELG_LOPnotqso): `catalog_names` maps spectra -> catalogue names
+    (missing entries: same name). Random files are found by globbing, so their numbering (from 0 or
+    from 1) does not matter."""
+    kind: str = 'holi_v3'
+    mock: int = 173
     catalog_dir: str = ('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/{kind}/altmtl{mock}/loa-v1/'
                         'mock{mock}/LSScats')
     data_name: str = '{tracer}_{region}_clustering.dat.h5'
@@ -68,20 +70,44 @@ class Paths:
                         'full_shape/base/holi-v3-altmtl')
     spectra_name: str = 'mesh2_spectrum_poles_{tracer}_z{zmin}-{zmax}_{region}_weight-default-FKP.h5'
     h5_group: str = 'LSS'
+    catalog_names: dict = field(default_factory=lambda: {'ELG_LOPnotqso': 'ELGnotqso',
+                                                         'LRG+ELG_LOPnotqso': 'LRG+ELGnotqso'})
+
+    def _dir(self):
+        return self.catalog_dir.format(kind=self.kind, mock=self.mock)
+
+    def catalog_tracer(self, tracer):
+        return self.catalog_names.get(tracer, tracer)
 
     def data_fn(self, tracer, region):
-        d = self.catalog_dir.format(kind=self.kind, mock=self.mock)
-        return os.path.join(d, self.data_name.format(tracer=tracer, region=region))
+        return os.path.join(self._dir(), self.data_name.format(tracer=self.catalog_tracer(tracer), region=region))
 
     def randoms_fn(self, tracer, region, i=0):
-        d = self.catalog_dir.format(kind=self.kind, mock=self.mock)
-        return os.path.join(d, self.randoms_name.format(tracer=tracer, region=region, i=i))
+        return os.path.join(self._dir(), self.randoms_name.format(tracer=self.catalog_tracer(tracer), region=region, i=i))
+
+    def randoms_fns(self, tracer, region):
+        """The random files that exist, in order of their index (the {i} field of randoms_name)."""
+        pre, post = self.randoms_name.split('{i}')
+        pre = pre.format(tracer=self.catalog_tracer(tracer), region=region)
+        idx = lambda fn: int(os.path.basename(fn)[len(pre):-len(post)])
+        fns = [fn for fn in glob.glob(self.randoms_fn(tracer, region, '*'))
+               if os.path.basename(fn)[len(pre):-len(post)].isdigit()]
+        return sorted(fns, key=idx)
 
     def spectra_fns(self, tracer, zrange, region):
         pattern = os.path.join(self.spectra_dir, 'mock*',
                                self.spectra_name.format(tracer=tracer, zmin=zrange[0], zmax=zrange[1],
                                                         region=region))
         return sorted(glob.glob(pattern))
+
+    def check(self, tracer_bins=None, regions=('NGC', 'SGC')):
+        """Print, per bin and region, whether the data file exists and how many random files do."""
+        for b in tracer_bins or TRACER_SPECS:
+            t = TRACER_SPECS[b][0]
+            for r in regions:
+                d = self.data_fn(t, r)
+                print(f"{b:8s} {r}: data {'ok' if os.path.exists(d) else 'MISSING'} ({os.path.basename(d)}), "
+                      f"{len(self.randoms_fns(t, r))} random files")
 
 
 # --------------------------------------------------------------------------- reading
@@ -153,8 +179,11 @@ def load_region(paths: Paths, tracer_bin, region, n_random_files=1, columns=DATA
     raises for arrays)."""
     tracer, (zmin, zmax) = TRACER_SPECS[tracer_bin]
     data = read_catalog(paths.data_fn(tracer, region), columns, paths.h5_group)
-    rand = [read_catalog(paths.randoms_fn(tracer, region, i), columns, paths.h5_group)
-            for i in range(n_random_files)]
+    rfns = paths.randoms_fns(tracer, region)[:n_random_files]
+    if len(rfns) < n_random_files:
+        raise FileNotFoundError(f'{n_random_files} random files wanted, {len(rfns)} found: '
+                                f'{paths.randoms_fn(tracer, region, "*")}')
+    rand = [read_catalog(fn, columns, paths.h5_group) for fn in rfns]
     n_all = int(sum(len(r['Z']) for r in rand))
     randoms = {c: np.concatenate([r[c] for r in rand]) for c in rand[0]}
 
@@ -379,7 +408,6 @@ def model_from_mocks(spec, scale=1.0):
     convolved) P; the power spectrum thecov needs is the mean times norm / int m^2. The two differ by
     the smoothing of the mesh normalisation, which is large (~20%) for a footprint with fine veto
     masks, and the clustering terms of the covariance go as its square."""
-    from thecov import PowerSpectrumModel
     nb = len(spec['k'])
     mean = spec['vectors'].mean(axis=0)
     kk = np.concatenate([[0.0], spec['k'], [spec['k_edges'][-1]]])
