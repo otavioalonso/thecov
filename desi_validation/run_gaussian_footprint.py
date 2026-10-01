@@ -59,7 +59,7 @@ def log(*a):
 class SeparableWindow:
     """m(x) = alpha n_w(theta) p_w(z) / (chi^2 dchi/dz), S(x) = num_sn x (same with w^2) / sum w^2."""
 
-    def __init__(self, rc, num_sn, nside=512, dz=0.002, cosmo=None):
+    def __init__(self, rc, num_sn, nside=512, dz=0.002, cosmo=None, n_files=1, surface_density=2500.0):
         import healpy as hp
         self.hp, self.nside = hp, nside
         r, d = rc.randoms, rc.data
@@ -71,6 +71,10 @@ class SeparableWindow:
         pix = hp.ang2pix(nside, np.asarray(r['RA'], float), np.asarray(r['DEC'], float), lonlat=True)
         self.aw = np.bincount(pix, w, npix) / om / w.sum()            # angular pdf of the weights [1/sr]
         self.aw2 = np.bincount(pix, w ** 2, npix) / om / np.sum(w ** 2)
+        # fraction of each pixel inside the footprint (veto holes below the pixel size dilute it): the
+        # z-range randoms only sample it, so use all of them (the redshift cut does not depend on angle)
+        expected = n_files * surface_density * om * (180 / np.pi) ** 2 * len(r['Z']) / max(rc.n_randoms_all_z, len(r['Z']))
+        self.fill = np.bincount(pix, None, npix) / expected
         z = np.asarray(r['Z'], float)
         self.zedges = np.arange(z.min() - 1e-9, z.max() + dz, dz)
         chi = dc.comoving_distance(self.zedges, cosmo)
@@ -85,12 +89,12 @@ class SeparableWindow:
         self.npix_occupied = int(np.sum(self.aw > 0))
 
     def at(self, x):
-        """m and S at cartesian positions x (n, 3)."""
+        """m, S and the pixel fill fraction at cartesian positions x (n, 3)."""
         rr = np.sqrt(np.sum(x ** 2, axis=1))
-        out_m, out_s = np.zeros(len(x)), np.zeros(len(x))
+        out_m, out_s, out_f = np.zeros(len(x)), np.zeros(len(x)), np.zeros(len(x))
         ok = (rr > self.chi_min) & (rr < self.chi_max)
         if not ok.any():
-            return out_m, out_s
+            return out_m, out_s, out_f
         xo, ro = x[ok], rr[ok]
         z = np.interp(ro, self.chi_grid, self.z_grid)
         iz = np.clip(np.searchsorted(self.zedges, z) - 1, 0, len(self.rad_m) - 1)
@@ -99,7 +103,8 @@ class SeparableWindow:
         pix = self.hp.ang2pix(self.nside, theta, phi)
         out_m[ok] = self.aw[pix] * self.rad_m[iz]
         out_s[ok] = self.aw2[pix] * self.rad_s[iz]
-        return out_m, out_s
+        out_f[ok] = self.fill[pix]
+        return out_m, out_s, out_f
 
 
 class Grid:
@@ -124,7 +129,7 @@ class Grid:
             f'kNyq {np.pi / cell:.3f}, kf {2 * np.pi / (max(self.shape) * cell):.4f})')
 
     def fill(self, win, sub=2):
-        """m, S and the footprint fraction (sub-points with m > 0), averaged over sub^3 points per cell."""
+        """m, S and the footprint fill fraction, averaged over sub^3 points per cell."""
         m = np.zeros(self.shape, np.float32)
         s = np.zeros(self.shape, np.float32)
         fr = np.zeros(self.shape, np.float32)
@@ -141,10 +146,10 @@ class Grid:
                         x = np.stack([np.full(ny * nz, self.lo[0] + (i + ox) * self.cell),
                                       self.lo[1] + (jy.ravel() + oy) * self.cell,
                                       self.lo[2] + (jz.ravel() + oz) * self.cell], axis=1)
-                        a, b = win.at(x)
+                        a, b, c = win.at(x)
                         acc_m += a
                         acc_s += b
-                        acc_f += a > 0
+                        acc_f += c
             m[i] = (acc_m / sub ** 3).reshape(ny, nz)
             s[i] = (acc_s / sub ** 3).reshape(ny, nz)
             fr[i] = (acc_f / sub ** 3).reshape(ny, nz)
@@ -168,14 +173,15 @@ def _realisation(i):
     """one Gaussian realisation, single-threaded; returns {window: {f: P0_hat(k)}}"""
     g = _G
     grid = g['grid']
-    rng = np.random.default_rng(np.random.SeedSequence([g['seed'], g['region_id'], i]))
+    rng = np.random.default_rng(np.random.SeedSequence([g['seed'], g['region_id'], i]))   # pilot: i >= 10**6
     fft_kw = dict(workers=1)
-    delta = sfft.irfftn(sfft.rfftn(rng.standard_normal(grid.shape, dtype=np.float32), **fft_kw) * g['amp'],
-                        s=grid.shape, **fft_kw).astype(np.float32)
+    white = sfft.rfftn(rng.standard_normal(grid.shape, dtype=np.float32), **fft_kw)
     noise = g['noise_amp'] * rng.standard_normal(grid.shape, dtype=np.float32)
     out = {}
-    for name, mm in g['windows'].items():             # same delta and noise for every window: paired
+    for name, mm in g['windows'].items():             # same white noise for every window: paired
+        delta = sfft.irfftn(white * g['amp'][name], s=grid.shape, **fft_kw).astype(np.float32)
         F = sfft.rfftn(mm * delta + noise, **fft_kw)
+        del delta
         p = (F.real ** 2 + F.imag ** 2).ravel() * g['herm']
         del F
         sum1 = np.bincount(g['idx1'], p, g['n1'] + 1)[:-1]
@@ -185,8 +191,8 @@ def _realisation(i):
     return i, out
 
 
-def n_workers(cells, requested=None, bytes_per_cell=48, mem_fraction=0.7):
-    """worker processes that fit in memory (~48 bytes per cell per realisation in flight)"""
+def n_workers(cells, requested=None, bytes_per_cell=56, mem_fraction=0.7):
+    """worker processes that fit in memory (~56 bytes per cell per realisation in flight)"""
     if requested:
         return requested
     try:
@@ -267,7 +273,10 @@ def run_region(paths, cfg, OUT, b, r, args):
 
     # window maps from many random files
     rcK = dc.load_region(paths, b, r, n_random_files=args.random_files)
-    win = SeparableWindow(rcK, num_sn, nside=args.nside, dz=args.dz)
+    win = SeparableWindow(rcK, num_sn, nside=args.nside, dz=args.dz, n_files=args.random_files,
+                          surface_density=cfg.surface_density)
+    occ = win.fill > 0
+    log(f'  pixel fill fraction: median {np.median(win.fill[occ]):.3f}, mean {np.mean(win.fill[occ]):.3f} over occupied pixels')
     log(f'  maps: {len(rcK.randoms["Z"])} randoms ({args.random_files} files), nside {args.nside} '
         f'({win.npix_occupied} occupied pixels), {len(win.rad_m)} z shells')
     del rcK
@@ -276,7 +285,8 @@ def run_region(paths, cfg, OUT, b, r, args):
     vc = grid.vc
     windows = {'maps': m}
     if not args.maps_only:
-        # thecov's own m (smoothed: 32 nearest randoms in 3D, one n(z) per cap) on the same fine footprint
+        # thecov's own m (smoothed: 32 nearest randoms in 3D, one n(z) per cap), diluted by the same
+        # sub-pixel fill fraction as the maps (veto holes smaller than a pixel)
         inside = np.flatnonzero(frac.ravel() > 0)
         _, nn = tr.tree.query(grid.centers(inside), k=1, workers=-1)
         mt = np.zeros(m.size, np.float32)
@@ -314,23 +324,49 @@ def run_region(paths, cfg, OUT, b, r, args):
     nmodes = {f: (coarse_sum(nm1, np.asarray(cmap[f])) if cmap[f] is not None else
                   np.bincount(idx[f], herm, len(specs[f]['k_edges']))[:-1]) for f in specs}
     nproc = n_workers(int(np.prod(grid.shape)), args.workers)
-    _G.update(grid=grid, amp=amp, noise_amp=noise_amp, windows=windows, herm=herm, idx1=idx[1], n1=len(e1) - 1,
+    _G.update(grid=grid, amp={w: amp for w in windows}, noise_amp=noise_amp, windows=windows, herm=herm, idx1=idx[1], n1=len(e1) - 1,
               idx=idx, cmap=cmap, nedges={f: len(specs[f]['k_edges']) for f in specs}, nmodes=nmodes,
               scale=vc ** 2 / norm, sn=num_sn / norm, seed=args.seed, region_id=args.regions_all.index(r))
-    P_hat = {w: {f: np.zeros((args.nreal, len(specs[f]['k']))) for f in specs} for w in windows}
-    log(f'  {args.nreal} realisations on {nproc} worker processes')
-    t0 = time.time()
-    with mp.get_context('fork').Pool(nproc) as pool:
-        for n, (i, out) in enumerate(pool.imap_unordered(_realisation, range(args.nreal))):
-            for w in out:
-                for f in out[w]:
-                    P_hat[w][f][i] = out[w][f]
-            if n in (0, nproc - 1) or (n + 1) % 50 == 0:
-                log(f'  {n + 1}/{args.nreal} done ({time.time() - t0:.0f} s)')
+    log(f'  {args.nreal} realisations (+ {args.pilot} pilot) on {nproc} worker processes')
+
+    def run(indices, label):
+        P = {w: {f: np.zeros((len(indices), len(specs[f]['k']))) for f in specs} for w in windows}
+        pos = {i: j for j, i in enumerate(indices)}
+        t0 = time.time()
+        with mp.get_context('fork').Pool(nproc) as pool:
+            for n, (i, out) in enumerate(pool.imap_unordered(_realisation, indices)):
+                for w in out:
+                    for f in out[w]:
+                        P[w][f][pos[i]] = out[w][f]
+                if n in (0, nproc - 1) or (n + 1) % 100 == 0:
+                    log(f'  {label}: {n + 1}/{len(indices)} done ({time.time() - t0:.0f} s)')
+        return P
+
+    # pilot: calibrate each window's input power so that <P_hat> matches the mocks' mean (the variance
+    # is only comparable at the same mean power); the factor c(k) is smoothed with a cubic in k
+    calib = {}
+    if args.pilot:
+        Pp = run(list(range(10 ** 6, 10 ** 6 + args.pilot)), 'pilot')
+        k1m, mean1 = s1['k'], s1['vectors'][:, :len(s1['k'])].mean(0)
+        use = k1m >= 0.03
+        amps = {}
+        for w in windows:
+            c = mean1 / Pp[w][1].mean(0)
+            coef = np.polyfit(k1m[use], c[use], 3)
+            c_fit = np.polyval(coef, k1m)
+            c_grid = np.interp(np.clip(grid.kmag, k1m[use][0], k1m[-1]), k1m, c_fit).astype(np.float32)
+            amps[w] = amp * np.sqrt(np.maximum(c_grid, 0))
+            calib[w] = dict(k=k1m.tolist(), c=c.tolist(), c_fit=c_fit.tolist())
+            log(f'  calibration [{w}]: <P>mocks/<P>grf = ' + ', '.join(
+                f'{np.mean(c[(k1m >= lo) & (k1m < hi)]):.3f} ({lo}-{hi})' for lo, hi in KRANGES
+                if np.any((k1m >= lo) & (k1m < hi))))
+        _G['amp'] = amps
+        del Pp
+    P_hat = run(list(range(args.nreal)), 'realisations')
     _G.clear()
 
     static = dict(norm=norm, num_sn=num_sn, I_thecov_over_norm=I_thecov / norm, windows=wstats,
-                  cell=args.cell, nside=args.nside, binnings={})
+                  cell=args.cell, nside=args.nside, pilot=args.pilot, calibration=calib, binnings={})
     for f, s in specs.items():
         nb = len(s['k'])
         Vm = s['vectors'][:, :nb]
@@ -403,6 +439,8 @@ def main():
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--workers', type=int, default=None,
                     help='parallel realisations (default: as many as fit in 70%% of the free memory, at most the cores)')
+    ap.add_argument('--pilot', type=int, default=120,
+                    help='pilot realisations to calibrate each window\'s input power to the mocks\' mean (0: none)')
     ap.add_argument('--maps-only', action='store_true', help="skip the run with thecov's own m")
     ap.add_argument('--cs-version', default=None)
     ap.add_argument('--spectra-dir', default=None)
