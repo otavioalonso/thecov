@@ -77,6 +77,14 @@ class Paths:
     # from a parent random file with TARGETID, RA, DEC (template with {tracer}, {region}, {i},
     # {kind}, {mock}; {i} is the index of the slim file); Z is that of the data object TARGETID_DATA.
     random_positions: str = None
+    # 'clustering_statistics' (default if importable): read the catalogues with
+    # clustering_statistics.tools.read_clustering_catalog, exactly as the spectra pipeline does
+    # (INDWEIGHT = WEIGHT x WEIGHT_FKP, randoms completed from the parent randoms of cs_parent_version);
+    # 'files': read the h5 files above directly.
+    loader: str = 'auto'
+    cs_version: str = 'holi-v3-altmtl'
+    cs_parent_version: str = 'data-dr2-v2'
+    cs_extra: dict = field(default_factory=dict)      # further catalog options, override the fiducial ones
 
     def _dir(self):
         return self.catalog_dir.format(kind=self.kind, mock=self.mock)
@@ -275,12 +283,87 @@ def find_random_sources(paths, tracer, roots=None, max_files=40):
             seen += 1
 
 
+def _have_clustering_statistics():
+    import importlib.util
+    return importlib.util.find_spec('clustering_statistics') is not None
+
+
+def healpix_area(ra, dec, n_per_pixel=30):
+    """Footprint solid angle (sr) from the occupancy of healpix pixels by the randoms, at the resolution
+    giving ~n_per_pixel randoms per occupied pixel; edge pixels are counted by their filling."""
+    import healpy as hp
+    nside = 1
+    while True:
+        npix_occ = len(np.unique(hp.ang2pix(nside * 2, ra, dec, lonlat=True)))
+        if len(ra) / npix_occ < n_per_pixel:
+            break
+        nside *= 2
+    occ = np.bincount(hp.ang2pix(nside, ra, dec, lonlat=True), minlength=hp.nside2npix(nside))
+    full = np.median(occ[occ > 0])
+    return float(np.sum(np.minimum(occ / full, 1.0)) * hp.nside2pixarea(nside))
+
+
+def load_region_cs(paths: Paths, tracer_bin, region, n_random_files=1):
+    """Data and randoms through clustering_statistics.tools.read_clustering_catalog, with the options
+    of the spectra pipeline (propose_fiducial for full_shape, weight='default-FKP'). The catalogues are
+    read over all redshifts (to count the randoms of the whole footprint, which sets its area) and cut
+    here; if the reader refuses that, the bin's zrange is used and the area comes from healpix."""
+    from clustering_statistics.tools import get_catalog_fn, read_clustering_catalog, propose_fiducial
+    tracer, zr = TRACER_SPECS[tracer_bin]
+    keep = ['RA', 'DEC', 'Z', 'INDWEIGHT']
+    opts = dict(version=paths.cs_version, imock=paths.mock, tracer=tracer, region=region, zrange=tuple(zr),
+                nran=n_random_files, concatenate=True, keep_columns=keep, weight='default-FKP') | paths.cs_extra
+    opts = propose_fiducial(kind='catalog', tracer=tracer, zrange=tuple(zr), analysis='full_shape') | opts
+    expand = {'parent_randoms_fn': get_catalog_fn(kind='parent_randoms', version=paths.cs_parent_version,
+                                                  tracer=tracer, nran=n_random_files)}
+    info = {'loader': 'clustering_statistics', 'options': {k: str(v) for k, v in opts.items()}}
+
+    def read_any(kind, zrange):
+        """keep_columns plus NX and WEIGHT if the reader provides them, else keep_columns only."""
+        kw = dict(expand=expand) if kind == 'randoms' else {}
+        for cols in (keep + ['NX', 'WEIGHT'], keep):
+            try:
+                cat = read_clustering_catalog(kind=kind, **kw, **dict(opts, zrange=zrange, keep_columns=cols))
+                return {c: np.asarray(cat[c]) for c in cols}
+            except (KeyError, ValueError):
+                if cols is keep:
+                    raise
+
+    try:
+        data, randoms = read_any('data', (0.0, 10.0)), read_any('randoms', (0.0, 10.0))
+        n_all = len(randoms['Z'])
+    except Exception as ex:
+        info['wide_zrange_failed'] = f'{type(ex).__name__}: {ex}'
+        data, randoms = read_any('data', tuple(zr)), read_any('randoms', tuple(zr))
+        n_all = len(randoms['Z'])
+        info['omega_sr'] = healpix_area(randoms['RA'], randoms['DEC'])
+        print(f'[{tracer_bin} {region}] catalogues read with the bin zrange only; footprint area from healpix '
+              f'({info["omega_sr"] * (180 / np.pi) ** 2:.0f} deg^2)')
+
+    def canon(cat):
+        # total weight INDWEIGHT = WEIGHT x WEIGHT_FKP; keep WEIGHT/WEIGHT_FKP separately when possible
+        if 'WEIGHT' in cat:
+            cat['WEIGHT_FKP'] = cat['INDWEIGHT'] / np.where(cat['WEIGHT'] != 0, cat['WEIGHT'], 1.0)
+        else:
+            cat['WEIGHT'], cat['WEIGHT_FKP'] = cat['INDWEIGHT'], np.ones_like(cat['INDWEIGHT'])
+        return cat
+    data, randoms = canon(data), canon(randoms)
+
+    def cut(cat):
+        m = (cat['Z'] > zr[0]) & (cat['Z'] < zr[1])
+        return {c: v[m] for c, v in cat.items()}
+    return RegionCatalogs(region, cut(data), cut(randoms), n_all, n_random_files, info)
+
+
 def load_region(paths: Paths, tracer_bin, region, n_random_files=1, columns=DATA_COLUMNS):
     """One region (NGC or SGC) of one tracer bin: data and randoms cut to the redshift range.
 
     The region is given by the file; no RA/DEC region cut is applied (the example script's
     select_region is redundant on per-region files, and its SGC branch, `not (array) & (array)`,
-    raises for arrays). Slim random catalogues are completed with complete_slim_randoms."""
+    raises for arrays). Slim random catalogues are completed with complete_slim_randoms. With
+    paths.loader 'clustering_statistics' (or 'auto' and the package importable), load_region_cs."""
+    if paths.loader == 'clustering_statistics' or (paths.loader == 'auto' and _have_clustering_statistics()):
+        return load_region_cs(paths, tracer_bin, region, n_random_files)
     tracer, (zmin, zmax) = TRACER_SPECS[tracer_bin]
     data = read_catalog(paths.data_fn(tracer, region), columns, paths.h5_group)
     rfns = paths.randoms_fns(tracer, region)[:n_random_files]
@@ -378,7 +461,9 @@ def random_density(rc: RegionCatalogs, surface_density_deg2=2500.0, dz=0.005, co
     with Omega = (randoms in the files, all z) / (surface density per file x files). DESI randoms are
     uniform on the sky inside the footprint (2500 per deg^2 per file), so this is exact up to the
     z binning -- no nearest-neighbour density estimate, hence no edge bias."""
-    omega = rc.n_randoms_all_z / (surface_density_deg2 * rc.n_random_files) * (np.pi / 180.0) ** 2
+    omega = rc.info.get('omega_sr')
+    if omega is None:
+        omega = rc.n_randoms_all_z / (surface_density_deg2 * rc.n_random_files) * (np.pi / 180.0) ** 2
     z = rc.randoms['Z']
     edges = np.arange(z.min() - 1e-9, z.max() + dz, dz)
     counts, _ = np.histogram(z, edges)

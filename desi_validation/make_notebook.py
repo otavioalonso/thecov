@@ -71,10 +71,14 @@ BINS = list(dc.TRACER_SPECS)                # Part II: every bin
 paths = dc.Paths(kind='holi_v3', mock=173)  # catalogues of one mock of the spectra's release
 # spectra name -> catalogue name where they differ (edit if a bin reports MISSING below)
 paths.catalog_names.update({'ELG_LOPnotqso': 'ELGnotqso', 'LRG+ELG_LOPnotqso': 'LRG+ELGnotqso'})
-# holi v3 random files are slim (TARGETID, TARGETID_DATA, WEIGHT, NX): Z comes from the data object
-# TARGETID_DATA, WEIGHT_FKP = 1/(1 + NX P0), and RA/DEC from parent random files with TARGETID, RA, DEC.
-# Set the template ({tracer}, {region}, {i} = index of the slim file, {kind}, {mock}); run
-# dc.find_random_sources(paths, 'LRG') to list candidates.
+# Catalogue reader. 'auto': clustering_statistics.tools.read_clustering_catalog if importable -- the
+# spectra pipeline's own reader (INDWEIGHT = WEIGHT x WEIGHT_FKP, slim randoms completed from the
+# parent randoms of cs_parent_version) -- else the h5 files directly ('files').
+paths.loader = 'auto'
+paths.cs_version, paths.cs_parent_version = 'holi-v3-altmtl', 'data-dr2-v2'
+paths.cs_extra = {}                          # further catalog options (override propose_fiducial's)
+# Only for loader='files': holi v3 randoms are slim (TARGETID, TARGETID_DATA, WEIGHT, NX); RA/DEC come from
+# parent random files with TARGETID, RA, DEC ({tracer}, {region}, {i}, {kind}, {mock}).
 paths.random_positions = None
 OUT = os.path.expanduser(f'~/thecov_desi/{paths.kind}_mock{paths.mock}')   # caches depend on the catalogues
 if SYNTHETIC:
@@ -89,7 +93,9 @@ for b in BINS:
     print(f'{b:8s} {t:22s} z={zr}  spectra: ' + ', '.join(f'{r} {len(paths.spectra_fns(t, zr, r))}' for r in cfg.regions))
 print('catalogues, e.g.', paths.data_fn(dc.TRACER_SPECS[DETAIL_BIN][0], 'NGC'))
 paths.check(BINS)
-if paths.random_positions is None and not SYNTHETIC:
+print('catalogue reader:', 'clustering_statistics' if (paths.loader == 'clustering_statistics' or
+      (paths.loader == 'auto' and dc._have_clustering_statistics())) else 'files')
+if paths.random_positions is None and not SYNTHETIC and not dc._have_clustering_statistics():
     print('\npaths.random_positions not set; candidate parent random files (OK = has TARGETID, RA, DEC):')
     dc.find_random_sources(paths, dc.TRACER_SPECS[DETAIL_BIN][0])
 """)
