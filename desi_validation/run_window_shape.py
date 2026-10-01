@@ -8,11 +8,14 @@ Run from the repository root (or set THECOV_DIR), in an interactive allocation, 
 environment. Output: a report on stdout (paste it back) and OUT/window_shape_report.json.
 
 Tests
-  1. n(z) variation across the sky (nz_variation) and 1/V_eff of the window for m built with one
-     n(z) per cap ('random-density') or per healpix patch ('patch', nside 4, 8, 16); LRG1 and QSO.
-  2. thecov with both constructions of m: <chi2>/n and variance ratios per multipole and k range.
-  3. FFT-mesh exact Gaussian Var(P0) with thecov's m for both constructions, against thecov, the
-     mocks, and the counts-based window B of the earlier scratch runs (if their JSON files exist).
+  Constructions of m compared (--modes, first = reference): 'random-density' (alpha rho_r(z) <w>_local,
+  thecov's default), 'nx' (NX x WEIGHT_FKP at each random, no smoothing), 'patch' (rho_r(z) per sky
+  patch), 'angular'.
+  1. n(z) variation across the sky (nz_variation); m of each construction / the reference at the
+     same randoms (percentiles, and per z quintile); 1/V_eff of each window; LRG1 and QSO.
+  2. thecov with each construction of m: <chi2>/n and variance ratios per multipole and k range.
+  3. FFT-mesh exact Gaussian Var(P0) with each m, against thecov, the mocks, and the counts-based
+     window B of the earlier scratch runs (if their JSON files exist).
   4. (--isotropic) the same mesh vs thecov comparison with P2 = P4 = 0, to see whether the 2-3% offset
      between the mesh and thecov is the mesh's global line of sight.
 """
@@ -33,6 +36,7 @@ from desi_validation import desi_compare as dc, pipeline as pl, mesh_gaussian as
 
 T0 = time.time()
 KRANGES = ((0.02, 0.05), (0.05, 0.1), (0.1, 0.2), (0.2, 0.3))
+MODES = ['random-density', 'nx']
 
 
 def log(*a):
@@ -67,6 +71,27 @@ def kranges_var(out, ells):
 
 
 # ----------------------------------------------------------------------------- test 1
+def m_ratio_stats(rc, cfg, n_max=300_000, seed=0):
+    """m of each construction / m of the reference, at the same randoms: percentiles, and median in z bins"""
+    r = rc.randoms
+    sel = np.random.default_rng(seed).random(len(r['Z'])) < min(1.0, n_max / len(r['Z']))
+    wd, wr = dc.total_weight(rc.data), dc.total_weight(r)
+    a_reg = wd.sum() / wr.sum()
+    rho, _ = dc.random_density(rc, cfg.surface_density)
+    p = dc.sky_to_cartesian(r['RA'], r['DEC'], r['Z'])
+    kw = dict(surface_density_deg2=cfg.surface_density)
+    m0 = dc._m_values(rc, MODES[0], sel, a_reg, rho, p, **kw)
+    z = r['Z'][sel]
+    zb = np.quantile(z, np.linspace(0, 1, 6))
+    out = {}
+    for mode in MODES[1:]:
+        q = dc._m_values(rc, mode, sel, a_reg, rho, p, **kw) / m0
+        out[mode] = dict(p16_50_84=np.percentile(q, [16, 50, 84]).tolist(),
+                         median_in_z=[float(np.median(q[(z >= lo) & (z <= hi)])) for lo, hi in zip(zb[:-1], zb[1:])],
+                         z_edges=zb.tolist())
+    return out
+
+
 def test_nz_and_veff(regs, cfg, label):
     rows = {}
     for r, rc in regs.items():
@@ -79,16 +104,19 @@ def test_nz_and_veff(regs, cfg, label):
             if 'mean_z_north_minus_south' in nv:
                 row['dz_north_minus_south'] = nv['mean_z_north_minus_south']
                 row['north_over_south_nz'] = nv['north_over_south_nz']
-        for nside in (4, 8, 16):
-            vm = dc.window_moments(rc, modes=('random-density', 'patch'), surface_density_deg2=cfg.surface_density,
-                                   nside=nside)
-            row[f'veff_patch_over_rd_nside{nside}'] = vm['patch'] / vm['random-density']
+        vm = dc.window_moments(rc, modes=MODES, surface_density_deg2=cfg.surface_density)
+        for mode in MODES[1:]:
+            row[f'veff_{mode}_over_{MODES[0]}'] = vm[mode] / vm[MODES[0]]
+        row['m_ratio'] = m_ratio_stats(rc, cfg)
         rows[r] = row
+        for mode, mr in row['m_ratio'].items():
+            log(f"{label} {r}: m[{mode}] / m[{MODES[0]}] at the randoms: 16/50/84% {np.round(mr['p16_50_84'], 4).tolist()}; "
+                f"median in 5 z quintiles {np.round(mr['median_in_z'], 4).tolist()}")
         log(f"{label} {r}: n(z) rms across patches {row['nz_rms_nside8']:.4f} (Poisson {row['nz_poisson_nside8']:.4f}, nside 8), "
             f"{row['nz_rms_nside4']:.4f} (Poisson {row['nz_poisson_nside4']:.4f}, nside 4); "
             + (f"<z> north - south {row['dz_north_minus_south']:+.4f} (north fraction {row['north_fraction']:.2f}); "
                if 'dz_north_minus_south' in row else '')
-            + '1/V_eff patch / one-n(z): ' + ', '.join(f"nside {s}: {row[f'veff_patch_over_rd_nside{s}']:.4f}" for s in (4, 8, 16)))
+            + f'1/V_eff relative to {MODES[0]}: ' + ', '.join(f"{m}: {row[f'veff_{m}_over_{MODES[0]}']:.4f}" for m in MODES[1:]))
     return rows
 
 
@@ -109,7 +137,7 @@ def mesh_test(D, b, r, cfg, OUT, isotropic=False, every=3, kmax=0.2):
         s_iso = copy.deepcopy(spec)
         s_iso['vectors'][:, nb:] = 0.0                           # P2 = P4 = 0 in the model (mean vector)
         specs['iso'] = s_iso
-    for mode in ('random-density', 'patch'):
+    for mode in MODES:
         tr = D['tracers'][(r, mode)]
         W, S, intW = mg.windows_from_tracer(mesh, tr, num_sn)
         for tag, sp in specs.items():
@@ -138,27 +166,31 @@ def mesh_test(D, b, r, cfg, OUT, isotropic=False, every=3, kmax=0.2):
 def print_mesh(r, res):
     k = np.asarray(res['k'])
     vm = np.asarray(res['var_mock'])
-    rd, pa = res['random-density_aniso'], res['patch_aniso']
-    thecov_rd = np.asarray(rd['thecov'])
-    cols = [('A/thecov', np.asarray(rd['mesh']) / thecov_rd), ('Apatch/thecov', np.asarray(pa['mesh']) / thecov_rd),
-            ('thecov_patch/thecov', np.asarray(pa['thecov']) / thecov_rd)]
+    ref = res[f'{MODES[0]}_aniso']
+    t0 = np.asarray(ref['thecov'])
+    short = {'random-density': 'rd', 'patch': 'patch', 'nx': 'nx', 'angular': 'ang'}
+    cols = []
+    for mode in MODES:
+        a = res[f'{mode}_aniso']
+        cols.append((f'mesh_{short.get(mode, mode)}/thecov', np.asarray(a['mesh']) / t0))
+        if mode != MODES[0]:
+            cols.append((f'thecov_{short.get(mode, mode)}/thecov', np.asarray(a['thecov']) / t0))
     for name in ('B12', 'B1.5'):
         if name in res:
-            cols.append((f'{name}/thecov', np.asarray(res[name]) / thecov_rd))
-    cols += [('mock/thecov', vm / thecov_rd), ('mock/thecov_patch', vm / np.asarray(pa['thecov'])),
-             ('mock/Apatch', vm / np.asarray(pa['mesh']))]
-    print(f"\n{r}: P0 variance ratios (thecov = one n(z) per cap; mesh split differences: A {rd['split_diff']:+.4f}, "
-          f"Apatch {pa['split_diff']:+.4f})")
+            cols.append((f'{name}/thecov', np.asarray(res[name]) / t0))
+    for mode in MODES:
+        cols.append((f'mock/thecov_{short.get(mode, mode)}', vm / np.asarray(res[f'{mode}_aniso']['thecov'])))
+    print(f"\n{r}: P0 variance ratios; 'thecov' = thecov with m from {MODES[0]}; mesh split differences "
+          + ', '.join(f"{mode} {res[f'{mode}_aniso']['split_diff']:+.4f}" for mode in MODES))
     print(f"{'k range':>12s}" + ''.join(f'{c:>20s}' for c, _ in cols))
     for lo, hi in KRANGES[:3]:
         s = (k >= lo) & (k < hi)
         if s.any():
             print(f'{lo:5.2f}-{hi:<5.2f}  ' + ''.join(f'{np.nanmean(v[s]):20.4f}' for _, v in cols))
-    if 'random-density_iso' in res:
-        a = res['random-density_iso']; p = res['patch_iso']
-        print(f"   isotropic model (P2 = P4 = 0): mesh A / thecov {np.mean(a['mesh_over_thecov']):.4f}, "
-              f"mesh Apatch / thecov_patch {np.mean(p['mesh_over_thecov']):.4f}  (anisotropic: "
-              f"{np.mean(rd['mesh_over_thecov']):.4f}, {np.mean(pa['mesh_over_thecov']):.4f})")
+    if f'{MODES[0]}_iso' in res:
+        print('   isotropic model (P2 = P4 = 0), mesh / thecov with the same m: '
+              + ', '.join(f"{mode} {np.mean(res[f'{mode}_iso']['mesh_over_thecov']):.4f} "
+                          f"(anisotropic {np.mean(res[f'{mode}_aniso']['mesh_over_thecov']):.4f})" for mode in MODES))
 
 
 # ----------------------------------------------------------------------------- main
@@ -169,8 +201,12 @@ def main():
     ap.add_argument('--regions', nargs='+', default=['NGC', 'SGC'])
     ap.add_argument('--skip-mesh', action='store_true')
     ap.add_argument('--isotropic', action='store_true')
+    ap.add_argument('--modes', nargs='+', default=['random-density', 'nx'],
+                    help="constructions of m to compare, the first is the reference (random-density, nx, patch, angular)")
     ap.add_argument('--synthetic', default=None, help=argparse.SUPPRESS)     # testing on the synthetic set
     args = ap.parse_args()
+    global MODES
+    MODES = list(args.modes)
 
     paths, cfg, OUT = setup()
     if args.synthetic:
@@ -185,18 +221,18 @@ def main():
     if not mg.self_test(log=log):
         sys.exit('mesh self-test failed')
     report = dict(config=dataclasses.asdict(cfg), out=OUT)
-    cfg2 = dataclasses.replace(cfg, nw_modes=('random-density', 'patch'), coarse_check=False,
+    cfg2 = dataclasses.replace(cfg, nw_modes=tuple(MODES), coarse_check=False,
                                regions=tuple(args.regions) + ('GCcomb',))
 
     results = {}
     for b in args.bins:
-        header(f'{b}: thecov with one n(z) per cap vs per sky patch (new pair counts for the patch windows)')
+        header(f'{b}: thecov with m from ' + ', '.join(MODES) + ' (new pair counts for windows not cached yet)')
         D = pl.run_bin(paths, b, cfg2, OUT, log=log, keep=True)
         results[b] = D
         header(f'Test 1 [{b}]: n(z) variation across the sky and 1/V_eff of the window')
         report.setdefault('test1', {})[b] = test_nz_and_veff({r: D['regions'][r] for r in args.regions}, cfg, b)
 
-        header(f'Test 2 [{b}]: validation against the mocks, one n(z) per cap vs per patch')
+        header(f'Test 2 [{b}]: validation against the mocks for each construction of m')
         t2 = {}
         for (r, mode), out in D['validation'].items():
             kv = kranges_var(out, cfg.ells)
@@ -210,7 +246,7 @@ def main():
                   + ''.join(f'{row[k_]:13.3f}' for k_ in keys))
 
         if not args.skip_mesh:
-            header(f'Test 3 [{b}]: exact Gaussian Var(P0) on an FFT mesh with thecov\'s m (one n(z) vs patches)'
+            header(f'Test 3 [{b}]: exact Gaussian Var(P0) on an FFT mesh with each m, vs thecov, mocks and window B'
                    + (' + isotropic check' if args.isotropic else ''))
             report.setdefault('test3', {})[b] = {}
             for r in args.regions:

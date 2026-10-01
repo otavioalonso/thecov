@@ -638,8 +638,10 @@ def _m_values(rc, nw, sel, a_reg, rho, p, scheme='default-FKP', k_mean=32, k_ang
         wa = local_mean_weight_angular(r['RA'], r['DEC'], np.asarray(r['WEIGHT'], float), k=k_ang, query=sel)
         return a_reg * rho[sel] * wa * wfkp[sel]
     if nw == 'nx':
-        wmean_w = local_mean_weight(p[sel], np.asarray(r['WEIGHT'], float)[sel], k=k_mean)
-        return np.asarray(r['NX'], float)[sel] * np.asarray(r['WEIGHT_FKP'], float)[sel] * wmean_w
+        # NX is the completeness-weighted density (m / (NX WEIGHT_FKP) = 0.99 on holi): no smoothing at all
+        if 'NX' not in r:
+            raise ValueError("nw='nx' needs the randoms' NX column")
+        return np.asarray(r['NX'], float)[sel] * np.asarray(r['WEIGHT_FKP'], float)[sel]
     if nw == 'none':
         return None
     raise ValueError(nw)
@@ -692,8 +694,8 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
                 for n(z) that varies across the sky (random_density_patches);
                 'angular' -- m = alpha_region x rho_r(z) x <WEIGHT>_sky (k_ang nearest randoms on the
                 sky, all z) x the random's own WEIGHT_FKP: resolves sharp completeness boundaries;
-                'nx' -- m = NX x WEIGHT_FKP x <WEIGHT>_local (relies on NX being the density the
-                randoms sample, i.e. alpha_unweighted x rho_r = NX; checked in weight_diagnostics);
+                'nx' -- m = NX x WEIGHT_FKP at each random, no smoothing (relies on NX being the
+                completeness-weighted mean density, i.e. median m / (NX WEIGHT_FKP) ~ 1, as on holi);
                 'none' -- NZ = NX and each random's own weight (the naive set-up; biased by
                 <w^2>/<w>^2 when WEIGHT varies per object; kept for comparison).
     shotnoise : 'realised' -- scale S so that its integral is sum_d w^2 + alpha^2 sum_r w^2 of the
