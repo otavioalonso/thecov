@@ -123,15 +123,17 @@ class Grid:
             f'kNyq {np.pi / cell:.3f}, kf {2 * np.pi / (max(self.shape) * cell):.4f})')
 
     def fill(self, win, sub=2):
-        """m and S averaged over sub^3 points per cell."""
+        """m, S and the footprint fraction (sub-points with m > 0), averaged over sub^3 points per cell."""
         m = np.zeros(self.shape, np.float32)
         s = np.zeros(self.shape, np.float32)
+        fr = np.zeros(self.shape, np.float32)
         offs = (np.arange(sub) + 0.5) / sub
         ny, nz = self.shape[1], self.shape[2]
         jy, jz = np.meshgrid(np.arange(ny), np.arange(nz), indexing='ij')
         for i in range(self.shape[0]):
             acc_m = np.zeros(ny * nz)
             acc_s = np.zeros(ny * nz)
+            acc_f = np.zeros(ny * nz)
             for ox in offs:
                 for oy in offs:
                     for oz in offs:
@@ -141,9 +143,15 @@ class Grid:
                         a, b = win.at(x)
                         acc_m += a
                         acc_s += b
+                        acc_f += a > 0
             m[i] = (acc_m / sub ** 3).reshape(ny, nz)
             s[i] = (acc_s / sub ** 3).reshape(ny, nz)
-        return m, s
+            fr[i] = (acc_f / sub ** 3).reshape(ny, nz)
+        return m, s, fr
+
+    def centers(self, flat_idx):
+        ijk = np.stack(np.unravel_index(flat_idx, self.shape), axis=1)
+        return self.lo + (ijk + 0.5) * self.cell
 
     def rfft(self, f):
         return sfft.rfftn(f, workers=self.workers)
@@ -205,7 +213,7 @@ def run_region(paths, cfg, OUT, b, r, args):
         var_thecov[f] = np.diag(C)[:nb]
         I_thecov = cov.I_randoms
     pos_tr = tr.pos
-    del rc1, tr
+    del rc1
     log(f'  thecov (isotropic model) done; int m^2 (thecov) / norm = {I_thecov / norm:.4f}')
 
     # window maps from many random files
@@ -215,12 +223,26 @@ def run_region(paths, cfg, OUT, b, r, args):
         f'({win.npix_occupied} occupied pixels), {len(win.rad_m)} z shells')
     del rcK
     grid = Grid(pos_tr, args.cell, args.pad)
-    m, S = grid.fill(win, sub=args.sub)
+    m, S, frac = grid.fill(win, sub=args.sub)
     vc = grid.vc
-    I2, I4 = float(np.sum(m.astype(float) ** 2) * vc), float(np.sum(m.astype(float) ** 4) * vc)
-    log(f'  mesh window: int m = {np.sum(m) * vc:.4g} (alpha sum w_r = {win.int_m:.4g}), '
-        f'int m^2 / norm = {I2 / norm:.4f} (thecov {I_thecov / norm:.4f}), int S = {np.sum(S) * vc:.4g} '
-        f'(num_shotnoise {num_sn:.4g}); 1/V_eff = {I4 / I2 ** 2:.4g}')
+    windows = {'maps': m}
+    if not args.maps_only:
+        # thecov's own m (smoothed: 32 nearest randoms in 3D, one n(z) per cap) on the same fine footprint
+        inside = np.flatnonzero(frac.ravel() > 0)
+        _, nn = tr.tree.query(grid.centers(inside), k=1, workers=-1)
+        mt = np.zeros(m.size, np.float32)
+        mt[inside] = tr.mw[nn] * frac.ravel()[inside]
+        windows['thecov_m'] = mt.reshape(m.shape)
+        del mt, nn, inside
+    del frac, tr
+    wstats = {}
+    for name, mm in windows.items():
+        I1 = float(np.sum(mm, dtype=float) * vc)
+        I2, I4 = float(np.sum(mm.astype(float) ** 2) * vc), float(np.sum(mm.astype(float) ** 4) * vc)
+        wstats[name] = dict(int_m=I1, I2_over_norm=I2 / norm, veff=I4 / I2 ** 2)
+        log(f'  mesh window [{name}]: int m = {I1:.4g} (alpha sum w_r = {win.int_m:.4g}), '
+            f'int m^2 / norm = {I2 / norm:.4f} (thecov {I_thecov / norm:.4f}), 1/V_eff = {I4 / I2 ** 2:.4g}')
+    log(f'  int S = {np.sum(S, dtype=float) * vc:.4g} (num_shotnoise {num_sn:.4g})')
 
     # input power: thecov's model, P0 only (isotropic), extrapolated beyond the measured range
     k1, P0 = s1['k'], s1['vectors'][:, :len(s1['k'])].mean(0) * norm / I_thecov
@@ -238,47 +260,65 @@ def run_region(paths, cfg, OUT, b, r, args):
     nmodes = {f: np.bincount(idx[f], herm, len(specs[f]['k_edges']))[:-1] for f in specs}
 
     rng = np.random.default_rng(args.seed + (0 if r == 'NGC' else 1000))
-    P_hat = {f: np.zeros((args.nreal, len(specs[f]['k']))) for f in specs}
+    P_hat = {w: {f: np.zeros((args.nreal, len(specs[f]['k']))) for f in specs} for w in windows}
     t0 = time.time()
     for i in range(args.nreal):
         delta = grid.irfft(grid.rfft(rng.standard_normal(grid.shape, dtype=np.float32)) * amp).astype(np.float32)
-        F = m * delta
-        F += noise_amp * rng.standard_normal(grid.shape, dtype=np.float32)
-        p = np.abs(grid.rfft(F)) ** 2 * (vc ** 2 / norm)
-        p = p.ravel() * herm
-        for f in specs:
-            P_hat[f][i] = np.bincount(idx[f], p, len(specs[f]['k_edges']))[:-1] / nmodes[f] - num_sn / norm
+        noise = noise_amp * rng.standard_normal(grid.shape, dtype=np.float32)
+        for name, mm in windows.items():              # same delta and noise for every window: paired
+            p = np.abs(grid.rfft(mm * delta + noise)) ** 2 * (vc ** 2 / norm)
+            p = p.ravel() * herm
+            for f in specs:
+                P_hat[name][f][i] = np.bincount(idx[f], p, len(specs[f]['k_edges']))[:-1] / nmodes[f] - num_sn / norm
         if i in (0, 4) or (i + 1) % 50 == 0:
             log(f'  realisation {i + 1}/{args.nreal} ({(time.time() - t0) / (i + 1):.1f} s each)')
 
-    res = dict(norm=norm, num_sn=num_sn, I_thecov_over_norm=I_thecov / norm, I_mesh_over_norm=I2 / norm,
-               veff_mesh=I4 / I2 ** 2, nreal=args.nreal, cell=args.cell, nside=args.nside, binnings={})
+    res = dict(norm=norm, num_sn=num_sn, I_thecov_over_norm=I_thecov / norm, windows=wstats,
+               nreal=args.nreal, cell=args.cell, nside=args.nside, binnings={})
     for f, s in specs.items():
         nb = len(s['k'])
         Vm = s['vectors'][:, :nb]
-        res['binnings'][f'x{f}'] = dict(k=s['k'].tolist(), mean_grf=P_hat[f].mean(0).tolist(), mean_mocks=Vm.mean(0).tolist(),
-                                        var_grf=P_hat[f].var(0, ddof=1).tolist(), var_mocks=Vm.var(0, ddof=1).tolist(),
-                                        var_thecov=var_thecov[f].tolist(), nmodes_grid=nmodes[f].tolist(),
-                                        nmodes_files=None if s.get('nmodes') is None else np.asarray(s['nmodes']).tolist())
+        d = dict(k=s['k'].tolist(), mean_mocks=Vm.mean(0).tolist(), var_mocks=Vm.var(0, ddof=1).tolist(),
+                 var_thecov=var_thecov[f].tolist(), nmodes_grid=nmodes[f].tolist(),
+                 nmodes_files=None if s.get('nmodes') is None else np.asarray(s['nmodes']).tolist())
+        for name in windows:
+            d[f'mean_grf_{name}'] = P_hat[name][f].mean(0).tolist()
+            d[f'var_grf_{name}'] = P_hat[name][f].var(0, ddof=1).tolist()
+        if len(windows) == 2:                         # paired ratio maps / thecov_m, with its error
+            a, b_ = P_hat['maps'][f], P_hat['thecov_m'][f]
+            d['var_ratio_maps_over_thecov_m'] = (a.var(0, ddof=1) / b_.var(0, ddof=1)).tolist()
+            d['corr_maps_thecov_m'] = [float(np.corrcoef(a[:, j], b_[:, j])[0, 1]) for j in range(nb)]
+        res['binnings'][f'x{f}'] = d
     return res
 
 
 def summary(r, res):
-    print(f'\n{r}: int m^2/norm thecov {res["I_thecov_over_norm"]:.4f}, mesh {res["I_mesh_over_norm"]:.4f}; '
-          f'{res["nreal"]} realisations, cell {res["cell"]} Mpc/h, nside {res["nside"]}')
-    print(f"{'bins':>5s} {'k range':>11s} {'<P>grf/<P>mocks':>16s} {'Var grf/thecov':>15s} {'Var mocks/grf':>14s} "
-          f"{'Var mocks/thecov':>17s}  (+-, grf var)")
+    ws = res['windows']
+    print(f'\n{r}: {res["nreal"]} realisations, cell {res["cell"]} Mpc/h, nside {res["nside"]}; int m^2/norm: thecov '
+          f'{res["I_thecov_over_norm"]:.4f}, ' + ', '.join(f'mesh[{w}] {v["I2_over_norm"]:.4f}' for w, v in ws.items()))
+    print('  maps     = m at high resolution (healpix x weighted n(z)): exact Gaussian with the fine window')
+    print('  thecov_m = thecov\'s own smoothed m on the same footprint: exact Gaussian with thecov\'s window')
+    names = list(ws)
+    head = f"{'bins':>5s} {'k range':>11s}"
+    for w in names:
+        head += f" {'<P>grf/mocks':>13s} {'Var grf/thecov':>15s} {'mocks/grf':>10s}"
+    if len(names) == 2:
+        head += f" {'maps/thecov_m':>14s}"
+    print(head + '   [' + ' | '.join(names) + ']   (+-: grf var)')
     for key, d in res['binnings'].items():
         k = np.asarray(d['k'])
-        g, mo, t = (np.asarray(d[x]) for x in ('var_grf', 'var_mocks', 'var_thecov'))
-        mg_, mm = np.asarray(d['mean_grf']), np.asarray(d['mean_mocks'])
+        mo, t, mm = (np.asarray(d[x]) for x in ('var_mocks', 'var_thecov', 'mean_mocks'))
         for lo, hi in KRANGES:
-            s = (k >= lo) & (k < hi)
-            if not s.any():
+            sel = (k >= lo) & (k < hi)
+            if not sel.any():
                 continue
-            err = np.sqrt(2 / (res['nreal'] - 1) / s.sum())
-            print(f'{key:>5s} {lo:5.2f}-{hi:<5.2f} {np.mean(mg_[s] / mm[s]):16.4f} {np.mean(g[s] / t[s]):15.4f} '
-                  f'{np.mean(mo[s] / g[s]):14.4f} {np.mean(mo[s] / t[s]):17.4f}  ({err:.3f})')
+            line = f'{key:>5s} {lo:5.2f}-{hi:<5.2f}'
+            for w in names:
+                g, mg_ = np.asarray(d[f'var_grf_{w}']), np.asarray(d[f'mean_grf_{w}'])
+                line += f' {np.mean(mg_[sel] / mm[sel]):13.4f} {np.mean(g[sel] / t[sel]):15.4f} {np.mean(mo[sel] / g[sel]):10.4f}'
+            if len(names) == 2:
+                line += f" {np.mean(np.asarray(d['var_ratio_maps_over_thecov_m'])[sel]):14.4f}"
+            print(line + f'   ({np.sqrt(2 / (res["nreal"] - 1) / sel.sum()):.3f})')
 
 
 def main():
@@ -293,6 +333,7 @@ def main():
     ap.add_argument('--dz', type=float, default=0.002)
     ap.add_argument('--random-files', type=int, default=10, help='random files for the window maps')
     ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--maps-only', action='store_true', help="skip the run with thecov's own m")
     ap.add_argument('--cs-version', default=None)
     ap.add_argument('--spectra-dir', default=None)
     ap.add_argument('--mock', type=int, default=None)
