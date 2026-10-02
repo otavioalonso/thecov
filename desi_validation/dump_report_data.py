@@ -40,6 +40,7 @@ def main():
     ap.add_argument('--modes', nargs='+', default=['random-density', 'nx'])
     ap.add_argument('--fill-nside', type=int, default=512, help="nw 'fill': healpix resolution of the fill fraction")
     ap.add_argument('--target-near-pairs', type=float, default=None, help='pair-count sampling (default: Config)')
+    ap.add_argument('--n-randoms-max', type=float, default=None, help='randoms kept for thecov, all regions (default: Config)')
     ap.add_argument('--cache-tag', default='', help='separate window/covariance caches for this variant (e.g. _p1e10)')
     ap.add_argument('--factors', nargs='+', type=int, default=[2, 4], help='wider bins: 0.005 x factor')
     ap.add_argument('--no-naive', action='store_true', help='skip the naive (own-weight) window covariance')
@@ -62,6 +63,8 @@ def main():
     extra = dict(fill_nside=args.fill_nside, cache_tag=args.cache_tag)
     if args.target_near_pairs:
         extra['target_near_pairs'] = args.target_near_pairs
+    if args.n_randoms_max:
+        extra['n_randoms_max'] = int(args.n_randoms_max)
     cfg = dataclasses.replace(pl.Config(), **extra, nw_modes=tuple(args.modes), naive=not args.no_naive,
                               coarse_check=True, coarse_factors=tuple(args.factors))
     if args.synthetic:
