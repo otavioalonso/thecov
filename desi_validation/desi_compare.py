@@ -640,9 +640,14 @@ def fill_map(rc, nside=512, surface_density_deg2=2500.0):
 
 
 def _m_values(rc, nw, sel, a_reg, rho, p, scheme='default-FKP', k_mean=32, k_ang=128, nside=8,
-              surface_density_deg2=2500.0, cosmo=None, fill=None):
+              surface_density_deg2=2500.0, cosmo=None, fill=None, kernel_field=None):
     """m at the randoms `sel` for a construction `nw` (see build_tracer)."""
     r = rc.randoms
+    if nw == 'kernel':
+        # pair-averaged window (kernel_window.py): m smoothed with the xi-based kernel of a k-band
+        if kernel_field is None:
+            raise ValueError("nw='kernel' needs kernel_field (a callable giving K * m at positions)")
+        return np.maximum(kernel_field(p[sel]), 0.0)
     if nw == 'fill':
         # m smoothed over the veto holes: the clustering window is m(x) m(x + r) for r within a
         # correlation length, i.e. the square of m averaged over holes much smaller than r, not the
@@ -710,7 +715,7 @@ def _median_ratio(m, r, sel):
 
 def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, surface_density_deg2=2500.0,
                  k_mean=32, k_ang=128, nside=8, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True,
-                 shotnoise_target=None, fill=None):
+                 shotnoise_target=None, fill=None, kernel_field=None):
     """A thecov Tracer from one or several regions (several: the combined NGC+SGC catalogue of a
     single estimate, with each region's randoms renormalised to the global alpha, as in
     catalogs.normalize_and_concatenate).
@@ -725,6 +730,8 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
                 'fill' -- as 'random-density' times the fraction of the local healpix pixel inside the
                 footprint (`fill`: {region: fill_map}, from many random files): m averaged over
                 veto holes much smaller than the correlation length, as the clustering window needs;
+                'kernel' -- (K_k * m) at each random, K_k the xi-based kernel of a k-band
+                (`kernel_field`: {region: callable(positions)}; see kernel_window.py);
                 'none' -- NZ = NX and each random's own weight (the naive set-up; biased by
                 <w^2>/<w>^2 when WEIGHT varies per object; kept for comparison).
     shotnoise : 'realised' -- scale S so that its integral is sum_d w^2 + alpha^2 sum_r w^2 of the
@@ -755,7 +762,8 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
         sel = rng.random(len(wr)) < keep_frac          # subsample: m is unchanged, alpha rescales
         m = _m_values(rc, nw, sel, a_reg, rho, p, scheme, k_mean=k_mean, k_ang=k_ang, nside=nside,
                       surface_density_deg2=surface_density_deg2, cosmo=cosmo,
-                      fill=None if fill is None else fill[rc.region])
+                      fill=None if fill is None else fill[rc.region],
+                      kernel_field=None if kernel_field is None else kernel_field[rc.region])
         # renormalise this region's random weights to the global alpha (only matters for >1 region)
         wsc = wr[sel] * (a_reg / alpha_glob)
         pos.append(p[sel]); w.append(wsc)

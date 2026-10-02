@@ -39,8 +39,11 @@ def main():
     ap.add_argument('--bins', nargs='+', default=['LRG1', 'QSO'])
     ap.add_argument('--modes', nargs='+', default=['random-density', 'nx'])
     ap.add_argument('--fill-nside', type=int, default=512, help="nw 'fill': healpix resolution of the fill fraction")
+    ap.add_argument('--kernel-bands', nargs='+', type=float, default=None, help="nw 'kernel': k-band edges")
+    ap.add_argument('--kernel-cell', type=float, default=None, help="nw 'kernel': smoothing mesh cell [Mpc/h]")
     ap.add_argument('--target-near-pairs', type=float, default=None, help='pair-count sampling (default: Config)')
     ap.add_argument('--n-randoms-max', type=float, default=None, help='randoms kept for thecov, all regions (default: Config)')
+    ap.add_argument('--regions', nargs='+', default=None, help='regions (default NGC SGC GCcomb)')
     ap.add_argument('--cache-tag', default='', help='separate window/covariance caches for this variant (e.g. _p1e10)')
     ap.add_argument('--factors', nargs='+', type=int, default=[2, 4], help='wider bins: 0.005 x factor')
     ap.add_argument('--no-naive', action='store_true', help='skip the naive (own-weight) window covariance')
@@ -63,6 +66,12 @@ def main():
     extra = dict(fill_nside=args.fill_nside, cache_tag=args.cache_tag)
     if args.target_near_pairs:
         extra['target_near_pairs'] = args.target_near_pairs
+    if args.kernel_bands:
+        extra['kernel_bands'] = tuple(args.kernel_bands)
+    if args.kernel_cell:
+        extra['kernel_cell'] = args.kernel_cell
+    if args.regions:
+        extra['regions'] = tuple(args.regions)
     if args.n_randoms_max:
         extra['n_randoms_max'] = int(args.n_randoms_max)
     cfg = dataclasses.replace(pl.Config(), **extra, nw_modes=tuple(args.modes), naive=not args.no_naive,
@@ -71,7 +80,8 @@ def main():
         paths = dc.Paths(catalog_dir=args.synthetic + '/catalogs', spectra_dir=args.synthetic + '/spectra', loader='files')
         dc.TRACER_SPECS.clear(); dc.TRACER_SPECS['TEST'] = ('LRG', (0.4, 0.6))
         cfg = dataclasses.replace(cfg, surface_density=150.0, kmax=0.1, kmin=0.02, target_near_pairs=3e8, n_sub_far=5000,
-                                  fill_random_files=1, fill_nside=128)
+                                  fill_random_files=1, fill_nside=128,
+                                  kernel_random_files=1, kernel_bands=(0.02, 0.05, 0.1))
         OUT, args.bins = args.synthetic + '/results_dump', ['TEST']
     log(f'{args.label}: catalogues {paths.cs_version} mock {paths.mock}, spectra {paths.spectra_dir}, caches {OUT}')
 
@@ -105,7 +115,7 @@ def main():
         for r, rc in D['regions'].items():
             wd = dc.weight_diagnostics(rc, b)
             mb['weights'][r] = {k: v for k, v in wd.items() if not k.endswith('columns')}
-            mb['veff'][r] = dc.window_moments(rc, modes=tuple(m for m in args.modes if m != 'fill'),     # + 'own-weight' = naive
+            mb['veff'][r] = dc.window_moments(rc, modes=tuple(m for m in args.modes if m not in ('fill', 'kernel')),     # + 'own-weight' = naive
                                               surface_density_deg2=cfg.surface_density)
             log(f"{b} {r}: <w^2>/<w>^2 data {wd['data_w2_over_wmean2']:.4f} randoms {wd['randoms_w2_over_wmean2']:.4f}; "
                 f"1/V_eff " + ', '.join(f'{m}: {v:.4g}' for m, v in mb['veff'][r].items()))

@@ -15,6 +15,7 @@ from dataclasses import dataclass, asdict
 import numpy as np
 
 from . import desi_compare as dc
+from . import kernel_window as kw
 from . import validation as va
 
 CAPS = ('NGC', 'SGC')
@@ -46,6 +47,11 @@ class Config:
     coarse_factors: tuple = (2,)      # ... this many times wider (2 -> 0.01 h/Mpc)
     fill_random_files: int = 10       # nw 'fill': random files for the footprint fill-fraction map
     fill_nside: int = 512             # ... and its resolution (512 ~ 7 arcmin)
+    kernel_bands: tuple = (0.02, 0.06, 0.12, 0.2, 0.3)   # nw 'kernel': k-band edges of the xi-based kernels
+    kernel_cell: float = 5.0          # ... mesh cell of the smoothing [Mpc/h]
+    kernel_rmax: float = 200.0        # ... kernel truncation (and mesh padding) [Mpc/h]
+    kernel_random_files: int = 10     # ... random files painted for m (independent of the sampling ones)
+    kernel_damping: float = 1.0       # ... Gaussian damping of the extrapolated P at k > kmax [Mpc/h]
     cache_tag: str = ''               # appended to tracer (windows) and covariance cache names, for variants
                                       # whose caches must not be shared (e.g. other target_near_pairs)
 
@@ -116,6 +122,53 @@ def covariance_cached(tracer, spec, cfg: Config, path, n_near=None, log=print):
     return C, dict(I_randoms=cov.I_randoms, cached=False, cov=cov)
 
 
+def kernel_tag(cfg: Config):
+    """short hash of the kernel settings (cache names)"""
+    import hashlib
+    key = repr((tuple(cfg.kernel_bands), cfg.kernel_cell, cfg.kernel_rmax, cfg.kernel_random_files, cfg.kernel_damping))
+    return hashlib.md5(key.encode()).hexdigest()[:6]
+
+
+def band_combine(Cs, k_vec, band_edges):
+    """Covariance from per-band matrices: element (i, j) interpolated linearly in k_mid = sqrt(k_i k_j)
+    between the band centres (constant beyond the first and last)."""
+    centres = 0.5 * (np.asarray(band_edges[:-1]) + np.asarray(band_edges[1:]))
+    kmid = np.sqrt(np.outer(k_vec, k_vec))
+    C = np.zeros_like(Cs[0])
+    for b, Cb in enumerate(Cs):
+        e = np.zeros(len(centres)); e[b] = 1.0
+        C += np.interp(kmid, centres, e) * Cb
+    return 0.5 * (C + C.T)
+
+
+def kernel_band_tracers(paths, tracer_bin, r, reg, spec_r, cfg, sn, log=print):
+    """Tracers with NW = (K_b * m) for each k-band b, m painted from cfg.kernel_random_files random files.
+    Returns (tracers, infos, diagnostics)."""
+    rcK = dc.load_region(paths, tracer_bin, r, n_random_files=cfg.kernel_random_files)
+    wK = dc.total_weight(rcK.randoms)
+    aK = float(np.sum(dc.total_weight(rcK.data)) / np.sum(wK))
+    pos = dc.sky_to_cartesian(rcK.randoms['RA'], rcK.randoms['DEC'], rcK.randoms['Z'])
+    sm = kw.KernelSmoother(pos, wK, aK, cell=cfg.kernel_cell, rmax=cfg.kernel_rmax, log=log)
+    n_painted = len(wK)
+    del rcK, pos, wK
+    nb = len(spec_r['k'])
+    rg, Ks, rawn = kw.region_kernels(spec_r['k'], spec_r['vectors'][:, :nb].mean(0), cfg.kernel_bands,
+                                     rmax=cfg.kernel_rmax, damping=cfg.kernel_damping)
+    tag = kernel_tag(cfg)
+    trs, infs = [], []
+    for b, K in enumerate(Ks):
+        name = f'{tracer_bin}_{r}_kern{b}_{tag}{cfg.cache_tag}'
+        tr, inf = dc.build_tracer(name, [reg], nw='kernel', n_randoms_max=cfg.n_randoms_max // 2,
+                                  surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn,
+                                  kernel_field={r: (lambda p, K=K: sm.smooth_at(rg, K, p))})
+        trs.append(tr); infs.append(inf)
+    diag = dict(bands=list(cfg.kernel_bands), widths=[kw.effective_width(rg, K) for K in Ks],
+                raw_norm_over_P=rawn, n_painted=n_painted)
+    log(f'  {r}: kernel bands {list(cfg.kernel_bands)}, rms widths ' + ', '.join(f'{w:.1f}' for w in diag['widths'])
+        + f' Mpc/h; m painted from {n_painted} randoms ({cfg.kernel_random_files} files)')
+    return trs, infs, diag
+
+
 def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
     """Validate one tracer bin. Returns a dict with diagnostics, spectra checks, covariances and the
     validation output per (region, mode); `keep` also returns the catalogues, tracers and spectra."""
@@ -168,10 +221,38 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
             del rcK
         res['fill_median'] = {r: float(np.median(f[f > 0])) for r, f in fill.items()}
     covs, info, tracers = {}, {}, {}
+
+    def cov_of(r, mode, s_, rebin):
+        """covariance of (region, mode) for spectra s_ (cached); the 'kernel' mode combines its bands"""
+        if mode == 'kernel':
+            k_vec = np.tile(s_['k'], len(cfg.ells))
+            Cs, Is = [], []
+            for b, tr_b in enumerate(tracers[(r, mode)]):
+                path = os.path.join(od, f'cov_{r}_kernel{b}_{kernel_tag(cfg)}{cfg.cache_tag}_{cfg.binning_tag(rebin)}.npz')
+                Cb, cib = covariance_cached(tr_b, s_, cfg, path, log=log)
+                Cs.append(Cb); Is.append(cib['I_randoms'])
+            return band_combine(Cs, k_vec, cfg.kernel_bands), dict(I_randoms=float(np.mean(Is)), I_bands=Is)
+        return covariance_cached(tracers[(r, mode)], s_, cfg,
+                                 os.path.join(od, f'cov_{r}_{ftag(mode)}_{cfg.binning_tag(rebin)}.npz'), log=log)
+
     for r in caps:
         for mode in modes:
             name = f'{tracer_bin}_{r}' + suffix.get(mode, '_' + mode + cfg.cache_tag)
             sn = spec[r]['num_shotnoise'].mean() if (cfg.shotnoise_from_files and r in spec) else None
+            if mode == 'kernel':
+                trs, infs, kdiag = kernel_band_tracers(paths, tracer_bin, r, regs[r], spec[r] if r in spec else spec['GCcomb'],
+                                                       cfg, sn, log=log)
+                tracers[(r, mode)] = trs
+                info[(r, mode)] = dict(infs[0], kernel=kdiag, regions=infs[0]['regions'])
+                if r in spec:
+                    C, ci = cov_of(r, mode, spec[r], cfg.rebin)
+                    covs[(r, mode)] = C
+                    norm_r = spec[r]['norm'].mean()
+                    info[(r, mode)].update(I_over_norm=ci['I_randoms'] / norm_r,
+                                           I_over_norm_bands=[I / norm_r for I in ci['I_bands']])
+                    log(f'  {r} kernel: int m (K_b * m) / norm per band = '
+                        + ', '.join(f'{I / norm_r:.4f}' for I in ci['I_bands']))
+                continue
             tr, inf = dc.build_tracer(name, [regs[r]], nw=mode, n_randoms_max=cfg.n_randoms_max // 2,
                                       surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn,
                                       fill=fill)
@@ -218,7 +299,7 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
                         continue
                     if s2 is None:
                         s2 = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=f * cfg.rebin, ells=cfg.ells)
-                    C2, _ = covariance_cached(tracers[(r, mode)], s2, cfg, os.path.join(od, f'cov_{r}_{ftag(mode)}_{cfg.binning_tag(f * cfg.rebin)}.npz'), log=log)
+                    C2, _ = cov_of(r, mode, s2, f * cfg.rebin)
                     coarse[(r, mode, f)] = (s2, C2)
             if 'GCcomb' in spec and res['gccomb'][0] != 'joint':     # GCcomb = norm-weighted NGC + SGC
                 s2 = None
