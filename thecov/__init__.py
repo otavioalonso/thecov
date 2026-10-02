@@ -18,7 +18,8 @@ from .kernels import PowerSpectrumModel, ShellKernels
 from .windows import TripolarWindow, WindowLibrary, PairHistogram
 from .wigner import wigner_3j, gaunt_tensor, CouplingCoefficients, tri, tri_multi
 from .covariance import GaussianCovariance
+from .smoothing import WindowSmoothing, DensityField
 
 __all__ = ['Tracer', 'Window', 'spectrum_window_pairs', 'PowerSpectrumModel', 'ShellKernels',
            'TripolarWindow', 'WindowLibrary', 'PairHistogram', 'wigner_3j', 'gaunt_tensor', 'CouplingCoefficients',
-           'tri', 'tri_multi', 'GaussianCovariance']
+           'tri', 'tri_multi', 'GaussianCovariance', 'WindowSmoothing', 'DensityField']

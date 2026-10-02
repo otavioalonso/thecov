@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
@@ -49,12 +50,16 @@ class GaussianCovariance:
                 is ~1e-3 and the Monte-Carlo noise ~1e-2).
     n_threads : threads for the pair counts (None: min(16, cpu count)). Window pairs sampled by the
                 same pair of randoms catalogues are counted together, in one pass.
+    smoothing : optional WindowSmoothing (smoothing.py): pair-averaged clustering windows
+                m_A (K_k * m_B) with a xi-based kernel per k-bin instead of the local m_A m_B. Its
+                reference densities and fiducial power must be set; it is built (for the k bins and
+                tracers here) by compute_windows.
     """
 
     def __init__(self, tracers, k_edges, ells=(0, 2, 4), L_max=4, s_max=None, ds=2.0, ds_pair=10.0,
                  shot_noise=True, n_sub=5000, n_near=200000, s_split=80.0, min_pairs=20, seed=0,
                  chunk_pairs=200000, n_shells=16, n_mu=None, backend='auto', n_threads=None,
-                 cell_means='shared'):
+                 cell_means='shared', smoothing=None):
         self.tracers = {t.name: t for t in tracers}
         self.k_edges = np.asarray(k_edges, dtype=float)
         self.nbins = len(self.k_edges) - 1
@@ -74,6 +79,8 @@ class GaussianCovariance:
         self.coeffs = CouplingCoefficients()
         self.kernels = ShellKernels(self.k_edges, self.s)
         self.model: PowerSpectrumModel | None = None
+        self.masked = False
+        self.smoothing = smoothing
         self._I = {}
 
     # ------------------------------------------------------------------ helpers
@@ -81,7 +88,7 @@ class GaussianCovariance:
         return self.tracers[str(name)]
 
     def _pairs(self, X, Y):
-        return spectrum_window_pairs(self._tracer(X), self._tracer(Y), self.shot_noise)
+        return spectrum_window_pairs(self._tracer(X), self._tracer(Y), self.shot_noise, self.smoothing)
 
     def _term_pairs(self, AB, CD, term):
         """(P at x-hat [kernel j, L2], P at x'-hat [kernel i, L1]) for the two Wick terms."""
@@ -130,16 +137,37 @@ class GaussianCovariance:
         self._I[tuple(sorted((str(A), str(B))))] = float(norm)
         return self
 
+    def I_local(self, A, B) -> float:
+        """int m_A m_B (the local-approximation window integral)."""
+        return Window('W', self._tracer(A), self._tracer(B)).integral()
+
+    def I_k(self, A, B) -> np.ndarray:
+        """Per k-bin integral of the clustering window, int m_A (K_k * m_B) with smoothing, else
+        int m_A m_B for every bin: the mean of the estimator is P(k) I_k / I(A, B)."""
+        if self.smoothing is not None and self.smoothing.has(str(A), str(B)):
+            return self.smoothing.I_k(str(A), str(B), self.k_edges)
+        return np.full(self.nbins, self.I_local(A, B))
+
+    def mask_factor(self, A, B, k) -> np.ndarray:
+        """I(A, B) / I_k(k): converts a masked (window-convolved) model into the power spectrum the
+        covariance needs (interpolated between bin centres, constant beyond the first and last)."""
+        centres = 0.5 * (self.k_edges[1:] + self.k_edges[:-1])
+        return self.I(A, B) / np.interp(k, centres, self.I_k(A, B))
+
     def _kernel(self, spec, L, lam):
         if spec[0] == 'S':
             return self.kernels.average(None, lam, tag=('S',))
         A, B = spec[1], spec[2]
+        if self.masked:
+            return self.kernels.average(lambda k: self.model(A, B, L, k) * self.mask_factor(A, B, k), lam,
+                                        tag=('P', A, B, L, 'masked'))
         return self.kernels.average(lambda k: self.model(A, B, L, k), lam, tag=('P', A, B, L))
 
     # ------------------------------------------------------------------ geometry
     def request_windows(self, spectra):
         """Register all window pairs / triples needed for the covariance of the listed spectra."""
         spectra = [tuple(str(x) for x in sp) for sp in spectra]
+        self.build_smoothing(spectra)            # before the windows are listed (they depend on it)
         for AB in spectra:
             for CD in spectra:
                 for term in (1, 2):
@@ -155,8 +183,18 @@ class GaussianCovariance:
                                                 trip.add((Lam1, Lam2, Lam))
                             self.windows.request(omega, omega_p, trip)
 
+    def build_smoothing(self, spectra, log=print):
+        """Build the smoothing (basis, coefficients, smoothed m at the randoms) for the spectra's pairs."""
+        if self.smoothing is not None:
+            pairs = [tuple(str(x) for x in sp) for sp in spectra]
+            todo = [p for p in pairs if not self.smoothing.has(*p)]
+            if todo:
+                self.smoothing.build(self.k_edges, self.tracers, todo, log=log)
+        return self
+
     def compute_windows(self, spectra, verbose=False):
         """Pair counts for everything needed by `spectra` (a list of (A, B) tracer-name pairs)."""
+        self.build_smoothing(spectra, log=print if verbose else (lambda *a: None))
         self.request_windows(spectra)
         t0 = time.time()
         self.windows.compute_all(verbose=verbose)
@@ -166,14 +204,27 @@ class GaussianCovariance:
 
     def save_windows(self, path):
         self.windows.save(path)
+        if self.smoothing is not None:
+            self.smoothing.save(str(path) + '.smoothing.npz')
 
     def load_windows(self, path):
         self.windows.load(path)
+        if self.smoothing is not None and os.path.exists(str(path) + '.smoothing.npz'):
+            self.smoothing.load(str(path) + '.smoothing.npz')
         return self
 
     # ------------------------------------------------------------------ model
-    def set_model(self, model: PowerSpectrumModel):
+    def set_model(self, model: PowerSpectrumModel, masked: bool = False):
+        """The model multipoles P_L^{AB}(k).
+
+        masked=False: the power spectrum itself (e.g. theory), used as is.
+        masked=True : window-convolved multipoles as measured, normalised by I(A, B) (e.g. the mean of
+                      mocks): their mean is P(k) I_k / I(A, B), so they are multiplied by
+                      I(A, B) / I_k (mask_factor). Without smoothing, I_k = int m_A m_B. Set the
+                      estimator's normalisation (set_normalization) first.
+        """
         self.model = model
+        self.masked = bool(masked)
         self.kernels._cache.clear()
         return self
 
@@ -221,9 +272,14 @@ class GaussianCovariance:
                                 c = FOUR_PI ** 4 * (-1) ** ((lam + lamp) // 2) / ((2 * L1 + 1) * (2 * L2 + 1)) * t
                                 Q = self.windows.get(omega, omega_p, Lam1, Lam2, Lam, self.s)
                                 qsum[(lam, lamp)] = qsum.get((lam, lamp), 0.0) + c * Q
+                            ci, cj = omega_p.coeffs_for(self.k_edges), omega.coeffs_for(self.k_edges)   # basis windows
                             for (lam, lamp), q in qsum.items():
                                 u = self._kernel(spec_p, L1, lam)     # (nbins, ns), bin i
                                 v = self._kernel(spec, L2, lamp)      # (nbins, ns), bin j
+                                if ci is not None:
+                                    u = u * ci[:, None]
+                                if cj is not None:
+                                    v = v * cj[:, None]
                                 C += (u * (self.s_weights * q)) @ v.T
         return C / (self.I(*AB) * self.I(*CD))
 

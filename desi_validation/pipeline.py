@@ -15,7 +15,6 @@ from dataclasses import dataclass, asdict
 import numpy as np
 
 from . import desi_compare as dc
-from . import kernel_window as kw
 from . import validation as va
 
 CAPS = ('NGC', 'SGC')
@@ -47,11 +46,14 @@ class Config:
     coarse_factors: tuple = (2,)      # ... this many times wider (2 -> 0.01 h/Mpc)
     fill_random_files: int = 10       # nw 'fill': random files for the footprint fill-fraction map
     fill_nside: int = 512             # ... and its resolution (512 ~ 7 arcmin)
-    kernel_bands: tuple = (0.02, 0.06, 0.12, 0.2, 0.3)   # nw 'kernel': k-band edges of the xi-based kernels
-    kernel_cell: float = 5.0          # ... mesh cell of the smoothing [Mpc/h]
-    kernel_rmax: float = 200.0        # ... kernel truncation (and mesh padding) [Mpc/h]
-    kernel_random_files: int = 10     # ... random files painted for m (independent of the sampling ones)
-    kernel_damping: float = 1.0       # ... Gaussian damping of the extrapolated P at k > kmax [Mpc/h]
+    # nw 'kernel': pair-averaged clustering windows (thecov.WindowSmoothing), a xi-based kernel per k-bin
+    kernel_random_files: int = 10     # reference random files sampling m (denser than the thecov randoms)
+    kernel_cell: float = 4.0          # FFT mesh cell for the smooth part of the kernels [Mpc/h]
+    kernel_r_split: float = 8.0       # direct neighbour sums below this separation [Mpc/h]
+    kernel_rmax: float = 200.0        # kernel truncation (and mesh padding) [Mpc/h]
+    kernel_tol: float = 2e-3          # basis size: relative error on I_k and on the kernels
+    kernel_max_basis: int = 12
+    kernel_damping: float = 1.0       # Gaussian damping of the extrapolated P beyond the measured k [Mpc/h]
     cache_tag: str = ''               # appended to tracer (windows) and covariance cache names, for variants
                                       # whose caches must not be shared (e.g. other target_near_pairs)
 
@@ -106,67 +108,47 @@ def poisson_var_num_shotnoise(rc, scheme='default-FKP'):
 
 
 # --------------------------------------------------------------------------- covariances
-def covariance_cached(tracer, spec, cfg: Config, path, n_near=None, log=print):
+def covariance_cached(tracer, spec, cfg: Config, path, n_near=None, log=print, smoothing=None):
     if os.path.exists(path):
         with np.load(path) as f:
             if f['C'].shape[0] == spec['vectors'].shape[1] and np.allclose(f['k'], spec['k']):
-                return f['C'], dict(I_randoms=float(f['I_randoms']), cached=True)
+                return f['C'], dict(I_randoms=float(f['I_randoms']), cached=True,
+                                    I_k=f['I_k'] if 'I_k' in f.files else None)
     if n_near is None:
         n_near, _ = dc.suggest_n_near(tracer, target_pairs=cfg.target_near_pairs)
     t0 = time.time()
     wfile = os.path.join(os.path.dirname(path), f'windows_{tracer.name}_{CACHE_VERSION}.npz')
-    C, cov = dc.thecov_covariance(tracer, spec, n_sub=cfg.n_sub_far, n_near=n_near, verbose=False, windows_file=wfile,
-                                  model_norm_correction=cfg.model_norm_correction)
-    np.savez(path, C=C, k=spec['k'], I_randoms=cov.I_randoms)
+    C, cov = dc.thecov_covariance(tracer, spec, n_sub=cfg.n_sub_far, n_near=n_near, verbose=False,
+                                  windows_file=wfile, model_norm_correction=cfg.model_norm_correction, smoothing=smoothing)
+    np.savez(path, C=C, k=spec['k'], I_randoms=cov.I_randoms, I_k=cov.I_k_bins)
     log(f'    {os.path.basename(path)}: n_near {n_near}, {time.time() - t0:.0f} s')
-    return C, dict(I_randoms=cov.I_randoms, cached=False, cov=cov)
+    return C, dict(I_randoms=cov.I_randoms, I_k=cov.I_k_bins, cached=False, cov=cov)
 
 
-def kernel_tag(cfg: Config):
-    """short hash of the kernel settings (cache names)"""
-    import hashlib
-    key = repr((tuple(cfg.kernel_bands), cfg.kernel_cell, cfg.kernel_rmax, cfg.kernel_random_files, cfg.kernel_damping))
-    return hashlib.md5(key.encode()).hexdigest()[:6]
-
-
-def band_combine(Cs, k_vec, band_edges):
-    """Covariance from per-band matrices: element (i, j) interpolated linearly in k_mid = sqrt(k_i k_j)
-    between the band centres (constant beyond the first and last)."""
-    centres = 0.5 * (np.asarray(band_edges[:-1]) + np.asarray(band_edges[1:]))
-    kmid = np.sqrt(np.outer(k_vec, k_vec))
-    C = np.zeros_like(Cs[0])
-    for b, Cb in enumerate(Cs):
-        e = np.zeros(len(centres)); e[b] = 1.0
-        C += np.interp(kmid, centres, e) * Cb
-    return 0.5 * (C + C.T)
-
-
-def kernel_band_tracers(paths, tracer_bin, r, reg, spec_r, cfg, sn, log=print):
-    """Tracers with NW = (K_b * m) for each k-band b, m painted from cfg.kernel_random_files random files.
-    Returns (tracers, infos, diagnostics)."""
+def kernel_smoothing(paths, tracer_bin, r, name, spec_r, cfg: Config, log=print):
+    """thecov.WindowSmoothing for the tracer `name` of region r: reference density from
+    cfg.kernel_random_files random files, kernel shape from the mocks' mean monopole."""
+    from thecov import WindowSmoothing
+    sm = WindowSmoothing(cell=cfg.kernel_cell, r_split=cfg.kernel_r_split, r_max=cfg.kernel_rmax, tol=cfg.kernel_tol,
+                         max_basis=cfg.kernel_max_basis, damping=cfg.kernel_damping)
     rcK = dc.load_region(paths, tracer_bin, r, n_random_files=cfg.kernel_random_files)
     wK = dc.total_weight(rcK.randoms)
     aK = float(np.sum(dc.total_weight(rcK.data)) / np.sum(wK))
-    pos = dc.sky_to_cartesian(rcK.randoms['RA'], rcK.randoms['DEC'], rcK.randoms['Z'])
-    sm = kw.KernelSmoother(pos, wK, aK, cell=cfg.kernel_cell, rmax=cfg.kernel_rmax, log=log)
-    n_painted = len(wK)
-    del rcK, pos, wK
+    sm.add_density(name, dc.sky_to_cartesian(rcK.randoms['RA'], rcK.randoms['DEC'], rcK.randoms['Z']), wK, aK)
+    log(f'  {r}: kernel reference density from {len(wK)} randoms ({cfg.kernel_random_files} files)')
+    del rcK
     nb = len(spec_r['k'])
-    rg, Ks, rawn = kw.region_kernels(spec_r['k'], spec_r['vectors'][:, :nb].mean(0), cfg.kernel_bands,
-                                     rmax=cfg.kernel_rmax, damping=cfg.kernel_damping)
-    tag = kernel_tag(cfg)
-    trs, infs = [], []
-    for b, K in enumerate(Ks):
-        name = f'{tracer_bin}_{r}_kern{b}_{tag}{cfg.cache_tag}'
-        tr, inf = dc.build_tracer(name, [reg], nw='kernel', n_randoms_max=cfg.n_randoms_max // 2,
-                                  surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn,
-                                  kernel_field={r: (lambda p, K=K: sm.smooth_at(rg, K, p))})
-        trs.append(tr); infs.append(inf)
-    diag = dict(bands=list(cfg.kernel_bands), widths=[kw.effective_width(rg, K) for K in Ks],
-                raw_norm_over_P=rawn, n_painted=n_painted)
-    log(f'  {r}: kernel bands {list(cfg.kernel_bands)}, rms widths ' + ', '.join(f'{w:.1f}' for w in diag['widths'])
-        + f' Mpc/h; m painted from {n_painted} randoms ({cfg.kernel_random_files} files)')
-    return trs, infs, diag
+    sm.set_power(name, name, spec_r['k'], spec_r['vectors'][:, :nb].mean(0))
+    return sm
+
+
+def kernel_name(tracer_bin, r, spec_r, cfg: Config):
+    """tracer name of the kernel mode (windows cache): settings and kernel shape hashed"""
+    import hashlib
+    nb = len(spec_r['k'])
+    key = repr((cfg.kernel_random_files, cfg.kernel_cell, cfg.kernel_r_split, cfg.kernel_rmax, cfg.kernel_tol,
+                cfg.kernel_max_basis, cfg.kernel_damping, np.round(spec_r['vectors'][:, :nb].mean(0), 3).tolist()))
+    return f'{tracer_bin}_{r}_kernel_{hashlib.md5(key.encode()).hexdigest()[:6]}{cfg.cache_tag}'
 
 
 def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
@@ -222,36 +204,40 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
         res['fill_median'] = {r: float(np.median(f[f > 0])) for r, f in fill.items()}
     covs, info, tracers = {}, {}, {}
 
+    smoothings = {}
+
     def cov_of(r, mode, s_, rebin):
-        """covariance of (region, mode) for spectra s_ (cached); the 'kernel' mode combines its bands"""
-        if mode == 'kernel':
-            k_vec = np.tile(s_['k'], len(cfg.ells))
-            Cs, Is = [], []
-            for b, tr_b in enumerate(tracers[(r, mode)]):
-                path = os.path.join(od, f'cov_{r}_kernel{b}_{kernel_tag(cfg)}{cfg.cache_tag}_{cfg.binning_tag(rebin)}.npz')
-                Cb, cib = covariance_cached(tr_b, s_, cfg, path, log=log)
-                Cs.append(Cb); Is.append(cib['I_randoms'])
-            return band_combine(Cs, k_vec, cfg.kernel_bands), dict(I_randoms=float(np.mean(Is)), I_bands=Is)
+        """covariance of (region, mode) for spectra s_ (cached)"""
         return covariance_cached(tracers[(r, mode)], s_, cfg,
-                                 os.path.join(od, f'cov_{r}_{ftag(mode)}_{cfg.binning_tag(rebin)}.npz'), log=log)
+                                 os.path.join(od, f'cov_{r}_{tracers[(r, mode)].name if mode == "kernel" else ftag(mode)}_'
+                                                  f'{cfg.binning_tag(rebin)}.npz'), log=log, smoothing=smoothings.get((r, mode)))
 
     for r in caps:
         for mode in modes:
             name = f'{tracer_bin}_{r}' + suffix.get(mode, '_' + mode + cfg.cache_tag)
             sn = spec[r]['num_shotnoise'].mean() if (cfg.shotnoise_from_files and r in spec) else None
             if mode == 'kernel':
-                trs, infs, kdiag = kernel_band_tracers(paths, tracer_bin, r, regs[r], spec[r] if r in spec else spec['GCcomb'],
-                                                       cfg, sn, log=log)
-                tracers[(r, mode)] = trs
-                info[(r, mode)] = dict(infs[0], kernel=kdiag, regions=infs[0]['regions'])
+                spec_r = spec[r] if r in spec else spec['GCcomb']
+                kname = kernel_name(tracer_bin, r, spec_r, cfg)
+                tr, inf = dc.build_tracer(kname, [regs[r]], nw='random-density', n_randoms_max=cfg.n_randoms_max // 2,
+                                          surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn)
+                tracers[(r, mode)], info[(r, mode)] = tr, inf
+                cached = r in spec and os.path.exists(os.path.join(od, f'cov_{r}_{kname}_{cfg.binning_tag()}.npz'))
+                if not cached and not os.path.exists(windows_path(out_dir, tracer_bin, kname) + '.smoothing.npz'):
+                    smoothings[(r, mode)] = kernel_smoothing(paths, tracer_bin, r, kname, spec_r, cfg, log=log)
+                else:                                   # windows (and smoothing state) cached
+                    from thecov import WindowSmoothing
+                    smoothings[(r, mode)] = WindowSmoothing()
                 if r in spec:
                     C, ci = cov_of(r, mode, spec[r], cfg.rebin)
                     covs[(r, mode)] = C
                     norm_r = spec[r]['norm'].mean()
-                    info[(r, mode)].update(I_over_norm=ci['I_randoms'] / norm_r,
-                                           I_over_norm_bands=[I / norm_r for I in ci['I_bands']])
-                    log(f'  {r} kernel: int m (K_b * m) / norm per band = '
-                        + ', '.join(f'{I / norm_r:.4f}' for I in ci['I_bands']))
+                    inf.update(I_over_norm=ci['I_randoms'] / norm_r,
+                               I_k_over_norm=None if ci.get('I_k') is None else (np.asarray(ci['I_k']) / norm_r).tolist())
+                    if ci.get('I_k') is not None:
+                        Ik = np.asarray(ci['I_k']) / norm_r
+                        log(f'  {r} kernel: int m (K_k * m) / norm = {Ik[0]:.4f} (first bin) ... {Ik[len(Ik) // 2]:.4f} ... '
+                            f'{Ik[-1]:.4f} (last); int m^2 / norm = {ci["I_randoms"] / norm_r:.4f}')
                 continue
             tr, inf = dc.build_tracer(name, [regs[r]], nw=mode, n_randoms_max=cfg.n_randoms_max // 2,
                                       surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn,

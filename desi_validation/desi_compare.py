@@ -843,29 +843,39 @@ def model_from_mocks(spec, scale=1.0):
 
 
 def thecov_covariance(tracer, spec, n_sub=20000, n_near=1_000_000, ds=2.0, ds_pair=10.0, s_split=80.0,
-                      L_max=4, norm=None, windows_file=None, verbose=True, model_norm_correction=True, **kwargs):
+                      L_max=4, norm=None, windows_file=None, verbose=True, model_norm_correction=True,
+                      power_input=None, smoothing=None, **kwargs):
     """thecov's matrix for the data vector of `spec` (same k bins and ells), normalised by the
-    estimator's `norm` (default: the mean over the mocks). The model is the mocks' mean, times
-    norm / int m^2 if model_norm_correction (see model_from_mocks). Returns (C, cov)."""
+    estimator's `norm` (default: the mean over the mocks). The model is the mocks' mean.
+
+    power_input: 'masked' -- the model is window-convolved (the mocks' mean): thecov multiplies it by
+                 norm / I_k, with I_k = int m^2 or, with `smoothing` (thecov.WindowSmoothing), the
+                 pair-averaged int m (K_k * m) per k-bin; 'unmasked' -- used as is (e.g. theory).
+                 Default from model_norm_correction (True -> 'masked').
+    Returns (C, cov); cov.I_randoms = int m^2 (local) and cov.I_k_bins the per-bin window integrals."""
     from thecov import GaussianCovariance, PowerSpectrumModel
+    power_input = power_input or ('masked' if model_norm_correction else 'unmasked')
     name = tracer.name
     cov = GaussianCovariance([tracer], spec['k_edges'], ells=spec['ells'], L_max=L_max, ds=ds, ds_pair=ds_pair,
-                             shot_noise=True, n_sub=n_sub, n_near=n_near, s_split=s_split, **kwargs)
+                             shot_noise=True, n_sub=n_sub, n_near=n_near, s_split=s_split, smoothing=smoothing, **kwargs)
     sp = [(name, name)]
     if windows_file and os.path.exists(windows_file):
         cov.load_windows(windows_file)
     else:
+        if smoothing is not None:
+            cov.build_smoothing(sp, log=print)
         cov.compute_windows(sp, verbose=verbose)
         if windows_file:
             cov.save_windows(windows_file)
     norm = float(np.mean(spec['norm'])) if norm is None else float(norm)
-    I_thecov = cov.I(name, name)
-    model = PowerSpectrumModel()
-    model.add((name, name), model_from_mocks(spec, scale=norm / I_thecov if model_norm_correction else 1.0))
-    cov.set_model(model)
+    I_local = cov.I_local(name, name)
     cov.set_normalization(name, name, norm)
+    model = PowerSpectrumModel()
+    model.add((name, name), model_from_mocks(spec))
+    cov.set_model(model, masked=(power_input == 'masked'))
     C, _ = cov.covariance(sp, ells=spec['ells'])
-    cov.I_randoms = I_thecov
+    cov.I_randoms = I_local
+    cov.I_k_bins = cov.I_k(name, name)
     return C, cov
 
 

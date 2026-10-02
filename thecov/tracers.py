@@ -175,9 +175,17 @@ class Tracer:
 
 
 class Window:
-    """omega(x) = nbar_host(x) * tilde_omega(x), sampled by the randoms of `host`."""
+    """omega(x) = nbar_host(x) * tilde_omega(x), sampled by the randoms of `host`.
 
-    def __init__(self, kind: str, A: Tracer, B: Tracer | None = None):
+    With `smoothing` (a WindowSmoothing) and `basis` b, the clustering window is the pair-averaged
+    W_b^{AB}(x) = m_A(x) (K_b * m_B)(x) instead of m_A m_B (see smoothing.py); `coeffs` then gives the
+    per-k-bin coefficients c_ib of K_{k_i} = sum_b c_ib K_b.
+    """
+
+    def __init__(self, kind: str, A: Tracer, B: Tracer | None = None, smoothing=None, basis: int | None = None):
+        self.smoothing, self.basis = smoothing, basis
+        if basis is not None and (kind != 'W' or smoothing is None):
+            raise ValueError("a basis index needs kind 'W' and a smoothing")
         if kind == 'W':
             if B is None:
                 raise ValueError("clustering window needs two tracers")
@@ -191,6 +199,15 @@ class Window:
             raise ValueError("kind must be 'W' or 'S'")
         self.kind = kind
         self.key = (kind,) + tuple(t.name for t in self.tracers)
+        if basis is not None:
+            self.key = self.key + (f'k{basis}:{smoothing.tag}',)
+
+    def coeffs_for(self, k_edges):
+        """(nbins,) coefficients of this basis window in each k-bin (None for an unsmoothed window)."""
+        if self.basis is None:
+            return None
+        A, B = self.tracers
+        return self.smoothing.coeffs(A.name, B.name, k_edges)[:, self.basis]
 
     @property
     def host(self) -> Tracer:
@@ -207,7 +224,9 @@ class Window:
         A = self.host
         cache = A.__dict__.setdefault('_tilde_cache', {})
         if self.key not in cache:
-            if self.kind == 'W':
+            if self.kind == 'W' and self.basis is not None:
+                cache[self.key] = A.w * self.smoothing.values(A.name, self.tracers[1].name, self.basis, A.name)
+            elif self.kind == 'W':
                 m, _ = self.tracers[1].mw_w_at_randoms_of(A)
                 cache[self.key] = A.w * m
             else:
@@ -222,6 +241,9 @@ class Window:
         s = 0 anchor of window pairs that involve S.
         """
         if self.kind == 'W':
+            if self.basis is not None:
+                raise NotImplementedError('pair-averaged windows are evaluated at tracer randoms only '
+                                          '(value_at_host_randoms)')
             A, B = self.tracers
             return A.nw_at(positions) * B.nw_at(positions)
         A = self.host
@@ -236,7 +258,10 @@ class Window:
         """value_at(T.pos), cached on T (each needs a nearest-random lookup at every random of T)."""
         cache = T.__dict__.setdefault('_value_cache', {})
         if self.key not in cache:
-            if self.kind == 'W':
+            if self.kind == 'W' and self.basis is not None:
+                A, B = self.tracers
+                cache[self.key] = A.mw_w_at_randoms_of(T)[0] * self.smoothing.values(A.name, B.name, self.basis, T.name)
+            elif self.kind == 'W':
                 A, B = self.tracers
                 cache[self.key] = A.mw_w_at_randoms_of(T)[0] * B.mw_w_at_randoms_of(T)[0]
             else:
@@ -262,13 +287,18 @@ class Window:
         return "Window" + str(self.key)
 
 
-def spectrum_window_pairs(A: Tracer, B: Tracer, shot_noise: bool = True):
+def spectrum_window_pairs(A: Tracer, B: Tracer, shot_noise: bool = True, smoothing=None):
     """The set P^{AB} of (window, spectrum-label) pairs, eq. pairs of the note.
 
     Spectrum labels: ('P', nameA, nameB) for the clustering multipoles and ('S', nameA) for
-    shot noise (p_L = delta_{L0}).
+    shot noise (p_L = delta_{L0}). With a built `smoothing` for (A, B), the clustering window is
+    replaced by its pair-averaged basis windows (each with its per-k-bin coefficients).
     """
-    pairs = [(Window('W', A, B), ('P',) + tuple(sorted((A.name, B.name))))]
+    spec = ('P',) + tuple(sorted((A.name, B.name)))
+    if smoothing is not None and smoothing.has(A.name, B.name):
+        pairs = [(Window('W', A, B, smoothing=smoothing, basis=b), spec) for b in range(smoothing.n_basis(A.name, B.name))]
+    else:
+        pairs = [(Window('W', A, B), spec)]
     if shot_noise and A.name == B.name:
         pairs.append((Window('S', A), ('S', A.name)))
     return pairs

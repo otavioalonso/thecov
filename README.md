@@ -105,6 +105,33 @@ bin width of the pair counts (Q is smooth; 10 Mpc/h is fine); `n_sub`, `n_near`,
 below; `s_max` — defaults to the bounding box of the randoms. The model k grid must cover the
 covariance bins (down to k = 0 if the first bin starts there).
 
+### Masked or unmasked model power, and pair-averaged windows (`thecov/smoothing.py`)
+
+`cov.set_model(model, masked=False)` uses the model multipoles as the power spectrum itself (e.g.
+theory). With `masked=True` the model is taken to be window-convolved and normalised like the
+estimator (e.g. the mean of mocks): its mean is `P(k) I_k / I`, so thecov multiplies it by
+`I / I_k` (`cov.mask_factor`). Set the estimator's normalisation (`set_normalization`) first.
+
+The clustering terms contain `m(x) m(x + r)` over a correlation length, which the default local
+approximation replaces by `m(x)^2`. Near window structure smaller than a correlation length (veto
+holes, footprint edges, completeness patches) this underestimates the Gaussian variance (by ~7% for
+DESI DR2 LRG1). `WindowSmoothing` replaces it by the pair-averaged window
+`W_k = m_A (K_k * m_B)`, `K_k(r) = xi(r) e^{ik.r} / P(k)` (isotropic: `xi_0 j_0(kr) / P_0`), per
+k-bin, with no free smoothing scale; then `I_k = int W_k` per bin:
+
+    sm = WindowSmoothing()                                  # cell, r_split, r_max, tol: numerical only
+    sm.add_density('LRG', ref_pos, ref_w, ref_alpha)        # dense reference randoms (several files)
+    sm.set_power('LRG', 'LRG', k, P0)                       # fiducial shape (amplitude cancels)
+    cov = GaussianCovariance([lrg], k_edges, ..., smoothing=sm)
+    cov.compute_windows([('LRG', 'LRG')])
+    cov.set_normalization('LRG', 'LRG', norm)
+    cov.set_model(model, masked=True)
+
+The per-bin kernels are expanded on a small basis (typically 5-10 kernels for 1e-3 accuracy on
+`I_k`), so the windows are pair counts of basis pairs, all in one pass; other binnings reuse them
+(coefficients projected on the basis). `(K_b * m)` is evaluated at the randoms by direct neighbour
+sums below `r_split` (the kernel is steep there) and an FFT above. Tests: `tests/test_smoothing.py`.
+
 ## Accuracy and cost
 
 * **Counting is split from contracting.** Because x' = x + s, the tripolar weight depends on a pair

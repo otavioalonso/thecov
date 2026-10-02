@@ -39,7 +39,6 @@ def main():
     ap.add_argument('--bins', nargs='+', default=['LRG1', 'QSO'])
     ap.add_argument('--modes', nargs='+', default=['random-density', 'nx'])
     ap.add_argument('--fill-nside', type=int, default=512, help="nw 'fill': healpix resolution of the fill fraction")
-    ap.add_argument('--kernel-bands', nargs='+', type=float, default=None, help="nw 'kernel': k-band edges")
     ap.add_argument('--kernel-cell', type=float, default=None, help="nw 'kernel': smoothing mesh cell [Mpc/h]")
     ap.add_argument('--target-near-pairs', type=float, default=None, help='pair-count sampling (default: Config)')
     ap.add_argument('--n-randoms-max', type=float, default=None, help='randoms kept for thecov, all regions (default: Config)')
@@ -66,8 +65,6 @@ def main():
     extra = dict(fill_nside=args.fill_nside, cache_tag=args.cache_tag)
     if args.target_near_pairs:
         extra['target_near_pairs'] = args.target_near_pairs
-    if args.kernel_bands:
-        extra['kernel_bands'] = tuple(args.kernel_bands)
     if args.kernel_cell:
         extra['kernel_cell'] = args.kernel_cell
     if args.regions:
@@ -81,7 +78,7 @@ def main():
         dc.TRACER_SPECS.clear(); dc.TRACER_SPECS['TEST'] = ('LRG', (0.4, 0.6))
         cfg = dataclasses.replace(cfg, surface_density=150.0, kmax=0.1, kmin=0.02, target_near_pairs=3e8, n_sub_far=5000,
                                   fill_random_files=1, fill_nside=128,
-                                  kernel_random_files=1, kernel_bands=(0.02, 0.05, 0.1))
+                                  kernel_random_files=1, kernel_cell=6.0, kernel_rmax=120.0)
         OUT, args.bins = args.synthetic + '/results_dump', ['TEST']
     log(f'{args.label}: catalogues {paths.cs_version} mock {paths.mock}, spectra {paths.spectra_dir}, caches {OUT}')
 
