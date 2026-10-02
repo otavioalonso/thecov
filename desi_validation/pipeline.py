@@ -51,8 +51,9 @@ class Config:
     kernel_cell: float = 4.0          # FFT mesh cell for the smooth part of the kernels [Mpc/h]
     kernel_r_split: float = 8.0       # direct neighbour sums below this separation [Mpc/h]
     kernel_rmax: float = 200.0        # kernel truncation (and mesh padding) [Mpc/h]
-    kernel_tol: float = 2e-3          # basis size: relative error on I_k and on the kernels
-    kernel_max_basis: int = 12
+    kernel_tol: float = 2e-3          # basis sizes: relative error on I_k, the kernels and the windows
+    kernel_max_kernels: int = 48      # stage 1 (kernel basis; ~20 needed for 0.005 bins to k = 0.3)
+    kernel_max_basis: int | None = None   # stage 2 (window basis, enters the pair counts as B^2); None: by tol
     kernel_damping: float = 1.0       # Gaussian damping of the extrapolated P beyond the measured k [Mpc/h]
     cache_tag: str = ''               # appended to tracer (windows) and covariance cache names, for variants
                                       # whose caches must not be shared (e.g. other target_near_pairs)
@@ -130,7 +131,8 @@ def kernel_smoothing(paths, tracer_bin, r, name, spec_r, cfg: Config, log=print)
     cfg.kernel_random_files random files, kernel shape from the mocks' mean monopole."""
     from thecov import WindowSmoothing
     sm = WindowSmoothing(cell=cfg.kernel_cell, r_split=cfg.kernel_r_split, r_max=cfg.kernel_rmax, tol=cfg.kernel_tol,
-                         max_basis=cfg.kernel_max_basis, damping=cfg.kernel_damping)
+                         max_basis=cfg.kernel_max_basis, max_kernels=cfg.kernel_max_kernels,
+                         damping=cfg.kernel_damping)
     rcK = dc.load_region(paths, tracer_bin, r, n_random_files=cfg.kernel_random_files)
     wK = dc.total_weight(rcK.randoms)
     aK = float(np.sum(dc.total_weight(rcK.data)) / np.sum(wK))
@@ -147,7 +149,7 @@ def kernel_name(tracer_bin, r, spec_r, cfg: Config):
     import hashlib
     nb = len(spec_r['k'])
     key = repr((cfg.kernel_random_files, cfg.kernel_cell, cfg.kernel_r_split, cfg.kernel_rmax, cfg.kernel_tol,
-                cfg.kernel_max_basis, cfg.kernel_damping, np.round(spec_r['vectors'][:, :nb].mean(0), 3).tolist()))
+                cfg.kernel_max_basis, cfg.kernel_max_kernels, cfg.kernel_damping, np.round(spec_r['vectors'][:, :nb].mean(0), 3).tolist()))
     return f'{tracer_bin}_{r}_kernel_{hashlib.md5(key.encode()).hexdigest()[:6]}{cfg.cache_tag}'
 
 

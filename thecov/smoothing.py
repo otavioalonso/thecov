@@ -12,10 +12,16 @@ estimator's normalisation (see reports / the note window_kernel). The kernel is 
 free smoothing scale.
 
 Implementation (isotropic kernel, angle average xi_0(r) j_0(k r) / P_0(k), averaged over each k-bin):
-* the per-bin kernels K_i(r) are expanded on a small basis, K_i ~ sum_b c_ib K_b, chosen by a
-  weighted SVD with the window's own autocorrelation as the metric (the error on I_k is controlled
-  exactly), so that W_{k_i} = sum_b c_ib W_b and the pair counts are done once per basis pair (all in
-  the same pass, as extra weight columns);
+* two-stage compression, so that W_{k_i} = sum_b c_ib W_b and the pair counts are done once per basis
+  pair (all in the same pass, as extra weight columns):
+  1. the per-bin kernels K_i(r) are expanded on a kernel basis, K_i ~ sum_a d_ia K_a (weighted SVD with
+     the window's own autocorrelation as the metric). This basis is converged to `tol` (typically ~20
+     kernels for 0.005 bins up to k = 0.3: at large r the kernels oscillate as j_0(k r) and are nearly
+     orthogonal), and (K_a * m_B) is evaluated at the randoms for each of them. I_k comes from this stage;
+  2. the smoothed windows (K_i * m_B)(x) at the randoms are much lower rank than the kernels (the
+     oscillating large-r tails average against a smooth window): they are compressed again by an SVD
+     in the metric int m_A^2 v v', to the B window basis functions that enter the pair counts
+     (the cost of the covariance pair counts grows as B^2);
 * (K_b * m_B) is evaluated at the randoms of every tracer by a direct neighbour sum over a reference
   random catalogue of B for r < r_split (where the kernel is steep: xi ~ r^-1.8) and an FFT of the
   reference randoms painted on a mesh for the smooth remainder. The reference randoms should be denser
@@ -248,17 +254,20 @@ class WindowSmoothing:
     r_split  : the kernels are split at r_split (smooth cos^2 taper of half-width `taper_width`):
                direct neighbour sums below, FFT above
     r_max    : kernel truncation [Mpc/h]; also the zero-padding of the mesh
-    tol      : basis size: smallest B with relative errors on I_k and on the kernels (window-weighted
-               L2) below tol for every bin
-    max_basis: upper limit on B
+    tol      : basis sizes: the smallest kernel basis with relative errors on I_k and on the kernels
+               (window-weighted L2) below tol for every bin; then the smallest window basis B with relative
+               errors on I_k and on the windows m_A (K_k * m_B) (L2 over the survey) below tol
+    max_kernels: upper limit on the kernel basis (stage 1)
+    max_basis: upper limit on B (stage 2; None: set by tol only)
     damping  : Gaussian damping [Mpc/h] of the power extrapolated beyond the tabulated k range
     """
 
     def __init__(self, cell=3.0, r_split=8.0, taper_width=2.0, r_max=200.0, dr=0.25, tol=2e-3,
-                 max_basis=12, damping=1.0, workers=None):
+                 max_basis=None, max_kernels=48, damping=1.0, workers=None):
         self.cell, self.r_split, self.taper_width = float(cell), float(r_split), float(taper_width)
         self.r_max, self.dr = float(r_max), float(dr)
-        self.tol, self.max_basis, self.damping = float(tol), int(max_basis), float(damping)
+        self.tol, self.damping = float(tol), float(damping)
+        self.max_basis, self.max_kernels = (None if max_basis is None else int(max_basis)), int(max_kernels)
         self.workers = workers
         self.r = np.arange(self.dr / 2, self.r_max, self.dr)
         self._densities = {}
@@ -290,7 +299,7 @@ class WindowSmoothing:
         if getattr(self, '_loaded_tag', None):
             return self._loaded_tag
         key = repr((self.cell, self.r_split, self.taper_width, self.r_max, self.dr, self.tol, self.max_basis,
-                    self.damping, sorted((k, float(np.sum(v[0])), float(np.sum(v[1]))) for k, v in self._power.items())))
+                    self.max_kernels, self.damping, sorted((k, float(np.sum(v[0])), float(np.sum(v[1]))) for k, v in self._power.items())))
         return hashlib.md5(key.encode()).hexdigest()[:8]
 
     def has(self, A, B):
@@ -299,28 +308,38 @@ class WindowSmoothing:
     def n_basis(self, A, B):
         return self._pairs[self.pair_key(A, B)]['n_basis']
 
-    def coeffs(self, A, B, k_edges=None):
-        """(nbins, n_basis) coefficients c_ib of the k-bins `k_edges` (default: those of build). Other
-        binnings are projected on the basis (the windows, i.e. the pair counts, do not depend on it)."""
+    def kernel_coeffs(self, A, B, k_edges=None):
+        """(nbins, n_kernels) coefficients d_ia of the k-bin kernels on the kernel basis (stage 1). Other
+        binnings are projected on the basis (the smoothing and the pair counts do not depend on it)."""
         p = self._pairs[self.pair_key(A, B)]
         if k_edges is None or (len(k_edges) == len(p['k_edges']) and np.allclose(k_edges, p['k_edges'])):
-            return p['coeffs']
+            return p['kcoeffs']
         ck = ('proj', tuple(np.round(np.asarray(k_edges, float), 10)))
         if ck not in p:
             Ki = bin_kernels(np.asarray(k_edges, float), self.r, p['xi'])
             p[ck] = (Ki * p['sw'][None, :]) @ (p['basis'] * p['sw'][None, :]).T    # basis orthonormal in the metric
         return p[ck]
 
+    def coeffs(self, A, B, k_edges=None):
+        """(nbins, n_basis) coefficients c_ib of the k-bins `k_edges` (default: those of build) on the
+        window basis W_b, whose pair counts enter the covariance."""
+        p = self._pairs[self.pair_key(A, B)]
+        if k_edges is None or (len(k_edges) == len(p['k_edges']) and np.allclose(k_edges, p['k_edges'])):
+            return p['coeffs']
+        return self.kernel_coeffs(A, B, k_edges) @ p['proj']
+
     def integrals(self, A, B):
-        """I_b = int m_A (K_b * m_B), from the randoms of the host A (alpha_A sum_r w_r (K_b * m_B))."""
+        """I_a = int m_A (K_a * m_B) for the kernel basis, from the randoms of the host A
+        (alpha_A sum_r w_r (K_a * m_B))."""
         return self._pairs[self.pair_key(A, B)]['I_b']
 
     def I_k(self, A, B, k_edges=None):
-        """I_{k_i} = int m_A (K_{k_i} * m_B) per k-bin."""
-        return self.coeffs(A, B, k_edges) @ self.integrals(A, B)
+        """I_{k_i} = int m_A (K_{k_i} * m_B) per k-bin (from the converged kernel basis)."""
+        return self.kernel_coeffs(A, B, k_edges) @ self.integrals(A, B)
 
     def values(self, A, B, b, at):
-        """(K_b * m_B)(x) at the randoms of tracer `at` (B the partner of the canonical pair)."""
+        """(K_b * m_B)(x) of window basis function b at the randoms of tracer `at` (B the partner of the
+        canonical pair)."""
         return self._values[self.pair_key(A, B)][str(at)][b]
 
     # -- build
@@ -339,7 +358,7 @@ class WindowSmoothing:
         sw = np.sqrt(w)
         U, S, Vt = np.linalg.svd(Ki * sw[None, :], full_matrices=False)
         Iex = Ki @ w
-        for nb in range(1, min(self.max_basis, len(S)) + 1):
+        for nb in range(1, min(self.max_kernels, len(S)) + 1):
             rec = (U[:, :nb] * S[:nb]) @ Vt[:nb] / sw[None, :]
             err_I = np.max(np.abs((rec - Ki) @ w) / np.abs(Iex))
             err_K = np.max(np.sqrt(((rec - Ki) ** 2 * w).sum(1) / (Ki ** 2 * w).sum(1)))
@@ -349,10 +368,33 @@ class WindowSmoothing:
         coeffs = U[:, :nb] * S[:nb]                       # (nbins, nb)
         widths = [float(np.sqrt(abs(np.trapezoid(4 * np.pi * self.r ** 4 * K, self.r)
                                     / np.trapezoid(4 * np.pi * self.r ** 2 * K, self.r)))) for K in Ki[[0, len(Ki) // 2, -1]]]
-        log(f'  smoothing {key}: {nb} basis kernels (errors: I_k {err_I:.1e}, kernels {err_K:.1e}); '
+        log(f'  smoothing {key}: {nb} kernels (errors: I_k {err_I:.1e}, kernels {err_K:.1e}); '
             f'kernel rms widths {widths[0]:.1f} / {widths[1]:.1f} / {widths[2]:.1f} Mpc/h (first / middle / last bin)')
         return basis, coeffs, dict(err_I=float(err_I), err_K=float(err_K), widths=widths, sw=sw, xi=xi,
                                    k_edges=np.asarray(k_edges, float))
+
+    def _window_basis(self, d, v, host, I_a):
+        """Stage 2: compress the smoothed windows v_i = sum_a d_ia v_a (v_a = (K_a * m_B) at the host's
+        randoms) in the metric G_aa' = int m_A^2 v_a v_a' (alpha sum_r w_r mw_r v_a v_a'). Returns the
+        projection P (n_kernels, B) with c = d P, the coefficients c, the window basis T (B, n_kernels),
+        W_j = sum_a T_ja W_a, and the errors on I_k and on the windows."""
+        v = v.astype(float)
+        G = host.alpha * (v * (host.w * host.mw)[None, :]) @ v.T
+        g, E = np.linalg.eigh(0.5 * (G + G.T))
+        g = np.maximum(g, g.max() * 1e-14)
+        L, Linv = E * np.sqrt(g)[None, :], (E / np.sqrt(g)[None, :]).T          # G = L L^T
+        M = d @ L
+        U, S, Vt = np.linalg.svd(M, full_matrices=False)
+        Iex = d @ I_a
+        nmax = len(S) if self.max_basis is None else min(self.max_basis, len(S))
+        for nb in range(1, nmax + 1):
+            R = M - (U[:, :nb] * S[:nb]) @ Vt[:nb]
+            err_W = np.max(np.linalg.norm(R, axis=1) / np.linalg.norm(M, axis=1))
+            err_I = np.max(np.abs((R @ Linv) @ I_a) / np.abs(Iex))
+            if max(err_W, err_I) < self.tol:
+                break
+        P = L @ Vt[:nb].T                     # (n_kernels, B): c = d P
+        return P, d @ P, Vt[:nb] @ Linv, dict(err_W=float(err_W), err_I=float(err_I))
 
     def build(self, k_edges, tracers, pairs, log=print):
         """Basis, coefficients, and (K_b * m_B) at the randoms of every tracer, for each pair (A, B).
@@ -367,8 +409,8 @@ class WindowSmoothing:
                 raise ValueError(f"no fiducial power for {key}: set_power first")
             t0 = time.time()
             basis, coeffs, diag = self._basis(k_edges, key, log)
-            T = taper(self.r, self.r_split, self.taper_width)
-            near, far = basis * T[None, :], basis * (1 - T)[None, :]
+            tp = taper(self.r, self.r_split, self.taper_width)
+            near, far = basis * tp[None, :], basis * (1 - tp)[None, :]
             dens = self._densities[key[1]]
             vals = {}
             for name, tr in tracers.items():
@@ -377,11 +419,16 @@ class WindowSmoothing:
                 vals[name] = v.astype(np.float32)
             host = tracers[key[0]]
             I_b = host.alpha * (vals[key[0]].astype(float) @ host.w)
-            self._values[key] = vals
-            self._pairs[key] = dict(coeffs=coeffs, I_b=I_b, n_basis=len(basis), basis=basis, **diag)
-            log(f'  smoothing {key}: built in {time.time() - t0:.0f} s; I_k / int m_A m_B (first, last bin) = '
-                f'{(coeffs @ I_b)[0] / (host.alpha * float(np.sum(host.w * host.mw))):.4f}, '
-                f'{(coeffs @ I_b)[-1] / (host.alpha * float(np.sum(host.w * host.mw))):.4f}')
+            proj, wcoeffs, T, d2 = self._window_basis(coeffs, vals[key[0]], host, I_b)
+            self._values[key] = {n: (T @ v.astype(float)).astype(np.float32) for n, v in vals.items()}
+            self._pairs[key] = dict(kcoeffs=coeffs, coeffs=wcoeffs, proj=proj, I_b=I_b,
+                                    n_basis=len(T), n_kernels=len(basis), basis=basis,
+                                    err_IW=d2['err_I'], err_W=d2['err_W'], **diag)
+            Ik = self.I_k(*key)
+            loc = host.alpha * float(np.sum(host.w * host.mw))
+            log(f'  smoothing {key}: {len(basis)} kernels -> {len(T)} windows (errors: I_k {d2["err_I"]:.1e}, '
+                f'windows {d2["err_W"]:.1e}); built in {time.time() - t0:.0f} s; I_k / int m_A m_B (first, last bin) = '
+                f'{Ik[0] / loc:.4f}, {Ik[-1] / loc:.4f}')
         return self
 
     # -- persistence (the pair counts are saved by the window library; this keeps what the covariance
@@ -390,8 +437,10 @@ class WindowSmoothing:
         data, meta = {}, []
         for n, (key, p) in enumerate(self._pairs.items()):
             data[f'coeffs_{n}'], data[f'I_b_{n}'], data[f'basis_{n}'] = p['coeffs'], p['I_b'], p['basis']
+            data[f'kcoeffs_{n}'], data[f'proj_{n}'] = p['kcoeffs'], p['proj']
             data[f'sw_{n}'], data[f'xi_{n}'], data[f'k_edges_{n}'] = p['sw'], p['xi'], p['k_edges']
-            meta.append(dict(key=list(key), n=n, err_I=p['err_I'], err_K=p['err_K'], widths=p['widths']))
+            meta.append(dict(key=list(key), n=n, err_I=p['err_I'], err_K=p['err_K'], err_IW=p['err_IW'], err_W=p['err_W'],
+                             widths=p['widths']))
         data['meta'] = np.array(json.dumps(dict(pairs=meta, tag=self.tag)))
         np.savez(path, **data)
 
@@ -403,6 +452,9 @@ class WindowSmoothing:
                 n = rec['n']
                 self._pairs[tuple(rec['key'])] = dict(coeffs=f[f'coeffs_{n}'], I_b=f[f'I_b_{n}'], basis=f[f'basis_{n}'],
                                                       sw=f[f'sw_{n}'], xi=f[f'xi_{n}'], k_edges=f[f'k_edges_{n}'],
-                                                      n_basis=int(f[f'basis_{n}'].shape[0]), err_I=rec['err_I'],
-                                                      err_K=rec['err_K'], widths=rec['widths'])
+                                                      kcoeffs=f[f'kcoeffs_{n}'], proj=f[f'proj_{n}'],
+                                                      n_basis=int(f[f'coeffs_{n}'].shape[1]),
+                                                      n_kernels=int(f[f'basis_{n}'].shape[0]), err_I=rec['err_I'],
+                                                      err_K=rec['err_K'], err_IW=rec['err_IW'], err_W=rec['err_W'],
+                                                      widths=rec['widths'])
         return self

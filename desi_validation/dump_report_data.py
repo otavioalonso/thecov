@@ -40,6 +40,8 @@ def main():
     ap.add_argument('--modes', nargs='+', default=['random-density', 'nx'])
     ap.add_argument('--fill-nside', type=int, default=512, help="nw 'fill': healpix resolution of the fill fraction")
     ap.add_argument('--kernel-cell', type=float, default=None, help="nw 'kernel': smoothing mesh cell [Mpc/h]")
+    ap.add_argument('--kernel-tol', type=float, default=None, help="nw 'kernel': basis tolerance (default: Config)")
+    ap.add_argument('--kernel-max-basis', type=int, default=None, help="nw 'kernel': cap on the window basis")
     ap.add_argument('--target-near-pairs', type=float, default=None, help='pair-count sampling (default: Config)')
     ap.add_argument('--n-randoms-max', type=float, default=None, help='randoms kept for thecov, all regions (default: Config)')
     ap.add_argument('--regions', nargs='+', default=None, help='regions (default NGC SGC GCcomb)')
@@ -67,6 +69,10 @@ def main():
         extra['target_near_pairs'] = args.target_near_pairs
     if args.kernel_cell:
         extra['kernel_cell'] = args.kernel_cell
+    if args.kernel_tol:
+        extra['kernel_tol'] = args.kernel_tol
+    if args.kernel_max_basis:
+        extra['kernel_max_basis'] = args.kernel_max_basis
     if args.regions:
         extra['regions'] = tuple(args.regions)
     if args.n_randoms_max:
