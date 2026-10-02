@@ -46,6 +46,8 @@ class Config:
     coarse_factors: tuple = (2,)      # ... this many times wider (2 -> 0.01 h/Mpc)
     fill_random_files: int = 10       # nw 'fill': random files for the footprint fill-fraction map
     fill_nside: int = 512             # ... and its resolution (512 ~ 7 arcmin)
+    cache_tag: str = ''               # appended to tracer (windows) and covariance cache names, for variants
+                                      # whose caches must not be shared (e.g. other target_near_pairs)
 
     def binning_tag(self, rebin=None):
         return (f'k{self.kmin:g}-{self.kmax:g}_r{rebin or self.rebin}_sn{int(self.shotnoise_from_files)}'
@@ -147,6 +149,13 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
     # tracers and covariances
     modes = list(cfg.nw_modes) + (['none'] if cfg.naive else [])
     suffix = {'random-density': '', 'none': '_naive', 'angular': '_ang', 'nx': '_nx', 'patch': '_patch', 'fill': '_fill'}
+    if cfg.fill_nside != 512:
+        suffix['fill'] = f'_fill{cfg.fill_nside}'
+    suffix = {m_: s_ + cfg.cache_tag for m_, s_ in suffix.items()}
+
+    def ftag(mode):                     # covariance cache name of a mode (same tags as its windows')
+        return mode + (f'_n{cfg.fill_nside}' if mode == 'fill' and cfg.fill_nside != 512 else '') + cfg.cache_tag
+
     fill = None
     if 'fill' in modes:
         fill = {}
@@ -161,14 +170,14 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
     covs, info, tracers = {}, {}, {}
     for r in caps:
         for mode in modes:
-            name = f'{tracer_bin}_{r}' + suffix.get(mode, '_' + mode)
+            name = f'{tracer_bin}_{r}' + suffix.get(mode, '_' + mode + cfg.cache_tag)
             sn = spec[r]['num_shotnoise'].mean() if (cfg.shotnoise_from_files and r in spec) else None
             tr, inf = dc.build_tracer(name, [regs[r]], nw=mode, n_randoms_max=cfg.n_randoms_max // 2,
                                       surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn,
                                       fill=fill)
             tracers[(r, mode)], info[(r, mode)] = tr, inf
             if r in spec:
-                C, ci = covariance_cached(tr, spec[r], cfg, os.path.join(od, f'cov_{r}_{mode}_{cfg.binning_tag()}.npz'), log=log)
+                C, ci = covariance_cached(tr, spec[r], cfg, os.path.join(od, f'cov_{r}_{ftag(mode)}_{cfg.binning_tag()}.npz'), log=log)
                 covs[(r, mode)] = C
                 inf.update(I_over_norm=ci['I_randoms'] / spec[r]['norm'].mean(),
                            shotnoise_catalogue_over_files=inf['shotnoise_numerator'] / spec[r]['num_shotnoise'].mean())
@@ -185,7 +194,7 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
                                       n_randoms_max=cfg.n_randoms_max, surface_density_deg2=cfg.surface_density, verbose=False,
                                       shotnoise_target=sn, fill=fill)
             tracers[('GCcomb', primary)], info[('GCcomb', primary)] = tr, inf
-            C, ci = covariance_cached(tr, spec['GCcomb'], cfg, os.path.join(od, f'cov_GCcomb_{primary}_{cfg.binning_tag()}.npz'), log=log)
+            C, ci = covariance_cached(tr, spec['GCcomb'], cfg, os.path.join(od, f'cov_GCcomb_{ftag(primary)}_{cfg.binning_tag()}.npz'), log=log)
             covs[('GCcomb', primary)] = C
             inf.update(I_over_norm=ci['I_randoms'] / spec['GCcomb']['norm'].mean())
     res['tracer_info'] = {f'{r}__{m}': {k: v for k, v in i.items() if k != 'regions'} | {'regions': i['regions']}
@@ -209,7 +218,7 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
                         continue
                     if s2 is None:
                         s2 = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=f * cfg.rebin, ells=cfg.ells)
-                    C2, _ = covariance_cached(tracers[(r, mode)], s2, cfg, os.path.join(od, f'cov_{r}_{mode}_{cfg.binning_tag(f * cfg.rebin)}.npz'), log=log)
+                    C2, _ = covariance_cached(tracers[(r, mode)], s2, cfg, os.path.join(od, f'cov_{r}_{ftag(mode)}_{cfg.binning_tag(f * cfg.rebin)}.npz'), log=log)
                     coarse[(r, mode, f)] = (s2, C2)
             if 'GCcomb' in spec and res['gccomb'][0] != 'joint':     # GCcomb = norm-weighted NGC + SGC
                 s2 = None

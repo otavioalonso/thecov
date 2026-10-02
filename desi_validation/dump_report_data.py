@@ -38,6 +38,9 @@ def main():
     ap.add_argument('--label', default='holi-altmtl')
     ap.add_argument('--bins', nargs='+', default=['LRG1', 'QSO'])
     ap.add_argument('--modes', nargs='+', default=['random-density', 'nx'])
+    ap.add_argument('--fill-nside', type=int, default=512, help="nw 'fill': healpix resolution of the fill fraction")
+    ap.add_argument('--target-near-pairs', type=float, default=None, help='pair-count sampling (default: Config)')
+    ap.add_argument('--cache-tag', default='', help='separate window/covariance caches for this variant (e.g. _p1e10)')
     ap.add_argument('--factors', nargs='+', type=int, default=[2, 4], help='wider bins: 0.005 x factor')
     ap.add_argument('--no-naive', action='store_true', help='skip the naive (own-weight) window covariance')
     ap.add_argument('--cs-version', default=None)
@@ -56,7 +59,10 @@ def main():
         paths.spectra_dir = args.spectra_dir or paths.spectra_dir
         paths.mock = paths.mock if args.mock is None else args.mock
         OUT = os.path.expanduser(f'~/thecov_desi/{paths.cs_version}_mock{paths.mock}')
-    cfg = dataclasses.replace(pl.Config(), nw_modes=tuple(args.modes), naive=not args.no_naive,
+    extra = dict(fill_nside=args.fill_nside, cache_tag=args.cache_tag)
+    if args.target_near_pairs:
+        extra['target_near_pairs'] = args.target_near_pairs
+    cfg = dataclasses.replace(pl.Config(), **extra, nw_modes=tuple(args.modes), naive=not args.no_naive,
                               coarse_check=True, coarse_factors=tuple(args.factors))
     if args.synthetic:
         paths = dc.Paths(catalog_dir=args.synthetic + '/catalogs', spectra_dir=args.synthetic + '/spectra', loader='files')
