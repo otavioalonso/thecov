@@ -61,7 +61,8 @@ def main():
     if args.synthetic:
         paths = dc.Paths(catalog_dir=args.synthetic + '/catalogs', spectra_dir=args.synthetic + '/spectra', loader='files')
         dc.TRACER_SPECS.clear(); dc.TRACER_SPECS['TEST'] = ('LRG', (0.4, 0.6))
-        cfg = dataclasses.replace(cfg, surface_density=150.0, kmax=0.1, kmin=0.02, target_near_pairs=3e8, n_sub_far=5000)
+        cfg = dataclasses.replace(cfg, surface_density=150.0, kmax=0.1, kmin=0.02, target_near_pairs=3e8, n_sub_far=5000,
+                                  fill_random_files=1, fill_nside=128)
         OUT, args.bins = args.synthetic + '/results_dump', ['TEST']
     log(f'{args.label}: catalogues {paths.cs_version} mock {paths.mock}, spectra {paths.spectra_dir}, caches {OUT}')
 
@@ -95,7 +96,7 @@ def main():
         for r, rc in D['regions'].items():
             wd = dc.weight_diagnostics(rc, b)
             mb['weights'][r] = {k: v for k, v in wd.items() if not k.endswith('columns')}
-            mb['veff'][r] = dc.window_moments(rc, modes=tuple(args.modes),     # + 'own-weight' = naive
+            mb['veff'][r] = dc.window_moments(rc, modes=tuple(m for m in args.modes if m != 'fill'),     # + 'own-weight' = naive
                                               surface_density_deg2=cfg.surface_density)
             log(f"{b} {r}: <w^2>/<w>^2 data {wd['data_w2_over_wmean2']:.4f} randoms {wd['randoms_w2_over_wmean2']:.4f}; "
                 f"1/V_eff " + ', '.join(f'{m}: {v:.4g}' for m, v in mb['veff'][r].items()))

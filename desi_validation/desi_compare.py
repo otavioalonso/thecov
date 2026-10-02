@@ -624,10 +624,36 @@ def local_mean_weight_angular(ra, dec, w, k=128, query=None, chunk=200000):
     return out
 
 
+def fill_map(rc, nside=512, surface_density_deg2=2500.0):
+    """Fraction of each healpix pixel (RING, `nside`) inside the footprint, from the randoms' counts
+    against a full pixel's expectation (surface density x files x pixel area). Veto masks smaller than
+    the pixel dilute it. The randoms are cut in z, which does not depend on angle, so the expectation
+    is scaled by the fraction of the randoms kept. Use many random files: the Poisson noise is
+    1 / sqrt(count) per pixel (~330 randoms per nside-512 pixel with 10 files)."""
+    import healpy as hp
+    r = rc.randoms
+    npix = hp.nside2npix(nside)
+    pix = hp.ang2pix(nside, np.asarray(r['RA'], float), np.asarray(r['DEC'], float), lonlat=True)
+    expected = (surface_density_deg2 * rc.n_random_files * hp.nside2pixarea(nside, degrees=True)
+                * len(r['Z']) / max(rc.n_randoms_all_z, len(r['Z'])))
+    return np.bincount(pix, None, npix) / expected
+
+
 def _m_values(rc, nw, sel, a_reg, rho, p, scheme='default-FKP', k_mean=32, k_ang=128, nside=8,
-              surface_density_deg2=2500.0, cosmo=None):
+              surface_density_deg2=2500.0, cosmo=None, fill=None):
     """m at the randoms `sel` for a construction `nw` (see build_tracer)."""
     r = rc.randoms
+    if nw == 'fill':
+        # m smoothed over the veto holes: the clustering window is m(x) m(x + r) for r within a
+        # correlation length, i.e. the square of m averaged over holes much smaller than r, not the
+        # square of its value between the holes (W = m^2 at a point). The randoms only sample the
+        # unmasked area, so alpha sum_r w_r (f m0) = int (f m0)^2: the diluted window.
+        if fill is None:
+            raise ValueError("nw='fill' needs a fill map (fill_map of a region with many random files)")
+        import healpy as hp
+        f = fill[hp.ang2pix(hp.npix2nside(len(fill)), r['RA'][sel], r['DEC'][sel], lonlat=True)]
+        base = a_reg * rho[sel] * local_mean_weight(p[sel], total_weight(r, scheme)[sel], k=k_mean)
+        return base * np.clip(f, 0.0, 1.0)
     if nw == 'random-density':
         return a_reg * rho[sel] * local_mean_weight(p[sel], total_weight(r, scheme)[sel], k=k_mean)
     if nw == 'patch':
@@ -684,7 +710,7 @@ def _median_ratio(m, r, sel):
 
 def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, surface_density_deg2=2500.0,
                  k_mean=32, k_ang=128, nside=8, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True,
-                 shotnoise_target=None):
+                 shotnoise_target=None, fill=None):
     """A thecov Tracer from one or several regions (several: the combined NGC+SGC catalogue of a
     single estimate, with each region's randoms renormalised to the global alpha, as in
     catalogs.normalize_and_concatenate).
@@ -696,6 +722,9 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
                 sky, all z) x the random's own WEIGHT_FKP: resolves sharp completeness boundaries;
                 'nx' -- m = NX x WEIGHT_FKP at each random, no smoothing (relies on NX being the
                 completeness-weighted mean density, i.e. median m / (NX WEIGHT_FKP) ~ 1, as on holi);
+                'fill' -- as 'random-density' times the fraction of the local healpix pixel inside the
+                footprint (`fill`: {region: fill_map}, from many random files): m averaged over
+                veto holes much smaller than the correlation length, as the clustering window needs;
                 'none' -- NZ = NX and each random's own weight (the naive set-up; biased by
                 <w^2>/<w>^2 when WEIGHT varies per object; kept for comparison).
     shotnoise : 'realised' -- scale S so that its integral is sum_d w^2 + alpha^2 sum_r w^2 of the
@@ -725,7 +754,8 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
         rho, omega = random_density(rc, surface_density_deg2, cosmo=cosmo)
         sel = rng.random(len(wr)) < keep_frac          # subsample: m is unchanged, alpha rescales
         m = _m_values(rc, nw, sel, a_reg, rho, p, scheme, k_mean=k_mean, k_ang=k_ang, nside=nside,
-                      surface_density_deg2=surface_density_deg2, cosmo=cosmo)
+                      surface_density_deg2=surface_density_deg2, cosmo=cosmo,
+                      fill=None if fill is None else fill[rc.region])
         # renormalise this region's random weights to the global alpha (only matters for >1 region)
         wsc = wr[sel] * (a_reg / alpha_glob)
         pos.append(p[sel]); w.append(wsc)

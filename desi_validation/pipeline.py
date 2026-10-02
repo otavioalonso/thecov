@@ -44,6 +44,8 @@ class Config:
     naive: bool = False               # also build the naive NZ x WEIGHT covariance (comparison)
     coarse_check: bool = True         # repeat the validation with wider bins
     coarse_factors: tuple = (2,)      # ... this many times wider (2 -> 0.01 h/Mpc)
+    fill_random_files: int = 10       # nw 'fill': random files for the footprint fill-fraction map
+    fill_nside: int = 512             # ... and its resolution (512 ~ 7 arcmin)
 
     def binning_tag(self, rebin=None):
         return (f'k{self.kmin:g}-{self.kmax:g}_r{rebin or self.rebin}_sn{int(self.shotnoise_from_files)}'
@@ -144,14 +146,26 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
 
     # tracers and covariances
     modes = list(cfg.nw_modes) + (['none'] if cfg.naive else [])
-    suffix = {'random-density': '', 'none': '_naive', 'angular': '_ang', 'nx': '_nx', 'patch': '_patch'}
+    suffix = {'random-density': '', 'none': '_naive', 'angular': '_ang', 'nx': '_nx', 'patch': '_patch', 'fill': '_fill'}
+    fill = None
+    if 'fill' in modes:
+        fill = {}
+        for r in caps:
+            rcK = dc.load_region(paths, tracer_bin, r, n_random_files=cfg.fill_random_files)
+            fill[r] = dc.fill_map(rcK, nside=cfg.fill_nside, surface_density_deg2=cfg.surface_density)
+            occ = fill[r] > 0
+            log(f'  {r}: fill map nside {cfg.fill_nside} from {cfg.fill_random_files} random files, '
+                f'median {np.median(fill[r][occ]):.3f} over occupied pixels')
+            del rcK
+        res['fill_median'] = {r: float(np.median(f[f > 0])) for r, f in fill.items()}
     covs, info, tracers = {}, {}, {}
     for r in caps:
         for mode in modes:
             name = f'{tracer_bin}_{r}' + suffix.get(mode, '_' + mode)
             sn = spec[r]['num_shotnoise'].mean() if (cfg.shotnoise_from_files and r in spec) else None
             tr, inf = dc.build_tracer(name, [regs[r]], nw=mode, n_randoms_max=cfg.n_randoms_max // 2,
-                                      surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn)
+                                      surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn,
+                                      fill=fill)
             tracers[(r, mode)], info[(r, mode)] = tr, inf
             if r in spec:
                 C, ci = covariance_cached(tr, spec[r], cfg, os.path.join(od, f'cov_{r}_{mode}_{cfg.binning_tag()}.npz'), log=log)
@@ -169,7 +183,7 @@ def run_bin(paths, tracer_bin, cfg: Config, out_dir, log=print, keep=False):
             sn = spec['GCcomb']['num_shotnoise'].mean() if cfg.shotnoise_from_files else None
             tr, inf = dc.build_tracer(f'{tracer_bin}_GCcomb' + suffix.get(primary, '_' + primary), [regs[r] for r in CAPS], nw=primary,
                                       n_randoms_max=cfg.n_randoms_max, surface_density_deg2=cfg.surface_density, verbose=False,
-                                      shotnoise_target=sn)
+                                      shotnoise_target=sn, fill=fill)
             tracers[('GCcomb', primary)], info[('GCcomb', primary)] = tr, inf
             C, ci = covariance_cached(tr, spec['GCcomb'], cfg, os.path.join(od, f'cov_GCcomb_{primary}_{cfg.binning_tag()}.npz'), log=log)
             covs[('GCcomb', primary)] = C
