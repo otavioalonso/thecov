@@ -1,7 +1,7 @@
 # Assessment after the converged kernel run: stop refining the window, test at the parameter level
 
 Written by the cloud session that designed `WindowSmoothing`, after reading
-`kernel_validation_results.md` (NERSC run on 1a6794b). Audience: the next Claude session working on
+`kernel_validation_results.md` (NERSC run on 1a6794b, including its correction bad8110). Audience: the next Claude session working on
 the DESI validation. This file supersedes the "next test" recommendation at the end of
 `kernel_validation_results.md`. It discusses LRG1 throughout; QSO validates with every window.
 
@@ -17,10 +17,12 @@ the DESI validation. This file supersedes the "next test" recommendation at the 
    independently.
 2. **The remaining ~0.02–0.04 in χ²/n is not identified.** The window variants differ at that level in
    ways we cannot attribute. Tuning the window further to absorb it would be fitting, not physics.
-3. **A larger part of the excess is not a window effect at all.** Both of these are the same for every
-   window, so they are non-Gaussian:
-   - the bin-width term b (≈ 0.04 / 0.02 / 0.01 at ℓ = 0 / 2 / 4);
-   - most of the excess at k > 0.2 (a ≈ 0.10–0.13 at ℓ = 0).
+3. **A larger part of the excess is not a window effect at all.**
+   - The bin-width term b (≈ 0.04 / 0.02 / 0.01 at ℓ = 0 / 2 / 4) is the same for every window. It is
+     non-Gaussian.
+   - The excess at k > 0.2 (a ≈ 0.10–0.13 at ℓ = 0) is Gaussian-type (bin-width independent), but no
+     hole-averaged window removes it. The prime suspect is the shot-noise term (Section 2.6), not the
+     clustering window.
 4. **Decision:** freeze the window question. Keep `WindowSmoothing` in core as a documented option.
    Use a simple, fixed hole-averaged window for DESI. Then decide whether anything more is needed from
    the **parameter errors**, not from χ²/n.
@@ -71,10 +73,16 @@ worse *fit* to the mocks at k > 0.06.
 
 ### 2.4 Two candidate explanations in `kernel_validation_results.md` do not hold
 
-**"The isotropic kernel ignores redshift-space anisotropy."**
-- This cannot explain the 2–3% gap between the kernel's predicted calibration and the Gaussian random
-  field's c(k) at the middle and last bins, because that test is isotropic by construction (P2 = P4 = 0;
-  see the docstring of `run_gaussian_footprint.py`).
+With the band assignment corrected in bad8110, the kernel's predicted calibration misses the
+field test's c(k) by +1.5–1.7% in the first bin and −1.6–1.7% in the last. That is a ~3% shape error
+across 0.02–0.3.
+
+**"The isotropic kernel ignores redshift-space anisotropy" (candidate (a) in bad8110).**
+- This cannot explain the ±1.6% gap between the kernel's predicted calibration and the Gaussian random
+  field's c(k), because that test is isotropic by construction (P2 = P4 = 0; see the docstring of
+  `run_gaussian_footprint.py`). The field test and the kernel disagree with no anisotropy involved.
+- Small correction: the kernel uses the mocks' redshift-space monopole P0 (`set_power` from the mock
+  mean), not a real-space one.
 - Its sign for the mocks is also unclear:
   - on small scales, fingers of God concentrate the correlation along the line of sight, where angular
     holes do not dilute pairs (less dilution, the wrong direction);
@@ -87,6 +95,9 @@ worse *fit* to the mocks at k > 0.06.
   have most of their weight (r ≲ 10 Mpc/h).
 - At high k, the field test and the kernel disagree mainly about ξ at small r. It is not ground truth
   there.
+- The same caveat applies to bad8110's proposed "decisive" test (the field test with NW = K_k * m on
+  the current mesh). That test probes the kernel only for the field's own mesh-limited ξ. It cannot
+  arbitrate below ~6 Mpc/h, which is where the high-k kernels live.
 
 ### 2.5 The high-k kernels depend on an uncertain input
 
@@ -97,7 +108,18 @@ with 1 Mpc/h Gaussian damping.
 The redshift-space monopole is suppressed by fingers of God well before k = 5, so this probably
 overestimates small-r ξ₀. The kernel is then too narrow and under-dilutes, which is the observed sign.
 
-The tempting next step is to vary the damping, cut the extrapolation, or use the mocks' measured
+**One cheap closure test is worth doing**, because it separates "the code is wrong" from "the input ξ
+is uncertain". Rebuild the kernel I_k with the power the field test actually realises: P_in times the
+mesh assignment window, cut at the mesh Nyquist frequency, so that its ξ matches the field's. Then
+compare with the field test's c(k).
+- If it agrees to ≲ 0.5% in all four bands, the implementation is right, and the ±1.6% gap is entirely
+  the small-r ξ input.
+- If not, there is a bug or a resolution problem (bad8110's candidate (b), the 4 Mpc/h smoothing mesh
+  against a ~8 Mpc/h kernel), to be fixed.
+- It needs only the smoothing stage (~4 min per cap, no pair counts), and `extend_power` / `set_power`
+  already take any P(k).
+
+Beyond that, the tempting next step is to vary the damping, cut the extrapolation, or use the mocks' measured
 ξ₀(s). That brings back a free smoothing input in disguise, which is the same trap as tuning the fill
 scale. **Do not pursue it unless the parameter-level test (Section 3) shows the window still matters.**
 
@@ -106,7 +128,16 @@ scale. **Do not pursue it unless the parameter-level test (Section 3) shows the 
 The excess splits as var ratio − 1 = a + b·(Δk/0.005), using the NGC+SGC mean.
 - b is identical for all windows: 0.04 / 0.02 / 0.01 at ℓ = 0 / 2 / 4. It is non-Gaussian, of the
   local-average / super-sample type.
-- At k = 0.2–0.3, a ≈ 0.10–0.13 at ℓ = 0 for every hole-averaged window. That is also beyond the window.
+- a is the bin-width-independent (Gaussian-type) part. bad8110 is right that the residual kernel excess
+  at k < 0.2 sits in a.
+- At k = 0.2–0.3, a ≈ 0.10–0.13 at ℓ = 0 for *every* hole-averaged window, against ~0.035 at k < 0.2.
+  A Gaussian-type error that grows with k and ignores the clustering window points to the
+  **shot-noise term**. thecov assumes Poisson noise S = (1+α) n̄⟨w²⟩. LRG mocks can have
+  non-Poisson stochasticity: halo exclusion, satellite fraction, and the altmtl fibre-assignment
+  pattern, which also differed between the altmtl and complete runs in the main report. A one-parameter
+  test is cheap and needs no new runs: rescale the shot-noise term of the covariance by (1 + ε) and see
+  whether a single ε flattens a(k) at high k. If it does, measure ε from the mocks' high-k P0 plateau
+  or from the scatter of the pair-count shot noise, not by fitting χ².
 - Earlier projections on amplitude-like modes (overall P0 and P2 amplitudes) found excess variance of
   the super-sample type. This is the most likely place where the parameter errors could be affected.
 
@@ -127,7 +158,8 @@ the data already dumped (`report_data_*.npz` in `~/thecov_desi/holi_v3_mock173`)
    - report the ratio R_θ = Var_mocks(θ̂) / σ²_pred, each θ alone and jointly;
    - give bootstrap errors over the 859 mocks;
    - do it for NGC, SGC and GCcomb, and repeat for QSO as the control.
-3. **Read-out:**
+3. **Read-out** (also run the shot-noise rescaling of Section 2.6 and the closure test of Section 2.5,
+   both cheap):
    - if R_θ is within ~1.00–1.05 (errors within ~2.5%) for the α's and f with the hole-averaged windows,
      the covariance is done for practical purposes. Freeze the window choice and write it up;
    - if the amplitude directions (A0, A2) are the outliers, the issue is super-sample / local-average
@@ -142,7 +174,11 @@ variances.
 ## 4. What not to do now
 
 - Do not tune `kernel_damping`, `extend_power`, or the fill nside to minimise χ²/n.
-- Do not build the anisotropic (redshift-space) kernel yet.
+- Do not build the anisotropic (redshift-space) kernel yet. It cannot explain a disagreement with an
+  isotropic field test.
+- Do not run the field test with NW = K_k * m on the current 6 Mpc/h mesh as a "decisive" test of the
+  high-k kernel. It cannot resolve the scales in question (Section 2.4). The closure test of Section 2.5
+  is cheaper and answers the implementation question.
 - Do not make `kernel` the DESI default. Fill at a fixed, stated scale is cheaper and fits at least as
   well. `WindowSmoothing` stays in core (tested, documented, harmless for QSO) for surveys where it
   matters.
