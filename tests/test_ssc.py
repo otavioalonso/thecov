@@ -80,7 +80,19 @@ def test_ssc_assembly(sphere_ssc):
     cov = ssc.cov
     P0 = ssc._bin_average(lambda kk: cov.model('T', 'T', 0, kk))       # unmasked model, d = I_k / I = 1
     v = resp - 2 * ssc.b1 * P0
-    assert np.allclose(C, np.outer(v, v) * sig, rtol=0.05)
+    tr = cov._tracer('T')
+    N = tr.alpha * len(tr.w)                                             # galaxies (unit weights)
+    var, J, J3 = ssc.discreteness_integrals('T')
+    assert np.isclose(var, 4.0 / N, rtol=0.03)                           # (1/N)(1 + 1)^2: alpha and the data in norm
+    assert np.isclose(J / cov.I('T', 'T'), 2.0 / N, rtol=0.03)
+    # Poisson part alone (no collapsed bispectrum): -2 (2/N + 2/N) P P + (4/N) P P = -4/N P P
+    lin = SuperSampleCovariance(cov, p_lin(), b1=2.0, f=0.0, b2=0.0, bs2=0.0)
+    assert np.allclose(lin.discreteness_covariance('T', (0,)), -4.0 / N * np.outer(P0, P0), rtol=0.05)
+    noD = SuperSampleCovariance(cov, p_lin(), b1=2.0, f=0.0, discreteness=False)
+    noD.windows = ssc.windows
+    C0, _ = noD.covariance([('T', 'T')], ells=(0,))
+    assert np.allclose(C0, np.outer(v, v) * sig, rtol=0.05)
+    assert np.allclose(C - C0, ssc.discreteness_covariance('T', (0,)), rtol=1e-8)
     assert np.all(np.diag(C) > 0)
     ssc_noLA = SuperSampleCovariance(cov, p_lin(), b1=2.0, f=0.0, local_average=False)
     ssc_noLA.windows = ssc.windows                                       # same pair counts

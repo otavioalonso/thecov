@@ -45,6 +45,18 @@ this is sigma_b^2 = int d^3s xi(s) Q_WW(s) / I^2. The covariance is
 
 with c^{(W, n)}_l = d_k R_l^(n) - P_hat_l g_n and c^{(M, n)}_l = - P_hat_l g_n.
 
+Discreteness of the local average. alpha and norm are sums over galaxies, so they also fluctuate by
+Poisson noise, eps_N = eps_alpha + eps_D with weights u_alpha = w / int m and u_D = w m / int m^2 per galaxy.
+With P_hat = P_raw (1 - eps_N), the covariance gains
+    - P_hat_l2 T_l1 - P_hat_l1 T_l2 + P_hat_l1 P_hat_l2 Var_P(eps_N),
+    Var_P(eps_N) = sum_g w^2 (u_alpha + u_D)^2 / w^2,
+    T_l(k) = <P_raw_l eps_N> = 2 P_l^true(k) [J_alpha + J_D] / norm + B_c,l(k) [J3_alpha + J3_D] / norm,
+J_alpha = int nbar<w^2> m / int m, J_D = int nbar<w^2> m^2 / int m^2 (a galaxy counted in eps_N and in the
+pair), J3_alpha = int m^3 / int m, J3_D = int m^4 / int m^2 (the collapsed tree-level bispectrum
+B_c = 2 Z2(k, -k) Z1^2 P_lin^2, Z2(k, -k) = b2/2 + bs2/3). For a uniform window, unit weights and alpha
+only this is WS20's -2/N, -2/N, +1/N (their eq. 44 discreteness terms); with jaxpower's norm, -8/N + 4/N.
+Galaxy sums use the randoms: sum_g w^2 g = alpha sum_r scale w_r^2 g (scale = Tracer.shotnoise_scale).
+
 Scope: auto-spectra of one tracer (cross spectra need the responses of two tracers; not implemented).
 The local window m_A m_B is used for the long-mode shape (long modes do not resolve veto holes); its
 normalisation enters through d_k = I_k / norm, so with a pair-averaged window (WindowSmoothing) the
@@ -144,6 +156,7 @@ class SuperSampleCovariance:
     b1, f  : linear bias and growth rate; b2 (default 0) and bs2 (default -4/7 (b1 - 1), local
              Lagrangian) enter the responses
     local_average : include the LA term of a per-realisation alpha and norm (pypower / jaxpower)
+    discreteness  : include the Poisson (and collapsed-bispectrum) part of the LA (needs local_average)
     damping: Gaussian damping [Mpc/h] of P_lin in xi_lam (regularises xi at s -> 0; irrelevant for SSC)
     n_mu, n_near : the SSC's own pair counts (same s bins, far-pair sampling and seed as cov). The
              long-mode variances weight the Lam = 4 component of Q_{22 Lam} more than the Gaussian
@@ -156,7 +169,7 @@ class SuperSampleCovariance:
     """
 
     def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, local_average=True, damping=1.0, n_mu=96,
-                 n_near=300000, dilution=None):
+                 n_near=300000, dilution=None, discreteness=True):
         self.cov = cov
         self.dilution = dilution
         opts = dict(cov.windows.opts)
@@ -166,6 +179,7 @@ class SuperSampleCovariance:
         self.b1, self.f, self.b2 = float(b1), float(f), float(b2)
         self.bs2 = -4.0 / 7.0 * (self.b1 - 1.0) if bs2 is None else float(bs2)
         self.local_average = bool(local_average)
+        self.discreteness = bool(discreteness) and self.local_average
         self.damping = float(damping)
         self.a, self.c = response_coefficients(self.b1, self.f, self.b2, self.bs2)
         scale = np.max(np.abs(self.a)) + np.max(np.abs(self.c))
@@ -292,6 +306,38 @@ class SuperSampleCovariance:
             out[(x, n)] = np.concatenate(vec)
         return out
 
+    def discreteness_integrals(self, A):
+        """Var_P(eps_N) and (J_alpha + J_D, J3_alpha + J3_D) from the host randoms (see module docstring)."""
+        T = self.cov._tracer(A)
+        a, w, m = T.alpha, np.asarray(T.w, float), np.asarray(T.mw, float)
+        w2 = a * T.shotnoise_scale * w ** 2                    # sum_g w^2 g  ->  sum_r w2_r g(x_r)
+        I_M, I_W = a * np.sum(w), a * np.sum(w * m)
+        var = np.sum(w2 * (1.0 / I_M + m / I_W) ** 2)
+        J = np.sum(w2 * m) / I_M + np.sum(w2 * m ** 2) / I_W
+        J3 = a * np.sum(w * m ** 2) / I_M + a * np.sum(w * m ** 3) / I_W
+        return var, J, J3
+
+    def discreteness_covariance(self, A, ells):
+        """the Poisson / collapsed-bispectrum part of the local average, (len(ells) nbins)^2"""
+        cov = self.cov
+        d = self._dilution(A)
+        norm = cov.I(A, A)
+        var, J, J3 = self.discreteness_integrals(A)
+        lk = np.log(self.k_lin)
+        spl = CubicSpline(lk, self.p_lin)
+        P2 = self._bin_average(lambda k: spl(np.log(k)) ** 2)
+        b1, f = self.b1, self.f
+        kais = {0: b1 ** 2 + 2 / 3 * b1 * f + f ** 2 / 5, 2: 4 / 3 * b1 * f + 4 / 7 * f ** 2, 4: 8 / 35 * f ** 2}
+        zc = self.b2 + 2.0 / 3.0 * self.bs2                    # 2 Z2(k, -k) = b2 + 2 bs2 / 3
+        Pm, Tv = [], []
+        for l in ells:
+            p = self._bin_average(lambda k: cov.model(A, A, l, k))
+            p = p if cov.masked else p * d
+            Pm.append(p)
+            Tv.append(2.0 * p / d * J / norm + zc * kais.get(l, 0.0) * P2 * J3 / norm)
+        Pm, Tv = np.concatenate(Pm), np.concatenate(Tv)
+        return -np.outer(Tv, Pm) - np.outer(Pm, Tv) + var * np.outer(Pm, Pm)
+
     def covariance(self, spectra, ells=None):
         """C^SSC for the data vector [P^{AA}_ell(k_i)] ordered by spectrum, ell, bin (as
         GaussianCovariance.covariance); returns (matrix, labels)."""
@@ -312,6 +358,8 @@ class SuperSampleCovariance:
         V = np.stack([cf[x] for x in X])                        # (nX, n)
         S = np.array([[sig[(x, y)] for y in X] for x in X])
         C = V.T @ S @ V
+        if self.discreteness:
+            C = C + self.discreteness_covariance(A, ells)
         labels = [(A, A, l, i) for l in ells for i in range(cov.nbins)]
         return C, labels
 

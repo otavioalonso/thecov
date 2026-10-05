@@ -175,6 +175,9 @@ def main():
             res[la] = (ssc, Cs)
         ssc, Cs = res[True]
         sig = ssc.sigma2(tr.name)
+        var, J, J3 = ssc.discreteness_integrals(tr.name)
+        log(f'{r}: discreteness: sigma_P(eps_norm) = {np.sqrt(var) * 100:.3f}% (alpha + data in norm), '
+            f'2 J / norm = {2 * J / norm:.3e}, J3 / norm = {J3 / norm:.3e}')
         log(f'{r}: sigma^2 ' + ', '.join(f'{x[0]}{x[1]}-{y[0]}{y[1]} {v:.3e}' for (x, y), v in sig.items() if x <= y))
         print(f'\n{b} {r}  (a00 {ssc.a[0, 0]:.3f}, c00 {ssc.c[0, 0]:.3f}, a02 {ssc.a[0, 1]:.3f}, a20 {ssc.a[1, 0]:.3f}, '
               f'a22 {ssc.a[1, 1]:.3f}; R/P_lin)')
