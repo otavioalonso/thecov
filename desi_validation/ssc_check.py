@@ -110,7 +110,7 @@ def main():
 
     from cosmoprimo.fiducial import DESI
     from scipy.interpolate import CubicSpline
-    from thecov import GaussianCovariance, PowerSpectrumModel, SuperSampleCovariance
+    from thecov import GaussianCovariance, PowerSpectrumModel, SuperSampleCovariance, DiscretenessCovariance
 
     paths = dc.Paths(kind='holi_v3', mock=173)
     paths.loader = 'auto'
@@ -128,7 +128,7 @@ def main():
     f = args.f if args.f is not None else float(cosmo.growth_rate(zeff))
     log(f'{b}: z_eff {zeff}, f {f:.3f}, P_lin from cosmoprimo DESI fiducial')
 
-    out, C_ssc, norms = {}, {}, {}
+    out, C_ssc, C_disc, norms = {}, {}, {}, {}
     for r in ('NGC', 'SGC'):
         V, C, k = get(z, b, r, 1, args.mode)
         nb = len(k)
@@ -183,6 +183,14 @@ def main():
               f'a22 {ssc.a[1, 1]:.3f}; R/P_lin)')
         summarize('with LA   ', V, C, Cs, k, nb)
         summarize('without LA', V, C, res[False][1], k, nb)
+        disc = DiscretenessCovariance(cov, (kl, Pl), b1=b1, f=f, b2=b2, bs2=bs2)
+        Cd, _ = disc.covariance([(tr.name, tr.name)], ells=(0, 2, 4))
+        J_Smm, J_SS = disc.window_integrals(tr.name)
+        log(f'{r}: discreteness 4-point: J_Smm {J_Smm:.3e}, J_SS {J_SS:.3e}; diag(C_disc)/diag(C) l=0 at k~0.05, 0.15, 0.25: '
+            + ', '.join(f'{Cd[i, i] / C[i, i]:.3f}' for i in (6, 26, 46)))
+        summarize('SSC + discreteness 4-pt', V, C, Cs + Cd, k, nb)
+        out[f'{r}/C_disc'] = Cd
+        C_disc[r] = Cd
         C_ssc[r] = Cs
         out[f'{r}/C_ssc'], out[f'{r}/C_ssc_noLA'] = Cs, res[False][1]
         out[f'{r}/sigma2_keys'] = np.array([f'{x}|{y}' for (x, y) in sig])
@@ -195,7 +203,9 @@ def main():
     Cg = dc.combine_regions([C_ssc['NGC'], C_ssc['SGC']], [norms['NGC'], norms['SGC']])
     print(f'\n{b} GCcomb')
     summarize('with LA   ', V, C, Cg, k, len(k))
-    out['GCcomb/C_ssc'] = Cg
+    Cgd = dc.combine_regions([C_disc['NGC'], C_disc['SGC']], [norms['NGC'], norms['SGC']])
+    summarize('SSC + discreteness 4-pt', V, C, Cg + Cgd, k, len(k))
+    out['GCcomb/C_ssc'], out['GCcomb/C_disc'] = Cg, Cgd
     os.makedirs(args.out, exist_ok=True)
     fn = os.path.join(args.out, f'ssc_{args.label}.npz')
     np.savez(fn, **out)

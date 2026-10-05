@@ -20,8 +20,9 @@ from .wigner import wigner_3j, gaunt_tensor, CouplingCoefficients, tri, tri_mult
 from .covariance import GaussianCovariance
 from .smoothing import WindowSmoothing, DensityField
 from .ssc import SuperSampleCovariance, response_coefficients
+from .discreteness import DiscretenessCovariance
 
 __all__ = ['Tracer', 'Window', 'spectrum_window_pairs', 'PowerSpectrumModel', 'ShellKernels',
            'TripolarWindow', 'WindowLibrary', 'PairHistogram', 'wigner_3j', 'gaunt_tensor', 'CouplingCoefficients',
            'tri', 'tri_multi', 'GaussianCovariance', 'WindowSmoothing', 'DensityField',
-           'SuperSampleCovariance', 'response_coefficients']
+           'SuperSampleCovariance', 'response_coefficients', 'DiscretenessCovariance']
