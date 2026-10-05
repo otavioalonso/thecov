@@ -125,3 +125,23 @@ E. Later: all tracers (BGS, ELG, LRG+ELG: check names in `dc.TRACER_SPECS`); kma
 - Real paths, no placeholders. Branch `thecov2`, commit and push there, no PR, no model names in commits.
 - Harmless messages: `WEIGHT not in catalog ... noveto.ran.h5`; the `alpha ... ratio 1.6` warning; the
   Jax CUDA error on CPU nodes.
+
+## 6. Next full run (2026-10-06): SSC + discreteness prediction, no fitting
+
+Code: `thecov/ssc.py` (SSC: tree-level redshift-space responses, verified against CovaPT's Z12 to 1e-8;
+local average for jaxpower's realised alpha AND norm, with its Poisson terms), `thecov/discreteness.py`
+(Poisson four-point terms with realised shot noise subtracted), `desi_validation/ssc_check.py` (driver).
+Note: `report/ssc_formalism.pdf`.
+
+    cd ~/thecov && git pull origin thecov2 && for b in LRG1 QSO; do sbatch -N 1 -C cpu -q debug -t 00:30:00 -J ssc$b -o /global/cfs/cdirs/desicollab/users/oalves/thecov_validation/ssc_$b.log --wrap "source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main && export PYTHONPATH=\$HOME/thecov:\$PYTHONPATH && cd ~/thecov && python -m pytest -q tests/test_ssc.py tests/test_discreteness.py && python -u -m desi_validation.ssc_check --bin $b --label holi-kcore2-$b"; done
+
+Read in each log, per cap and GCcomb:
+1. `mocks` vs `predicted` sigma_P0, sigma_P2/P0, r02 (targets LRG1 0.51/0.66%, 0.94/1.22%, +0.18/0.00);
+   with and without the local average; SGC/NGC ratio (1.30 in the mocks).
+2. `sigma_P(eps_norm)` vs the report's Poisson estimate 0.13-0.26%.
+3. chi2/n and residual variance ratios with C + C_SSC and C + C_SSC + C_disc; joint parameter ratios
+   (A2 must go from ~1.6 to ~1.0 at kmax 0.2 without fitting).
+4. What is left on the far off-diagonal = connected trispectrum: flat monopole (stochastic constant),
+   near-diagonal ridge (finite-q beat coupling), or smooth P(k)P(k') surface (tree-level T0).
+Then: the subvolume estimator of the connected trispectrum (plan in the session notes; validate on ~20
+holi mocks against the ensemble before applying to the data).
