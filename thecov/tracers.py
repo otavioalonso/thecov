@@ -193,10 +193,10 @@ class Window:
             if B.name < A.name:
                 A, B = B, A
             self.tracers = (A, B)
-        elif kind == 'S':
+        elif kind in ('S', 'M'):
             self.tracers = (A,)
         else:
-            raise ValueError("kind must be 'W' or 'S'")
+            raise ValueError("kind must be 'W', 'S' or 'M'")
         self.kind = kind
         self.key = (kind,) + tuple(t.name for t in self.tracers)
         if basis is not None:
@@ -220,6 +220,8 @@ class Window:
 
         W^{AB}: w_r m_B(x_r) (m_B = nbar_B w_B, or NW), so that alpha sum_r -> int m_A m_B.
         S^A:    scale (1 + alpha) w_r^2, each random with its OWN weight (the shot noise is <w^2>).
+        M^A:    w_r, so that alpha sum_r -> int m_A (the mean weighted density; used by the
+                super-sample covariance for alpha's average of the long mode).
         """
         A = self.host
         cache = A.__dict__.setdefault('_tilde_cache', {})
@@ -229,6 +231,8 @@ class Window:
             elif self.kind == 'W':
                 m, _ = self.tracers[1].mw_w_at_randoms_of(A)
                 cache[self.key] = A.w * m
+            elif self.kind == 'M':
+                cache[self.key] = np.asarray(A.w, float).copy()
             else:
                 cache[self.key] = A.shotnoise_scale * (1.0 + A.alpha) * A.w ** 2
         return cache[self.key]
@@ -247,6 +251,8 @@ class Window:
             A, B = self.tracers
             return A.nw_at(positions) * B.nw_at(positions)
         A = self.host
+        if self.kind == 'M':
+            return A.mw_w_at(positions)[0]
         m, w = A.mw_w_at(positions)
         return A.shotnoise_scale * (1.0 + A.alpha) * m * w
 
@@ -264,6 +270,8 @@ class Window:
             elif self.kind == 'W':
                 A, B = self.tracers
                 cache[self.key] = A.mw_w_at_randoms_of(T)[0] * B.mw_w_at_randoms_of(T)[0]
+            elif self.kind == 'M':
+                cache[self.key] = self.host.mw_w_at_randoms_of(T)[0]
             else:
                 A = self.host
                 m, w = A.mw_w_at_randoms_of(T)
