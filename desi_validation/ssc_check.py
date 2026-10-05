@@ -68,25 +68,40 @@ def kernel_dilution(out_dir, b, r, k_edges, norm, cache_tag):
     return np.asarray(sm.I_k(*key, k_edges), float) / norm, fns[-1]
 
 
+def min_whitened_eig(C, M):
+    """smallest eigenvalue of C^-1/2 M C^-1/2 (M positive definite iff > 0)"""
+    L = np.linalg.cholesky(C)
+    Li = np.linalg.inv(L)
+    return float(np.linalg.eigvalsh(Li @ M @ Li.T).min())
+
+
 def summarize(tag, V, C, Cssc, k, nb):
     Cm = np.cov(V.T)
     P0 = V[:, :nb].mean(0)
     A_m, _ = fit_rank1(Cm, C, P0, nb)
     A_p, _ = fit_rank1(C + Cssc, C, P0, nb)
-    fmt = lambda A: (f"sigma_P0 {np.sqrt(max(A[(0, 0)][0], 0)) * 100:.2f}%  sigma_P2/P0 {np.sqrt(max(A[(1, 1)][0], 0)) * 100:.2f}%  "
-                     f"r02 {A[(0, 1)][0] / np.sqrt(max(A[(0, 0)][0] * A[(1, 1)][0], 1e-30)):+.2f}  "
-                     f"A44 {A[(2, 2)][0] * 1e5:.2f}e-5")
+
+    def fmt(A):
+        a, b = A[(0, 0)][0], A[(1, 1)][0]
+        r = f'{A[(0, 1)][0] / np.sqrt(a * b):+.2f}' if min(a, b) > 1e-3 * max(abs(a), abs(b), 1e-12) else '  n/a'
+        return (f"sigma_P0 {np.sign(a) * np.sqrt(abs(a)) * 100:+.2f}%  sigma_P2/P0 {np.sign(b) * np.sqrt(abs(b)) * 100:+.2f}%  "
+                f"r02 {r}  A44 {A[(2, 2)][0] * 1e5:.2f}e-5")
     print(f'  {tag}: mocks     {fmt(A_m)}')
-    print(f'  {tag}: predicted {fmt(A_p)}')
-    allidx = np.arange(V.shape[1])
+    print(f'  {tag}: predicted {fmt(A_p)}   (negative sigma = negative fitted amplitude)')
     M = C + Cssc
+    lam = min_whitened_eig(C, M)
     res = []
     for l in range(3):
         s = slice(l * nb, (l + 1) * nb)
         rr = np.diag(Cm)[s] / np.diag(M)[s]
         res.append('[' + ' '.join(f'{rr[(k >= lo) & (k < hi)].mean():.3f}' for lo, hi in K_RANGES) + ']')
-    print(f'  {tag}: chi2/n {chi2(V, C, allidx):.4f} -> {chi2(V, M, allidx):.4f} | var ratio vs C+C_SSC '
+    print(f'  {tag}: min eig of C^-1/2 (C+C_x) C^-1/2 = {lam:.4f} | var ratio vs C+C_x '
           f'l=0 {res[0]} l=2 {res[1]} l=4 {res[2]}')
+    if lam <= 0:
+        print(f'  {tag}: C + C_x NOT positive definite -> chi2 / parameter ratios skipped')
+        return
+    allidx = np.arange(V.shape[1])
+    print(f'  {tag}: chi2/n {chi2(V, C, allidx):.4f} -> {chi2(V, M, allidx):.4f}')
     for kmax in (0.2, 0.3):
         print(f'      kmax {kmax}: joint var ratios (A, A2, alpha, SN) {np.round(param_ratios(V, C, k, nb, kmax), 2)}'
               f' -> {np.round(param_ratios(V, M, k, nb, kmax), 2)}')
@@ -129,6 +144,12 @@ def main():
     log(f'{b}: z_eff {zeff}, f {f:.3f}, P_lin from cosmoprimo DESI fiducial')
 
     out, C_ssc, C_disc, norms = {}, {}, {}, {}
+    os.makedirs(args.out, exist_ok=True)
+    fn = os.path.join(args.out, f'ssc_{args.label}.npz')
+
+    def save(d):
+        np.savez(fn, **d)
+        log(f'saved {fn}')
     for r in ('NGC', 'SGC'):
         V, C, k = get(z, b, r, 1, args.mode)
         nb = len(k)
@@ -159,21 +180,22 @@ def main():
         model.add((tr.name, tr.name), dc.model_from_mocks(spec))
         cov.set_model(model, masked=True)
         res = {}
-        for la in (True, False):
+        # variants: LA with its Poisson self-calibration term, LA without it, no LA
+        for key, la, pois in (('LA', True, True), ('LA_noPoisson', True, False), ('noLA', False, False)):
             ssc = SuperSampleCovariance(cov, (kl, Pl), b1=b1, f=f, b2=b2, bs2=bs2, local_average=la,
-                                        n_near=args.n_near, dilution=dil)
+                                        n_near=args.n_near, dilution=dil, discreteness=pois)
             wfile = os.path.join(args.dir, f'ssc_windows_{b}_{r}.npz')
-            if la and os.path.exists(wfile):
-                ssc.load_windows(wfile)
-            if la:
+            if key == 'LA':
+                if os.path.exists(wfile):
+                    ssc.load_windows(wfile)
                 ssc.compute_windows(tr.name, verbose=True)
                 ssc.save_windows(wfile)
                 windows = ssc.windows
             else:
                 ssc.windows = windows
             Cs, _ = ssc.covariance([(tr.name, tr.name)], ells=(0, 2, 4))
-            res[la] = (ssc, Cs)
-        ssc, Cs = res[True]
+            res[key] = (ssc, Cs)
+        ssc, Cs = res['LA']
         sig = ssc.sigma2(tr.name)
         var, J, J3 = ssc.discreteness_integrals(tr.name)
         log(f'{r}: discreteness: sigma_P(eps_norm) = {np.sqrt(var) * 100:.3f}% (alpha + data in norm), '
@@ -181,35 +203,36 @@ def main():
         log(f'{r}: sigma^2 ' + ', '.join(f'{x[0]}{x[1]}-{y[0]}{y[1]} {v:.3e}' for (x, y), v in sig.items() if x <= y))
         print(f'\n{b} {r}  (a00 {ssc.a[0, 0]:.3f}, c00 {ssc.c[0, 0]:.3f}, a02 {ssc.a[0, 1]:.3f}, a20 {ssc.a[1, 0]:.3f}, '
               f'a22 {ssc.a[1, 1]:.3f}; R/P_lin)')
-        summarize('with LA   ', V, C, Cs, k, nb)
-        summarize('without LA', V, C, res[False][1], k, nb)
         disc = DiscretenessCovariance(cov, (kl, Pl), b1=b1, f=f, b2=b2, bs2=bs2)
         Cd, _ = disc.covariance([(tr.name, tr.name)], ells=(0, 2, 4))
         J_Smm, J_SS = disc.window_integrals(tr.name)
         log(f'{r}: discreteness 4-point: J_Smm {J_Smm:.3e}, J_SS {J_SS:.3e}; diag(C_disc)/diag(C) l=0 at k~0.05, 0.15, 0.25: '
             + ', '.join(f'{Cd[i, i] / C[i, i]:.3f}' for i in (6, 26, 46)))
-        summarize('SSC + discreteness 4-pt', V, C, Cs + Cd, k, nb)
         out[f'{r}/C_disc'] = Cd
         C_disc[r] = Cd
         C_ssc[r] = Cs
-        out[f'{r}/C_ssc'], out[f'{r}/C_ssc_noLA'] = Cs, res[False][1]
+        out[f'{r}/C_ssc'], out[f'{r}/C_ssc_LA_noPoisson'], out[f'{r}/C_ssc_noLA'] = Cs, res['LA_noPoisson'][1], res['noLA'][1]
+        out[f'{r}/C'] = C
         out[f'{r}/sigma2_keys'] = np.array([f'{x}|{y}' for (x, y) in sig])
         out[f'{r}/sigma2'] = np.array(list(sig.values()))
         out[f'{r}/params'] = np.array([b1, b2, bs2, f, zeff])
         out[f'{r}/dilution'] = np.asarray(dil, float) * np.ones(nb)
+        save(out)
+        for tag, Cx in (('SSC (LA)', Cs), ('SSC (LA, no Poisson)', res['LA_noPoisson'][1]), ('SSC (no LA)', res['noLA'][1]),
+                        ('SSC (LA) + disc 4-pt', Cs + Cd), ('SSC (LA, no Poisson) + disc 4-pt', res['LA_noPoisson'][1] + Cd)):
+            summarize(f'{tag:33s}', V, C, Cx, k, nb)
+        C_ssc[r + '_noP'] = res['LA_noPoisson'][1]
         del tr, cov
 
     V, C, k = get(z, b, 'GCcomb', 1, args.mode)
     Cg = dc.combine_regions([C_ssc['NGC'], C_ssc['SGC']], [norms['NGC'], norms['SGC']])
-    print(f'\n{b} GCcomb')
-    summarize('with LA   ', V, C, Cg, k, len(k))
+    Cgn = dc.combine_regions([C_ssc['NGC_noP'], C_ssc['SGC_noP']], [norms['NGC'], norms['SGC']])
     Cgd = dc.combine_regions([C_disc['NGC'], C_disc['SGC']], [norms['NGC'], norms['SGC']])
-    summarize('SSC + discreteness 4-pt', V, C, Cg + Cgd, k, len(k))
-    out['GCcomb/C_ssc'], out['GCcomb/C_disc'] = Cg, Cgd
-    os.makedirs(args.out, exist_ok=True)
-    fn = os.path.join(args.out, f'ssc_{args.label}.npz')
-    np.savez(fn, **out)
-    log(f'saved {fn}')
+    out['GCcomb/C_ssc'], out['GCcomb/C_ssc_LA_noPoisson'], out['GCcomb/C_disc'] = Cg, Cgn, Cgd
+    save(out)
+    print(f'\n{b} GCcomb')
+    for tag, Cx in (('SSC (LA)', Cg), ('SSC (LA) + disc 4-pt', Cg + Cgd), ('SSC (LA, no Poisson) + disc 4-pt', Cgn + Cgd)):
+        summarize(f'{tag:33s}', V, C, Cx, k, len(k))
 
 
 if __name__ == '__main__':
