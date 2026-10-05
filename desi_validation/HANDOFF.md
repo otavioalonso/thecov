@@ -76,7 +76,9 @@ A. **Make `kernel` the DESI default.** `desi_validation/pipeline.py`: `Config.nw
    2-16 min + pair counts 10-20 min per cap, fits the 30-min debug queue. Keep `random-density` as the
    comparison. Re-run LRG1 + QSO once with the new defaults to refresh `report_data`.
 
-B. **Super-sample module in thecov core** (the physics that remains). Target numbers are item 4, not
+B. **Super-sample module in thecov core** -- IMPLEMENTED (`thecov/ssc.py`, see `ssc_dev/DESIGN.md` STATUS);
+   next: run `python -m desi_validation.ssc_check --bin LRG1 --label holi-kcore2-LRG1` (and QSO) at NERSC and
+   compare the predicted sigma_P0, sigma_P2/P0, r02 with the mocks' (no fitting). Original plan: Target numbers are item 4, not
    chi2/n. Form: Cov_SSC[P_l(k), P_l'(k')] = sum_c R_l^c(k) R_l'^c(k') sigma_c^2 over long-mode
    components c; redshift-space responses from Wadekar & Scoccimarro (2020) / Li, Schmittfull & Seljak
    (2018) (growth, dilation, bias, Kaiser and tidal/LOS terms, minus the local-average term for

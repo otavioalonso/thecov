@@ -150,11 +150,15 @@ class SuperSampleCovariance:
              terms do, and evaluating S at the cell-mean mu biases it at second order in the mu cell
              (-1% of Q_000 with 24 cells, i.e. -8% in sigma^2_22 for a sphere); 96 cells remove it.
              Small separations matter little for long modes, so fewer near pairs suffice.
+    dilution: d_k = I_k / norm of the BC term, scalar or per k-bin (default cov.I_k / cov.I, i.e.
+             int m^2 / norm for a local window: for footprints with fine veto masks pass the
+             pair-averaged value, e.g. WindowSmoothing.I_k / norm)
     """
 
     def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, local_average=True, damping=1.0, n_mu=96,
-                 n_near=300000):
+                 n_near=300000, dilution=None):
         self.cov = cov
+        self.dilution = dilution
         opts = dict(cov.windows.opts)
         opts.update(n_mu=int(n_mu), n_near=min(int(n_near), int(opts['n_near'])))
         self.windows = WindowLibrary(cov.windows.s_edges, **opts)
@@ -261,10 +265,15 @@ class SuperSampleCovariance:
         return {(l, n): self.a[i, j] * Pb + self.c[i, j] * dPb
                 for i, l in enumerate(ELLS) for j, n in enumerate(ELLS)}
 
+    def _dilution(self, A):
+        if self.dilution is not None:
+            return np.broadcast_to(np.asarray(self.dilution, float), (self.cov.nbins,)).copy()
+        return np.asarray(self.cov.I_k(A, A), float) / self.cov.I(A, A)
+
     def coefficients(self, A, ells):
         """{X: (len(ells) * nbins,) vector c^X} in the data-vector order (ell, bin)."""
         cov = self.cov
-        d = np.asarray(cov.I_k(A, A), float) / cov.I(A, A)
+        d = self._dilution(A)
         R = self.responses()
         Pmeas = {}
         for l in ells:
@@ -312,7 +321,7 @@ class SuperSampleCovariance:
         ells = self.cov.ells if ells is None else tuple(ells)
         C, _ = self.covariance([(A, A)], ells)
         nb = self.cov.nbins
-        d = np.asarray(self.cov.I_k(A, A), float) / self.cov.I(A, A)
+        d = self._dilution(A)
         P0 = self._bin_average(lambda k: self.cov.model(A, A, 0, k))
         P0 = P0 if self.cov.masked else P0 * d
         return {l: np.sqrt(np.clip(np.diag(C)[i * nb:(i + 1) * nb], 0, None)) / np.abs(P0) for i, l in enumerate(ells)}

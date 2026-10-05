@@ -1,4 +1,13 @@
-# SSC module for thecov: design (started 2026-10-05, not yet implemented)
+# SSC module for thecov: design notes
+
+STATUS (2026-10-06): implemented in `thecov/ssc.py` (SuperSampleCovariance, response_coefficients), tests in
+`tests/test_ssc.py`, DESI check `desi_validation/ssc_check.py`. Differences from the plan below: responses are
+computed numerically from the Z1/Z2 kernels (exact projections, no hard-coded sympy output; nu^4 vanishes);
+the local average follows jaxpower's per-mock alpha (m-weighted) AND norm (m^2-weighted), i.e.
+-P_l [g_0 (D^W_0 + D^M_0) + g_2 (D^W_2 + D^M_2)] with g_0 = b1 + f/3, g_2 = 2f/3 (not -2 with one weight);
+the SSC keeps its own window library with 96 mu cells (24 biases sigma^2_22 by -8%); the BC dilution
+d_k = I_k / norm can be passed (`dilution=`) -- use the pair-averaged window's, not int m^2 / norm.
+
 
 Goal: Cov_SSC[P_l1(k1), P_l2(k2)] = sum_{n,n'} R_l1^(n)(k1) R_l2^(n')(k2) sigma^2_{nn'}, redshift space,
 local line of sight, from thecov's existing window pair counts. Targets: HANDOFF.md item 4.
