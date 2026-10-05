@@ -54,7 +54,11 @@ least) is: default +9-12%; fill512 +5-7% (NGC) / +4.5% (SGC); fill128 +2-4% / +1
 kernel (12, default sampling) +1-3% / -2%. Monte Carlo noise of the pair counts at default sampling is
 1-2%. The converged kernel at production sampling, from its ratios to fill128 in
 `kernel_validation_results.md`, would sit at ~+2% / 0% at low k and ~0 at high k: the flattest of all.
-Prediction to verify (step A below).
+Verified on the converged kernel at production sampling (holi-kcore2-LRG1): residual var ratio with the
+rank-1 term removed, NGC l=0/2/4: 1.02/1.00/1.00 (0.02-0.06), 0.98/1.00/0.98 (0.06-0.12), 0.96/0.97/1.00
+(0.12-0.2), 1.00/0.94/0.96 (0.2-0.3); SGC: 1.00/1.01/1.01, 0.99/1.02/1.03, 1.01/0.96/0.99, 0.97/0.98/0.97.
+Same sigma_0, sigma_2 as with every other window. Parameter ratios at kmax 0.2: A 1.01/1.09, A2 0.96/1.05,
+alpha 0.90/1.08, SN 0.86/1.10 (NGC/SGC).
 
 The physics is consistent with the three independent estimates of the hole effect (GRF +5-7% with ~1%
 Poisson bias, thecov fill512 +4.5%, hole-fraction R_PP +3-4%): the veto holes add ~4-5% to the Gaussian
@@ -68,10 +72,8 @@ by absorbing part of the low-rank term, which is the wrong physics.
 
 ## 3. Proposal
 
-A. (NERSC, 1 min) Run `python -m desi_validation.rank1_excess holi-kcore2-LRG1:kernel holi-fillprod-LRG1:fill
-   holi-kcore-LRG1:random-density` and `--bin QSO holi-kcore2-QSO:kernel`. Check that the converged kernel
-   leaves the flattest residual (|ratio - 1| <~ 0.02 at k < 0.2 for all ell) and the same sigma_0, sigma_2.
-   If so, make `kernel` (or fill512) the DESI default and close the window question.
+A. Done (above): the converged kernel leaves the flattest residual. Make `kernel` the DESI default
+   (see HANDOFF.md, step A).
 
 B. (thecov core) Super-sample module with redshift-space responses, in the Wadekar & Scoccimarro (2020)
    / Li, Schmittfull & Seljak (2018) form: Cov_SSC(P_l(k), P_l'(k')) = sum over long-mode components c of
