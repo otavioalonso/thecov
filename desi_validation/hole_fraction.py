@@ -29,7 +29,8 @@ so the coarsest rows mix edges with holes (a hole-free 30 x 60 deg cap gives R_P
 1.017 at 32, 1.032 at 16). Synthetic checks: uniform 20% holes give <f> = 0.80 but R_PP = 1.005 (they
 cancel); 10% / 40% holes in two halves give R_PP = 1.038 against the analytic 1.036.
 
-Output: a table per tracer and region on stdout, and OUT/hole_fraction_<tracer>.json.
+Output: a table per tracer and region on stdout, and <--out>/hole_fraction_<tracer>.json
+(default /global/cfs/cdirs/desicollab/users/oalves/thecov_validation).
 """
 from __future__ import annotations
 
@@ -88,13 +89,15 @@ def main():
     ap.add_argument('--nside-max', type=int, default=2048)
     ap.add_argument('--nside-min', type=int, default=8)
     ap.add_argument('--n-eval', type=float, default=2e6)
+    ap.add_argument('--out', default='/global/cfs/cdirs/desicollab/users/oalves/thecov_validation',
+                    help='where the json goes')
     ap.add_argument('--surface-density', type=float, default=2500.0, help='randoms per deg^2 per file')
     args = ap.parse_args()
 
     paths = dc.Paths(kind='holi_v3', mock=173)
     paths.loader = 'auto'
     paths.cs_version, paths.cs_parent_version = 'holi-v3-altmtl', 'data-dr2-v2'
-    OUT = os.path.expanduser(f'~/thecov_desi/{paths.kind}_mock{paths.mock}')
+    OUT = args.out
     os.makedirs(OUT, exist_ok=True)
     import healpy as hp
 

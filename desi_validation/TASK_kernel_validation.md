@@ -20,6 +20,8 @@ repository; read `desi_validation/report/window_kernel.typ` for the derivation i
 - Repository: `~/thecov`. Caches and outputs: `~/thecov_desi/holi_v3_mock173` (`OUT`).
 - Mocks: holi-v3-altmtl, 859 realisations; catalogues for mock 173 (`dc.Paths(kind='holi_v3', mock=173)`,
   set up inside `dump_report_data.py`).
+- **Files for the user** (logs, summaries, small outputs): put them, or copies, in
+  `/global/cfs/cdirs/desicollab/users/oalves/thecov_validation` (easier for the user to reach than `~`).
 - Logs: `~/kcore2_NGC.log`, `~/kcore2_SGC.log`, `~/kcore2_all.log` (names used below).
 
 ## Physics in brief
