@@ -31,7 +31,7 @@ from desi_validation.rank1_excess import param_ratios  # noqa: E402
 
 INK, INK2, GRID, BAND = '#0b0b0b', '#52514e', '#e4e3df', '#f0efec'
 GAUSS = '#8a8984'
-SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#4a3aa7']           # fixed categorical order
+SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#e34948', '#4a3aa7']           # fixed categorical order
 REGIONS = ('NGC', 'SGC', 'GCcomb')
 ELLS = (0, 2, 4)
 
@@ -54,13 +54,25 @@ def models(s, r, nola=True):
         out['SSC (LA) + disc 4-pt'] = ssc + disc
     if ssc_np is not None and disc is not None:
         out['SSC (LA, no Poisson) + disc 4-pt'] = ssc_np + disc
+    t0 = g('C_T0') if g('C_T0') is not None else (g('C_T0_snake') + g('C_T0_star') if g('C_T0_snake') is not None else None)
+    if ssc is not None and disc is not None and t0 is not None:
+        out['SSC (LA) + disc 4-pt + T0'] = ssc + disc + t0
     if nola and ssc_nola is not None:
         out['SSC (no LA)'] = ssc_nola
     return out
 
 
+COLOR = {'SSC (LA)': 0, 'SSC (LA, no Poisson)': 0, 'SSC (LA) + disc 4-pt': 1, 'SSC (LA, no Poisson) + disc 4-pt': 2,
+         'SSC (LA) + disc 4-pt + T0': 3, 'SSC (no LA)': 4,
+         'disc 4-pt': 1, 'T0 snake': 2, 'T0 star': 3, 'T0': 3}                # colour follows the model, not its rank
+
+
+def color(i, name):
+    return SERIES[COLOR.get(name, i) % len(SERIES)]
+
+
 def style(i, name):
-    return dict(color=SERIES[i % len(SERIES)], ls='--' if 'no LA' in name else '-', label=name)
+    return dict(color=color(i, name), ls='--' if 'no LA' in name else '-', label=name)
 
 
 def fig_variance(data, fn):
@@ -178,7 +190,7 @@ def fig_params(data, fn, kmaxs=(0.2, 0.3)):
             entries = [('Gaussian (kernel)', C, GAUSS)]
             for i, (name, X) in enumerate(M.items()):
                 if np.linalg.eigvalsh(C + X).min() > 0:
-                    entries.append((name, C + X, SERIES[i % len(SERIES)]))
+                    entries.append((name, C + X, color(i, name)))
             w = 0.8 / len(entries)
             e = np.sqrt(2 / (N - 1))
             ax.axhspan(1 - e, 1 + e, color=BAND, lw=0)
@@ -203,7 +215,8 @@ def fig_budget(data, s, fn):
         nb = len(k)
         dC = np.diag(C)
         terms = [(name, s[f'{r}/{key}']) for name, key in (('SSC (LA)', 'C_ssc'), ('SSC (LA, no Poisson)', 'C_ssc_LA_noPoisson'),
-                                                         ('disc 4-pt', 'C_disc')) if f'{r}/{key}' in s.files]
+                                                         ('disc 4-pt', 'C_disc'), ('T0 snake', 'C_T0_snake'),
+                                                         ('T0 star', 'C_T0_star'), ('T0', 'C_T0')) if f'{r}/{key}' in s.files]
         vm = V.var(0, ddof=1)
         for col, l in enumerate(ELLS):
             ax = axes[row, col]
@@ -211,7 +224,7 @@ def fig_budget(data, s, fn):
             ax.axhline(0, color=INK2, lw=0.8)
             ax.plot(k, vm[sl] / dC[sl] - 1, color=INK, lw=0.8, alpha=0.6, label='mocks / Gaussian - 1')
             for i, (name, X) in enumerate(terms):
-                ax.plot(k, np.diag(X)[sl] / dC[sl], color=SERIES[i], label=name)
+                ax.plot(k, np.diag(X)[sl] / dC[sl], color=color(i, name), ls=':' if name == 'T0 star' else '-', label=name)
             ax.set_title(f'{r}  ell={l}', loc='left', fontsize=9, color=INK)
             if col == 0:
                 ax.set_ylabel('fraction of Gaussian diag')

@@ -169,3 +169,21 @@ Covariance = kernel Gaussian + SSC (LA) + discreteness 4-pt:
   that raise P0 and lower P2 together, a non-perturbative T0 piece the template fit should absorb.
 - Bug fixed after this run (84f463c): the npz save overwrote the kernel *.smoothing.npz caches of LRG1 and QSO
   (both caps); delete them (they now hold SSC output); the dilution now comes from the cached kernel covariance's I_k.
+
+## 7. Tree-level T0 (`thecov/trispectrum.py`, 2026-10-06)
+
+- `TrispectrumCovariance(cov, p_lin, bias, f, n_workers=...)`: Kobayashi's (PowerSpecCovFFT) decomposition,
+  snake (T2211) + star (T3111), SCF99 redshift-space Z1..Z3 from the exact mapping, Galileon bias basis
+  (`Bias`; `galileon_bias(b1, b2, bs2, b3=...)` converts from the ssc (b2, bs2) basis), window factor
+  J4 = int m^4 / norm^2. Components: snake, star, star_b3 (= d star / d b3) for templates.
+- Validation: F3 angle average = the P13 kernel (1e-10); Z2 = ssc._Z2; l1 = l2 blocks equal PowerSpecCovFFT's
+  to 4 digits for every bias parameter (b1, b2, bG2, b3, bG3, bdG2, bGamma3 switched on one at a time:
+  scratch xcheck_t0.py); all blocks against an independent (mu1, mu2, phi) quadrature (tests).
+- PowerSpecCovFFT is wrong for l1 != l2 where its k1 <-> k2 swapped terms matter (k1 >= k2): e.g. C_02 at
+  k1 = k2 is 0.77x (snake) / 1.24x (star) of the correct value; at k1 < k2 it agrees to 1e-3 (the swapped
+  term is P(k2)^2-suppressed there). Same issue as found earlier for its shot-noise terms.
+- Cost ~0.13 s per pair of k nodes and process (Gram-matrix kernels), spawn-based process pool.
+- `CovarianceTemplates(C_fixed).update(components, prefix=...)`: C(A) = C_fixed + sum A_i C_i, save/load;
+  the hook for the subvolume amplitude fit (templates: T0 snake, star, star_b3, disc B, disc P, SSC).
+- ssc_check now adds T0 (b3 from Lazeyras b3(b1)) and reports 'SSC (LA) + disc 4-pt + T0' (and b3 = 0);
+  ssc_plots shows it.

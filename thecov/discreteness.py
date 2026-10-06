@@ -94,6 +94,11 @@ class DiscretenessCovariance:
 
     def covariance(self, spectra, ells=None):
         """C^disc for [P^{AA}_ell(k_i)] ordered by ell, bin (as GaussianCovariance.covariance)."""
+        comps, index = self.components(spectra, ells=ells, return_index=True)
+        return comps['B'] + comps['P'], index
+
+    def components(self, spectra, ells=None, return_index=False):
+        """{'B': one shared galaxy (bispectrum, 1/n), 'P': two shared galaxies (power spectrum, 1/n^2)}"""
         cov = self.cov
         ells = cov.ells if ells is None else tuple(ells)
         spectra = [tuple(str(x) for x in sp) for sp in spectra]
@@ -120,20 +125,25 @@ class DiscretenessCovariance:
         u2 = np.stack([s2 * np.cos(ph), s2 * np.sin(ph), mu2])
         wang = (wm[:, None, None] * wm[None, :, None] / 4.0 / self.n_phi) * np.ones_like(mu1)   # <.> over k1^, k2^
         L = {l: (np.polynomial.legendre.Legendre.basis(l)(mu1), np.polynomial.legendre.Legendre.basis(l)(mu2)) for l in ells}
-        C = np.zeros((len(ells) * nb, len(ells) * nb))
+        out = {p: np.zeros((len(ells) * nb, len(ells) * nb)) for p in ('B', 'P')}
         for i in range(nb):
             for j in range(i, nb):
-                acc = {(l1, l2): 0.0 for l1 in ells for l2 in ells}
+                acc = {(t, l1, l2): 0.0 for t in out for l1 in ells for l2 in ells}
                 for a_, ka in zip(kw[i], kn[i]):
                     for b_, kb in zip(kw[j], kn[j]):
                         k1, k2 = ka * u1, kb * u2
-                        F = (2 * J_Smm * (self._B(k1, k2) + self._B(k1, -k2))
-                             + J_SS * (self._Ps(k1 + k2) + self._Ps(k1 - k2)))
-                        for l1 in ells:
-                            for l2 in ells:
-                                acc[(l1, l2)] += a_ * b_ * (2 * l1 + 1) * (2 * l2 + 1) * np.sum(wang * L[l1][0] * L[l2][1] * F)
-                for p, l1 in enumerate(ells):
-                    for q, l2 in enumerate(ells):
-                        C[p * nb + i, q * nb + j] = acc[(l1, l2)]
-                        C[q * nb + j, p * nb + i] = acc[(l1, l2)]
-        return C, [(A, A, l, i) for l in ells for i in range(nb)]
+                        F = {'B': 2 * J_Smm * (self._B(k1, k2) + self._B(k1, -k2)),
+                             'P': J_SS * (self._Ps(k1 + k2) + self._Ps(k1 - k2))}
+                        for t in out:
+                            for l1 in ells:
+                                for l2 in ells:
+                                    acc[(t, l1, l2)] += (a_ * b_ * (2 * l1 + 1) * (2 * l2 + 1)
+                                                         * np.sum(wang * L[l1][0] * L[l2][1] * F[t]))
+                for t in out:
+                    for p, l1 in enumerate(ells):
+                        for q, l2 in enumerate(ells):
+                            out[t][p * nb + i, q * nb + j] = acc[(t, l1, l2)]
+                            out[t][q * nb + j, p * nb + i] = acc[(t, l1, l2)]
+        if return_index:
+            return out, [(A, A, l, i) for l in ells for i in range(nb)]
+        return out

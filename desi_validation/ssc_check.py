@@ -11,6 +11,11 @@ z_eff. b1 is fitted to P2/P0 of the mock mean at 0.02 <= k <= 0.06 (Kaiser), b2 
 of the pair-averaged window (WindowSmoothing cache of the kernel runs) when found, else the Kaiser fit's
 amplitude at low k.
 
+Also the discreteness 4-point terms (thecov.DiscretenessCovariance) and the tree-level trispectrum
+(thecov.TrispectrumCovariance; Galileon biases from b1, b2, bs2 above, b3 from Lazeyras et al. b3(b1),
+bGamma3 = 23/42 (b1 - 1); --no-t0 to skip; --workers processes), with their components saved separately
+(C_disc_B, C_disc_P, C_T0_snake, C_T0_star, C_T0_star_b3 = d C_T0 / d b3) for amplitude fits.
+
 Reports per cap and for GCcomb: the predicted coherent amplitudes in the form of rank1_excess
 (sigma_P0, sigma_P2/P0, their correlation, from the same off-diagonal fit applied to C_SSC) against the
 mocks'; chi2/n, residual diagonal variance ratios and joint parameter variance ratios with C + C_SSC
@@ -132,11 +137,15 @@ def main():
     ap.add_argument('--f', type=float, default=None)
     ap.add_argument('--zeff', type=float, default=None)
     ap.add_argument('--n-near', type=int, default=300000)
+    ap.add_argument('--b3', type=float, default=None, help='T0: b3 (default: Lazeyras et al. 2016 b3(b1))')
+    ap.add_argument('--workers', type=int, default=min(64, os.cpu_count() or 1), help='T0: processes')
+    ap.add_argument('--no-t0', action='store_true', help='skip the tree-level trispectrum')
     args = ap.parse_args()
 
     from cosmoprimo.fiducial import DESI
     from scipy.interpolate import CubicSpline
-    from thecov import GaussianCovariance, PowerSpectrumModel, SuperSampleCovariance, DiscretenessCovariance
+    from thecov import (GaussianCovariance, PowerSpectrumModel, SuperSampleCovariance, DiscretenessCovariance,
+                        TrispectrumCovariance, galileon_bias)
 
     paths = dc.Paths(kind='holi_v3', mock=173)
     paths.loader = 'auto'
@@ -154,7 +163,7 @@ def main():
     f = args.f if args.f is not None else float(cosmo.growth_rate(zeff))
     log(f'{b}: z_eff {zeff}, f {f:.3f}, P_lin from cosmoprimo DESI fiducial')
 
-    out, C_ssc, C_disc, norms = {}, {}, {}, {}
+    out, C_ssc, C_disc, C_t0, norms = {}, {}, {}, {}, {}
     os.makedirs(args.out, exist_ok=True)
     out_fn = os.path.join(args.out, f'ssc_{args.label}.npz')
 
@@ -215,7 +224,9 @@ def main():
         print(f'\n{b} {r}  (a00 {ssc.a[0, 0]:.3f}, c00 {ssc.c[0, 0]:.3f}, a02 {ssc.a[0, 1]:.3f}, a20 {ssc.a[1, 0]:.3f}, '
               f'a22 {ssc.a[1, 1]:.3f}; R/P_lin)')
         disc = DiscretenessCovariance(cov, (kl, Pl), b1=b1, f=f, b2=b2, bs2=bs2)
-        Cd, _ = disc.covariance([(tr.name, tr.name)], ells=(0, 2, 4))
+        dcomp = disc.components([(tr.name, tr.name)], ells=(0, 2, 4))
+        Cd = dcomp['B'] + dcomp['P']
+        out[f'{r}/C_disc_B'], out[f'{r}/C_disc_P'] = dcomp['B'], dcomp['P']
         J_Smm, J_SS = disc.window_integrals(tr.name)
         log(f'{r}: discreteness 4-point: J_Smm {J_Smm:.3e}, J_SS {J_SS:.3e}; diag(C_disc)/diag(C) l=0 at k~0.05, 0.15, 0.25: '
             + ', '.join(f'{Cd[i, i] / C[i, i]:.3f}' for i in (6, 26, 46)))
@@ -229,8 +240,27 @@ def main():
         out[f'{r}/params'] = np.array([b1, b2, bs2, f, zeff])
         out[f'{r}/dilution'] = np.asarray(dil, float) * np.ones(nb)
         save(out)
-        for tag, Cx in (('SSC (LA)', Cs), ('SSC (LA, no Poisson)', res['LA_noPoisson'][1]), ('SSC (no LA)', res['noLA'][1]),
-                        ('SSC (LA) + disc 4-pt', Cs + Cd), ('SSC (LA, no Poisson) + disc 4-pt', res['LA_noPoisson'][1] + Cd)):
+        variants = [('SSC (LA)', Cs), ('SSC (LA, no Poisson)', res['LA_noPoisson'][1]), ('SSC (no LA)', res['noLA'][1]),
+                    ('SSC (LA) + disc 4-pt', Cs + Cd), ('SSC (LA, no Poisson) + disc 4-pt', res['LA_noPoisson'][1] + Cd)]
+        if not args.no_t0:
+            b3 = args.b3 if args.b3 is not None else -1.028 + 7.646 * b1 - 6.227 * b1 ** 2 + 0.912 * b1 ** 3
+            gb = galileon_bias(b1, b2, bs2, b3=b3)
+            t0 = TrispectrumCovariance(cov, (kl, Pl), gb, f=f, n_workers=args.workers)
+            tt = time.time()
+            tc = t0.components([(tr.name, tr.name)], ells=(0, 2, 4))
+            Ct = tc['snake'] + tc['star']
+            log(f'{r}: T0 ({gb}, J4 {t0.window_integral(tr.name):.3e}, {time.time() - tt:.0f} s with {args.workers} '
+                'processes); diag(C_T0)/diag(C) l=0 at k~0.05, 0.15, 0.25: '
+                + ', '.join(f'{Ct[i, i] / C[i, i]:.3f}' for i in (6, 26, 46))
+                + '; snake / star at k~0.15: ' + f"{tc['snake'][26, 26] / tc['star'][26, 26]:.2f}")
+            for key, M in tc.items():
+                out[f'{r}/C_T0_{key}'] = M
+            out[f'{r}/bias_galileon'] = np.array(list(gb.as_dict().values()))
+            C_t0[r], C_t0[r + '_b3'] = Ct, tc['star_b3']
+            save(out)
+            variants += [('SSC (LA) + disc 4-pt + T0', Cs + Cd + Ct),
+                         ('SSC (LA) + disc 4-pt + T0 (b3=0)', Cs + Cd + Ct - b3 * tc['star_b3'])]
+        for tag, Cx in variants:
             summarize(f'{tag:33s}', V, C, Cx, k, nb)
         C_ssc[r + '_noP'] = res['LA_noPoisson'][1]
         del tr, cov
@@ -240,9 +270,14 @@ def main():
     Cgn = dc.combine_regions([C_ssc['NGC_noP'], C_ssc['SGC_noP']], [norms['NGC'], norms['SGC']])
     Cgd = dc.combine_regions([C_disc['NGC'], C_disc['SGC']], [norms['NGC'], norms['SGC']])
     out['GCcomb/C_ssc'], out['GCcomb/C_ssc_LA_noPoisson'], out['GCcomb/C_disc'] = Cg, Cgn, Cgd
+    variants = [('SSC (LA)', Cg), ('SSC (LA) + disc 4-pt', Cg + Cgd), ('SSC (LA, no Poisson) + disc 4-pt', Cgn + Cgd)]
+    if C_t0:
+        Cgt = dc.combine_regions([C_t0['NGC'], C_t0['SGC']], [norms['NGC'], norms['SGC']])
+        out['GCcomb/C_T0'] = Cgt
+        variants.append(('SSC (LA) + disc 4-pt + T0', Cg + Cgd + Cgt))
     save(out)
     print(f'\n{b} GCcomb')
-    for tag, Cx in (('SSC (LA)', Cg), ('SSC (LA) + disc 4-pt', Cg + Cgd), ('SSC (LA, no Poisson) + disc 4-pt', Cgn + Cgd)):
+    for tag, Cx in variants:
         summarize(f'{tag:33s}', V, C, Cx, k, len(k))
 
 
