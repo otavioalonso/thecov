@@ -79,6 +79,58 @@ def fit_sigma_v(k, P0, P2, b1, f, kmin=0.05, kmax=0.3):
     return float(minimize_scalar(lambda sg: np.sum((model(sg) - ratio) ** 2), bounds=(0, 15), method='bounded').x)
 
 
+def fit_amplitude(k, P0, dil, b1, f, sigma_v, plin, kmin=0.02, kmax=0.08):
+    """A = P0_mocks / (dilution x Kaiser-FoG(b1, f, sigma_v) x P_lin), median over kmin <= k <= kmax: the factor that
+    normalises the linear galaxy power of the model to the mocks (b1 is fixed by P2/P0; A absorbs sigma_8^2 or b1^2
+    offsets). All non-Gaussian terms are built from A P_lin."""
+    x, w = np.polynomial.legendre.leggauss(32)
+    sel = (k >= kmin) & (k <= kmax)
+    K = (b1 + f * x ** 2) ** 2 * np.exp(-(k[sel, None] * x * sigma_v) ** 2)
+    model = np.atleast_1d(dil * np.ones_like(k))[sel] * plin(k[sel]) * np.sum(w * K, 1) / 2
+    return float(np.median(P0[sel] / model))
+
+
+TEMPLATE_CASES = [  # (name, templates held at 1, templates fitted); the rest are 0
+    ('SSC + disc', ['ssc', 'disc_B', 'disc_P'], []),
+    ('SSC + disc + T0 (response split)', ['ssc', 'disc_B', 'disc_P', 'T0_LL', 'T0_LH', 'T0_HH', 'T0_completion'], []),
+    ('fit: SSC, disc', [], ['ssc', 'disc']),
+    ('fit: SSC, disc, T0', [], ['ssc', 'disc', 'T0']),
+    ('fit: SSC, disc_B, disc_P, T0_LL, T0_LH, T0_HH, compl.', [],
+     ['ssc', 'disc_B', 'disc_P', 'T0_LL', 'T0_LH', 'T0_HH', 'T0_completion']),
+]
+
+
+def template_table(tag, V, C, comps, k, nb):
+    """Wishart maximum-likelihood amplitudes of the non-Gaussian templates for the mock covariance, and
+    -2 Delta ln L against the Gaussian covariance alone (what the sub-volume fit will do on the data)."""
+    from thecov import CovarianceTemplates
+    comps = dict(comps)
+    if 'disc_B' in comps:
+        comps['disc'] = comps['disc_B'] + comps['disc_P']
+    if 'T0_LL' in comps:
+        comps['T0'] = comps['T0_LL'] + comps['T0_LH'] + comps['T0_HH']
+    S, N = np.cov(V.T), len(V)
+    tpl = CovarianceTemplates(C).update(comps)
+    zero = {n: 0.0 for n in tpl.names}
+    ref = tpl.loglike(S, N, **zero)
+    print(f'  {tag}: template amplitudes (Wishart ML on the mocks); -2 dlnL vs Gaussian, chi2/n')
+    out = {}
+    for name, ones, free in TEMPLATE_CASES:
+        if any(t not in tpl.names for t in ones + free):
+            continue
+        fixed = dict(zero, **{t: 1.0 for t in ones})
+        if free:
+            amps, m2l = tpl.fit(S, N, free=free, fixed=fixed, start={t: 1.0 for t in free})
+        else:
+            amps, m2l = fixed, tpl.loglike(S, N, **fixed)
+        M = tpl(**amps)
+        ok = np.isfinite(m2l)
+        out[name] = {t: amps[t] for t in ones + free}
+        print(f'    {name:52s} {m2l - ref:+9.1f}  ' + (f'{chi2(V, M, np.arange(V.shape[1])):.4f}' if ok else ' n/PD ')
+              + '  ' + ', '.join(f'{t}={amps[t]:.2f}' for t in ones + free))
+    return out
+
+
 def kernel_dilution(out_dir, b, r, k_edges, norm, cache_tag):
     """I_k / norm of the pair-averaged window of the kernel runs, or (None, None): read from the cached
     kernel covariance (cov_<r>_<b>_<r>_kernel_*<cache_tag>_*.npz, which stores I_k per bin), else from
@@ -161,6 +213,8 @@ def main():
     ap.add_argument('--sigma-fog', type=float, default=None, help='FoG sigma_v [Mpc/h] (default: fit to the mock P2/P0)')
     ap.add_argument('--ir-sigma', type=float, default=6.0, help='BAO damping scale of P_lin [Mpc/h]')
     ap.add_argument('--no-damping', action='store_true', help='tree-level responses with the undamped P_lin (old)')
+    ap.add_argument('--no-normalize', action='store_true', help='do not normalise A P_lin to the mock amplitude')
+    ap.add_argument('--k-split', type=float, default=0.06, help='T0 response split: long bins k < k_split')
     args = ap.parse_args()
 
     from cosmoprimo.fiducial import DESI
@@ -212,11 +266,14 @@ def main():
         bs2 = args.bs2 if args.bs2 is not None else -4 / 7 * (b1 - 1)
         sigma_v = 0.0 if args.no_damping else (args.sigma_fog if args.sigma_fog is not None
                                                   else fit_sigma_v(k, Pm[:nb], Pm[nb:2 * nb], b1, f))
-        damp = dict(p_dressed=None if args.no_damping else Dressed(kl, Pir, sigma_v))
-        log(f'{r}: damping: ' + ('none (tree level, undamped P_lin)' if args.no_damping else
-                                 f'BAO Sigma {args.ir_sigma} Mpc/h, FoG sigma_v {sigma_v:.2f} Mpc/h (fit to the mock P2/P0)'))
         d_ker, dil_fn = kernel_dilution(args.dir, b, r, k_edges, norm, args.cache_tag)
         dil = d_ker if d_ker is not None else d_fit
+        A_norm = 1.0 if args.no_normalize else fit_amplitude(k, Pm[:nb], dil, b1, f, sigma_v, plin_k)
+        PlA, PirA = A_norm * Pl, A_norm * Pir
+        damp = dict(p_dressed=None if args.no_damping else Dressed(kl, PirA, sigma_v))
+        log(f'{r}: damping: ' + ('none (tree level, undamped P_lin)' if args.no_damping else
+                                 f'BAO Sigma {args.ir_sigma} Mpc/h, FoG sigma_v {sigma_v:.2f} Mpc/h (fit to the mock P2/P0)')
+            + f'; linear amplitude normalised to the mocks: A = {A_norm:.3f}' + (' (off)' if args.no_normalize else ''))
         log(f'{r}: b1 {b1:.3f} (P2/P0 fit {b1_fit:.3f}), b2 {b2:.3f}, bs2 {bs2:.3f}; dilution '
             + (f'from {os.path.basename(dil_fn)}: {d_ker[0]:.3f} ... {d_ker[-1]:.3f}' if d_ker is not None else 'not cached')
             + f'; Kaiser-fit amplitude {d_fit:.3f}')
@@ -234,7 +291,7 @@ def main():
         res = {}
         # variants: LA with its Poisson self-calibration term, LA without it, no LA
         for key, la, pois in (('LA', True, True), ('LA_noPoisson', True, False), ('noLA', False, False)):
-            ssc = SuperSampleCovariance(cov, (kl, Pl), b1=b1, f=f, b2=b2, bs2=bs2, local_average=la, **damp,
+            ssc = SuperSampleCovariance(cov, (kl, PlA), b1=b1, f=f, b2=b2, bs2=bs2, local_average=la, **damp,
                                         n_near=args.n_near, dilution=dil, discreteness=pois)
             wfile = os.path.join(args.dir, f'ssc_windows_{b}_{r}.npz')
             if key == 'LA':
@@ -255,7 +312,7 @@ def main():
         log(f'{r}: sigma^2 ' + ', '.join(f'{x[0]}{x[1]}-{y[0]}{y[1]} {v:.3e}' for (x, y), v in sig.items() if x <= y))
         print(f'\n{b} {r}  (a00 {ssc.a[0, 0]:.3f}, c00 {ssc.c[0, 0]:.3f}, a02 {ssc.a[0, 1]:.3f}, a20 {ssc.a[1, 0]:.3f}, '
               f'a22 {ssc.a[1, 1]:.3f}; R/P_lin)')
-        disc = DiscretenessCovariance(cov, (kl, Pir), b1=b1, f=f, b2=b2, bs2=bs2, sigma_fog=sigma_v,
+        disc = DiscretenessCovariance(cov, (kl, PirA), b1=b1, f=f, b2=b2, bs2=bs2, sigma_fog=sigma_v,
                                       **(dict(n_mu=16, n_phi=24) if sigma_v else {}))
         dcomp = disc.components([(tr.name, tr.name)], ells=(0, 2, 4))
         Cd = dcomp['B'] + dcomp['P']
@@ -271,7 +328,7 @@ def main():
         out[f'{r}/sigma2_keys'] = np.array([f'{x}|{y}' for (x, y) in sig])
         out[f'{r}/sigma2'] = np.array(list(sig.values()))
         out[f'{r}/params'] = np.array([b1, b2, bs2, f, zeff])
-        out[f'{r}/damping'] = np.array([0.0 if args.no_damping else args.ir_sigma, sigma_v])
+        out[f'{r}/damping'] = np.array([0.0 if args.no_damping else args.ir_sigma, sigma_v, A_norm])
         out[f'{r}/dilution'] = np.asarray(dil, float) * np.ones(nb)
         save(out)
         variants = [('SSC (LA)', Cs), ('SSC (LA, no Poisson)', res['LA_noPoisson'][1]), ('SSC (no LA)', res['noLA'][1]),
@@ -279,7 +336,7 @@ def main():
         if not args.no_t0:
             b3 = args.b3 if args.b3 is not None else -1.028 + 7.646 * b1 - 6.227 * b1 ** 2 + 0.912 * b1 ** 3
             gb = galileon_bias(b1, b2, bs2, b3=b3)
-            t0 = TrispectrumCovariance(cov, (kl, Pir), gb, f=f, n_workers=args.workers, sigma_fog=sigma_v,
+            t0 = TrispectrumCovariance(cov, (kl, PirA), gb, f=f, n_workers=args.workers, sigma_fog=sigma_v,
                                        **(dict(n_mu=20, n_psi=40) if sigma_v else {}))
             tt = time.time()
             tc = t0.components([(tr.name, tr.name)], ells=(0, 2, 4))
@@ -293,10 +350,20 @@ def main():
             out[f'{r}/bias_galileon'] = np.array(list(gb.as_dict().values()))
             C_t0[r], C_t0[r + '_b3'] = Ct, tc['star_b3']
             save(out)
+            from thecov import response_split
+            sp = response_split(Ct, k, args.k_split, C + Cs)
+            for key, M in sp.items():
+                out[f'{r}/C_T0_{key}'] = M
             variants += [('SSC (LA) + disc 4-pt + T0', Cs + Cd + Ct),
-                         ('SSC (LA) + disc 4-pt + T0 (b3=0)', Cs + Cd + Ct - b3 * tc['star_b3'])]
+                         ('SSC (LA) + disc 4-pt + T0 + compl.', Cs + Cd + Ct + sp['completion'])]
         for tag, Cx in variants:
             summarize(f'{tag:33s}', V, C, Cx, k, nb)
+        comps = {'ssc': Cs, 'disc_B': dcomp['B'], 'disc_P': dcomp['P']}
+        if not args.no_t0:
+            comps.update({f'T0_{key}': M for key, M in sp.items()})
+        amps = template_table(f'{b} {r}', V, C, comps, k, nb)
+        out[f'{r}/template_fits'] = np.array(repr(amps))
+        save(out)
         C_ssc[r + '_noP'] = res['LA_noPoisson'][1]
         del tr, cov
 
@@ -314,6 +381,13 @@ def main():
     print(f'\n{b} GCcomb')
     for tag, Cx in variants:
         summarize(f'{tag:33s}', V, C, Cx, k, len(k))
+    comb = lambda key: dc.combine_regions([out[f'NGC/{key}'], out[f'SGC/{key}']], [norms['NGC'], norms['SGC']])
+    comps = {'ssc': Cg, 'disc_B': comb('C_disc_B'), 'disc_P': comb('C_disc_P')}
+    if C_t0:
+        comps.update({f'T0_{key}': comb(f'C_T0_{key}') for key in ('LL', 'LH', 'HH', 'completion')})
+    amps = template_table(f'{b} GCcomb', V, C, comps, k, len(k))
+    out['GCcomb/template_fits'] = np.array(repr(amps))
+    save(out)
 
 
 if __name__ == '__main__':

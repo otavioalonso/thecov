@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from thecov import Tracer, GaussianCovariance, TrispectrumCovariance, CovarianceTemplates, DiscretenessCovariance
-from thecov.trispectrum import (FG3, Z2, Z3, Bias, galileon_bias, trispectrum, parallelogram, multipoles,
+from thecov.trispectrum import (FG3, Z2, Z3, Bias, galileon_bias, trispectrum, parallelogram, multipoles, response_split,
                                 LinearPower)
 from thecov.ssc import _Z2
 
@@ -105,3 +105,31 @@ def test_templates_and_discreteness_components(setup, tmp_path):
     assert back.names == tpl.names and np.allclose(back(disc_P=2.0), tpl(disc_P=2.0))
     with pytest.raises(KeyError):
         tpl(snake=1.0)
+
+
+def test_response_split_and_completion():
+    rng = np.random.default_rng(3)
+    k = np.linspace(0.01, 0.3, 12)
+    n = 3 * len(k)
+    G = np.diag(rng.uniform(1, 2, n))
+    U = rng.normal(size=(n, 2)) * 0.3
+    T = U @ U.T - np.diag(np.diag(U @ U.T))                    # a coupling with zero diagonal (not PSD with G)
+    T *= 3.0
+    parts = response_split(T, k, 0.08, G)
+    assert np.allclose(parts['LL'] + parts['LH'] + parts['HH'], T)
+    M = G + parts['LH']                                        # long x hard couplings on top of G
+    assert np.linalg.eigvalsh(M).min() < 0                     # not a covariance on its own here
+    assert np.linalg.eigvalsh(M + parts['completion']).min() > -1e-10   # Schur complement: PSD
+
+
+def test_template_fit_recovers_amplitudes():
+    rng = np.random.default_rng(5)
+    n, N = 20, 4000
+    G = np.diag(rng.uniform(1, 2, n))
+    u = rng.normal(size=n); T1 = 0.3 * np.outer(u, u)
+    v = np.linspace(-1, 1, n); T2 = 0.5 * np.outer(v, v)
+    tpl = CovarianceTemplates(G).add('a', T1).add('b', T2)
+    X = rng.multivariate_normal(np.zeros(n), tpl(a=1.5, b=0.5), size=N)
+    amps, m2l = tpl.fit(np.cov(X.T), N)
+    assert abs(amps['a'] - 1.5) < 0.25 and abs(amps['b'] - 0.5) < 0.15
+    assert m2l <= tpl.loglike(np.cov(X.T), N, a=1.0, b=1.0)

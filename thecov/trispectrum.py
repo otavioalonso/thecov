@@ -486,6 +486,33 @@ class TrispectrumCovariance:
         return comps['snake'] + comps['star'], [(A, A, l, i) for l in ells for i in range(len(self.cov.k_edges) - 1)]
 
 
+# ----------------------------------------------------------------------------- response-based split
+def response_split(C_T, k, k_split, C_long, ells=(0, 2, 4)):
+    """Split a trispectrum covariance into the response-approach pieces at the scale k_split.
+
+    Bins with k < k_split are 'long' (L), the others 'hard' (H). Returns
+      LL : both long  (tree level is valid there),
+      LH : long x hard, the squeezed couplings (the hard power responds to the realised long-mode power),
+      HH : both hard (collapsed + hard configurations),
+      completion : C_HL C_LL^-1 C_LH on the HH block, the variance the hard modes inherit from the long-mode
+                   power they respond to. It is O(P^4) (beyond the tree-level trispectrum) but required for a
+                   positive covariance: with it, [[C_LL, C_LH], [C_HL, C_HH + completion]] is positive whenever
+                   C_HH is (Schur complement). C_long: covariance of the long bins (e.g. Gaussian + SSC), full
+                   matrix in the same (ell, bin) order; only its LL block is used.
+    The blocks sum to C_T (completion excluded)."""
+    k = np.asarray(k, float)
+    L = np.tile(k < k_split, len(ells))
+    H = ~L
+    LL, HH = np.outer(L, L), np.outer(H, H)
+    out = {'LL': np.where(LL, C_T, 0.0), 'HH': np.where(HH, C_T, 0.0), 'LH': np.where(~(LL | HH), C_T, 0.0)}
+    comp = np.zeros_like(C_T)
+    if L.any() and H.any():
+        X = C_T[np.ix_(L, H)]
+        comp[np.ix_(H, H)] = X.T @ np.linalg.solve(np.asarray(C_long)[np.ix_(L, L)], X)
+    out['completion'] = comp
+    return out
+
+
 # ----------------------------------------------------------------------------- templates
 class CovarianceTemplates:
     """C(amplitudes) = C_fixed + sum_i A_i C_i: the container for fitting the amplitudes of non-Gaussian
@@ -516,6 +543,40 @@ class CovarianceTemplates:
         for name, T in self.templates.items():
             C = C + amplitudes.get(name, 1.0) * T
         return C
+
+    def loglike(self, S, n_samples, **amplitudes):
+        """-2 ln L (up to a constant) of a sample covariance S of n_samples vectors under C(amplitudes)
+        (Wishart: n [tr(C^-1 S) + ln det C]); +inf if C is not positive definite."""
+        C = self(**amplitudes)
+        try:
+            L = np.linalg.cholesky(C)
+        except np.linalg.LinAlgError:
+            return np.inf
+        Li = np.linalg.inv(L)
+        return float(n_samples * (np.sum((Li @ np.asarray(S) @ Li.T).diagonal()) + 2 * np.sum(np.log(np.diag(L)))))
+
+    def fit(self, S, n_samples, free=None, start=None, fixed=None, restarts=3):
+        """Maximum-likelihood amplitudes of the templates `free` (default: all) for a sample covariance S
+        (e.g. of mocks or of sub-volumes); the others are held at `fixed` (default 1).
+        Returns (amplitudes dict, -2 ln L)."""
+        from scipy.optimize import minimize
+        free = self.names if free is None else list(free)
+        base = {n: 1.0 for n in self.names}
+        base.update(fixed or {})
+        x0 = np.array([(start or {}).get(n, base[n]) for n in free], float)
+
+        def f(x):
+            amps = dict(base, **dict(zip(free, x)))
+            v = self.loglike(S, n_samples, **amps)
+            return v if np.isfinite(v) else 1e300
+        best = None
+        for i in range(max(1, restarts)):
+            r = minimize(f, x0 if i == 0 else x0 * (1 + 0.3 * i) + 0.1 * i, method='Powell',
+                         options=dict(maxiter=20000, xtol=1e-4, ftol=1e-8))
+            if best is None or r.fun < best.fun:
+                best = r
+        amps = dict(base, **dict(zip(free, np.atleast_1d(best.x))))
+        return amps, float(best.fun)
 
     def save(self, fn):
         np.savez(fn, fixed=np.asarray(self.fixed if self.fixed is not None else np.nan), names=np.array(self.names),

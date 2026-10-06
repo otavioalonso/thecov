@@ -222,3 +222,26 @@ Covariance = kernel Gaussian + SSC (LA) + discreteness 4-pt:
   BAO damping alone changes ~nothing; sigma_v = 4 overcorrects (sigma_P2/P0 0.65 %). The remaining chi2 excess is the
   monopole coupling at high k (the part T0 should supply; tree level fails, see 7.1).
 - ssc_check now applies both by default (sigma_v fitted automatically; --no-damping for the old tree level).
+
+### 7.3 Response-based T0 and the template likelihood (2026-10-06)
+
+- Normalisation (the main finding): the mock P0 at 0.02 < k < 0.08 is A = 0.73 (NGC) / 0.70 (SGC) times
+  dilution x Kaiser-FoG(b1 = 2.2 from P2/P0) x P_lin (cosmoprimo DESI). Every non-Gaussian term built from b1 and
+  P_lin was therefore normalised to a galaxy power ~1.4x too high (T0 ~ A^-3 too high). `ssc_check` now fits A and
+  builds SSC, discreteness and T0 from A P_lin (`--no-normalize` for the old behaviour). With it the free SSC
+  amplitude in the template fit is 1.00 (vs 0.4-0.5 without): SSC is predicted from first principles.
+- `response_split(C_T0, k, k_split, C_long)` (thecov.trispectrum): LL / LH (squeezed) / HH blocks and the
+  completion C_HL C_LL^-1 C_LH (variance the hard modes inherit from the long-mode power they respond to; O(P^4),
+  makes the squeezed couplings positive-definite by construction).
+- `CovarianceTemplates.loglike / fit`: Wishart -2 ln L and ML amplitudes (the sub-volume fitter).
+- LRG1 NGC, local (ssc_dev/t0_diagnostics/tpl_fit.py, k_split 0.06), -2 dlnL vs Gaussian / chi2/n:
+    SSC + disc fixed            -2691  1.035
+    + tree T0 (all pieces) =1   -1325  1.065   (rejected)
+    fit SSC, disc               -2954  1.031   SSC 1.01, disc 1.96
+    fit SSC, disc, T0           -2969  1.029   T0 -0.12
+    all pieces free             -3148  1.020   SSC 1.17, disc 1.7, T0_LL -0.4, T0_LH -0.04, T0_HH -0.3, completion 2.7
+  i.e. the mocks reject the tree-level T0 shapes (even normalised and FoG-damped) but want ~2x the discreteness
+  shapes (nonlinear B, non-Poisson pairs) and the response completion (hard modes inheriting the long-mode power
+  variance). ssc_check prints this table per cap and GCcomb (`template_table`).
+- Next: the NERSC run with normalisation (both tracers), then the sub-volume version of the same fit with the
+  templates {SSC (fixed or 1 amp), disc, completion}.
