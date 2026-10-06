@@ -145,3 +145,27 @@ Read in each log, per cap and GCcomb:
    near-diagonal ridge (finite-q beat coupling), or smooth P(k)P(k') surface (tree-level T0).
 Then: the subvolume estimator of the connected trispectrum (plan in the session notes; validate on ~20
 holi mocks against the ensemble before applying to the data).
+
+### 6.1 Results of that run (LRG1 + QSO, 859 holi v3 mocks, nothing fitted)
+
+Covariance = kernel Gaussian + SSC (LA) + discreteness 4-pt:
+
+| | sigma_P0 pred/mocks | sigma_P2/P0 pred/mocks | r02 pred/mocks | chi2/n Gauss -> total |
+|---|---|---|---|---|
+| LRG1 NGC | 0.43 / 0.51 % | 1.10 / 0.94 % | +0.35 / +0.17 | 1.0625 -> 1.0286 |
+| LRG1 SGC | 0.72 / 0.66 % | 1.85 / 1.22 % | +0.56 / 0.00 | 1.0705 -> 1.0456 |
+| LRG1 GCcomb | 0.37 / 0.41 % | 0.95 / 0.74 % | +0.43 / +0.16 | 1.0652 -> 1.0326 |
+| QSO NGC | 0.31 / 0.30 % | 0.46 / 0.46 % | +0.49 / -0.67 | 1.0068 -> 0.9945 |
+| QSO SGC | 0.65 / 0.58 % | 0.88 / 0.90 % | +0.49 / -0.49 | 1.0000 -> 0.9832 |
+
+- SSC with the LA Poisson self-calibration term ALONE is not positive definite for LRG1 (min eig of
+  C^-1/2 M C^-1/2 = -0.05 NGC, -0.015 SGC); it must always be used with the discreteness 4-pt (then 0.92 / 0.82).
+  With vs without the LA Poisson term (both + disc 4-pt) differ by ~0.05-0.1% in sigma_P0, within the noise.
+- LRG1 joint parameter variance ratios at kmax 0.3 (A, A2, alpha, SN): NGC [1.25 2.11 1.09 1.22] -> [1.10 1.07 0.93 1.01].
+- Remaining: (i) l=2 high-k variance overpredicted (ratio 0.80-0.87 at 0.3<k<0.4) and sigma_P2/P0 too large
+  for LRG: tree-level redshift-space responses and B/P in the 4-pt have no FoG damping; (ii) l=0 residual
+  1.05-1.1 at high k and chi2/n 1.03-1.05 for LRG: the connected T0; (iii) r02 sign for QSO (mocks
+  anticorrelate P0 and P2/P0; tree level gives +) -- candidate: velocity-dispersion (FoG) fluctuations
+  that raise P0 and lower P2 together, a non-perturbative T0 piece the template fit should absorb.
+- Bug fixed after this run (84f463c): the npz save overwrote the kernel *.smoothing.npz caches of LRG1 and QSO
+  (both caps); delete them (they now hold SSC output); the dilution now comes from the cached kernel covariance's I_k.
