@@ -338,8 +338,12 @@ def mu12_nodes(n_mid=64, n_end=32, delta=0.05, eps=1e-12):
     return np.concatenate(mu), np.concatenate(wt) / 2
 
 
-def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None, parts=('snake', 'star', 'star_b3')):
-    """{part: {(l1, l2): (2 l1 + 1)(2 l2 + 1) < L_l1(mu1) L_l2(mu2) T(k1, -k1, k2, -k2) >}} at |k1|, |k2|."""
+def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None, parts=('snake', 'star', 'star_b3'),
+               sigma_fog=0.0):
+    """{part: {(l1, l2): (2 l1 + 1)(2 l2 + 1) < L_l1(mu1) L_l2(mu2) T(k1, -k1, k2, -k2) >}} at |k1|, |k2|.
+
+    sigma_fog: Gaussian fingers-of-God damping of the four external fields, T -> T exp(-(k1 mu1 s)^2 - (k2 mu2 s)^2)
+    (phenomenological; the angular rule is then no longer exact: raise n_mu, n_psi)."""
     mu, wmu = mu12_nodes() if mu12 is None else mu12
     xg, wg = np.polynomial.legendre.leggauss(n_mu)
     psi = 2 * np.pi * (np.arange(n_psi) + 0.5) / n_psi
@@ -354,6 +358,9 @@ def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None,
     e2 = M * e1 + SM * (np.cos(PS) * ea + np.sin(PS) * eb)          # k2^ at angle mu12 from k1^
     mu1, mu2 = C1, e2[2]
     T = parallelogram(k1 * e1, k2 * e2, P, bias, f, parts=parts)
+    if sigma_fog:
+        D = np.exp(-(k1 * mu1 * sigma_fog) ** 2 - (k2 * mu2 * sigma_fog) ** 2)
+        T = {p: t * D for p, t in T.items()}
     L = {l: (np.polynomial.legendre.Legendre.basis(l)(mu1), np.polynomial.legendre.Legendre.basis(l)(mu2)) for l in ells}
     return {part: {(l1, l2): (2 * l1 + 1) * (2 * l2 + 1) * float(np.sum(W * L[l1][0] * L[l2][1] * Tp))
                    for l1 in ells for l2 in ells} for part, Tp in T.items()}
@@ -378,13 +385,13 @@ class LinearPower:
 
 def _row(args):
     """multipoles of all pairs (bin i, bin j >= i), bin-averaged: [{part: {(l1, l2): value}}] (one per j)"""
-    i, kn, kw, P, bias, f, ells, n_mu, n_psi, mu12 = args
+    i, kn, kw, P, bias, f, ells, n_mu, n_psi, mu12, sigma_fog = args
     rows = []
     for j in range(i, len(kn)):
         acc = {}
         for wa, ka in zip(kw[i], kn[i]):
             for wb, kb in zip(kw[j], kn[j]):
-                m = multipoles(ka, kb, P, bias, f, ells=ells, n_mu=n_mu, n_psi=n_psi, mu12=mu12)
+                m = multipoles(ka, kb, P, bias, f, ells=ells, n_mu=n_mu, n_psi=n_psi, mu12=mu12, sigma_fog=sigma_fog)
                 for p, d in m.items():
                     a = acc.setdefault(p, {})
                     for key, v in d.items():
@@ -399,12 +406,12 @@ class TrispectrumCovariance:
     Parameters: cov (k bins, normalisation, tracers), p_lin = (k, P) linear matter power at z_eff, bias
     (a Bias, or b1 with the other Galileon parameters as keywords), f; quadrature n_mu, n_psi (line of
     sight; exact for n_mu >= 11, n_psi >= 21 up to l = 4), n_mid, n_end (mu12; relative error ~3e-7 at the
-    defaults), n_k (|k| nodes per bin); J4: override of int m^4 / norm^2 (e.g. 1/V); n_workers: processes
+    defaults), n_k (|k| nodes per bin); sigma_fog: Gaussian FoG damping of the external fields [Mpc/h]; J4: override of int m^4 / norm^2 (e.g. 1/V); n_workers: processes
     (rows of the k x k matrix in parallel; ~0.12 s per pair of k nodes and process).
     """
 
     def __init__(self, cov, p_lin, bias, f, n_mu=12, n_psi=24, n_mid=64, n_end=32, n_k=1, J4=None, n_workers=1,
-                 **bias_kw):
+                 sigma_fog=0.0, **bias_kw):
         self.cov = cov
         self.P = LinearPower(*p_lin)
         self.bias = bias if isinstance(bias, Bias) else Bias(bias, **bias_kw)
@@ -413,6 +420,7 @@ class TrispectrumCovariance:
         self.mu12 = mu12_nodes(n_mid=n_mid, n_end=n_end)
         self._J4 = J4
         self.n_workers = int(n_workers)
+        self.sigma_fog = float(sigma_fog)
 
     def window_integral(self, A):
         """J4 = int m^4 / norm^2 = alpha sum_r w_r m_r^3 / norm^2 (m = nbar w at the randoms)"""
@@ -446,7 +454,8 @@ class TrispectrumCovariance:
         J4 = self.window_integral(A)
         kn, kw = self._nodes()
         nb, nl = len(kn), len(ells)
-        tasks = [(i, kn, kw, self.P, self.bias, self.f, ells, self.n_mu, self.n_psi, self.mu12) for i in range(nb)]
+        tasks = [(i, kn, kw, self.P, self.bias, self.f, ells, self.n_mu, self.n_psi, self.mu12, self.sigma_fog)
+                 for i in range(nb)]
         if self.n_workers > 1:
             from concurrent.futures import ProcessPoolExecutor
             import multiprocessing as mp
