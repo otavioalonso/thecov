@@ -57,15 +57,26 @@ def fit_b1(k, P0, P2, plin, f, kmax=0.06):
 
 
 def kernel_dilution(out_dir, b, r, k_edges, norm, cache_tag):
-    """I_k / norm of the pair-averaged window from the kernel runs' cached smoothing, or None"""
+    """I_k / norm of the pair-averaged window of the kernel runs, or (None, None): read from the cached
+    kernel covariance (cov_<r>_<b>_<r>_kernel_*<cache_tag>_*.npz, which stores I_k per bin), else from
+    the WindowSmoothing cache"""
+    nb = len(k_edges) - 1
+    fns = sorted(glob.glob(os.path.join(out_dir, b, f'cov_{r}_{b}_{r}_kernel_*{cache_tag}_*.npz')), key=os.path.getmtime)
+    for fn in fns[::-1]:
+        with np.load(fn) as f:
+            if 'I_k' in f.files and np.size(f['I_k']) == nb:
+                return np.asarray(f['I_k'], float) / norm, fn
     from thecov import WindowSmoothing
     fns = sorted(glob.glob(os.path.join(out_dir, b, f'*{b}_{r}_kernel_*{cache_tag}*.smoothing.npz')) +
                  glob.glob(os.path.join(out_dir, f'*{b}_{r}_kernel_*{cache_tag}*.smoothing.npz')), key=os.path.getmtime)
-    if not fns:
-        return None, None
-    sm = WindowSmoothing().load(fns[-1])
-    key = next(iter(sm._pairs))
-    return np.asarray(sm.I_k(*key, k_edges), float) / norm, fns[-1]
+    for fn in fns[::-1]:
+        try:
+            sm = WindowSmoothing().load(fn)
+            key = next(iter(sm._pairs))
+            return np.asarray(sm.I_k(*key, k_edges), float) / norm, fn
+        except Exception:
+            continue
+    return None, None
 
 
 def min_whitened_eig(C, M):
@@ -145,11 +156,11 @@ def main():
 
     out, C_ssc, C_disc, norms = {}, {}, {}, {}
     os.makedirs(args.out, exist_ok=True)
-    fn = os.path.join(args.out, f'ssc_{args.label}.npz')
+    out_fn = os.path.join(args.out, f'ssc_{args.label}.npz')
 
     def save(d):
-        np.savez(fn, **d)
-        log(f'saved {fn}')
+        np.savez(out_fn, **d)
+        log(f'saved {out_fn}')
     for r in ('NGC', 'SGC'):
         V, C, k = get(z, b, r, 1, args.mode)
         nb = len(k)
@@ -163,10 +174,10 @@ def main():
         b1 = args.b1 if args.b1 is not None else b1_fit
         b2 = args.b2 if args.b2 is not None else 0.412 - 2.143 * b1 + 0.929 * b1 ** 2 + 0.008 * b1 ** 3
         bs2 = args.bs2 if args.bs2 is not None else -4 / 7 * (b1 - 1)
-        d_ker, fn = kernel_dilution(args.dir, b, r, k_edges, norm, args.cache_tag)
+        d_ker, dil_fn = kernel_dilution(args.dir, b, r, k_edges, norm, args.cache_tag)
         dil = d_ker if d_ker is not None else d_fit
         log(f'{r}: b1 {b1:.3f} (P2/P0 fit {b1_fit:.3f}), b2 {b2:.3f}, bs2 {bs2:.3f}; dilution '
-            + (f'from {os.path.basename(fn)}: {d_ker[0]:.3f} ... {d_ker[-1]:.3f}' if d_ker is not None else 'not cached')
+            + (f'from {os.path.basename(dil_fn)}: {d_ker[0]:.3f} ... {d_ker[-1]:.3f}' if d_ker is not None else 'not cached')
             + f'; Kaiser-fit amplitude {d_fit:.3f}')
 
         rc = dc.load_region(paths, b, r, n_random_files=cfg.n_random_files)
