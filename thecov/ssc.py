@@ -143,6 +143,42 @@ def response_coefficients(b1, f=0.0, b2=0.0, bs2=0.0, ells=ELLS, ns=ELLS, eps=1e
     return a, c
 
 
+def response_multipoles(k, p_dressed, b1, f=0.0, b2=0.0, bs2=0.0, ells=ELLS, ns=ELLS, eps=1e-4, n_gl=16, n_phi=24,
+                        chunk=64):
+    """{(ell, n): R_ell^(n)(k)} for a 'dressed' power p_dressed(v) of a wavevector v (3, ...) with n^ = z^,
+    e.g. an IR-damped P_lin(|v|) times fingers-of-God damping exp(-(v_z sigma_v)^2).
+
+    Same squeezed limit as response_coefficients (2 Z2(k, -q) Z1(k) P(k) + 2 Z2(k_b, -q) Z1(k_b) P(k_b),
+    k_b = -k + q, averaged over q -> +-eps q), with P evaluated at the actual vectors instead of being
+    linearised as a P + c dP/dlnk: this captures the response of the damped, anisotropic power (dilation of
+    the damping included). For p_dressed = P_lin(|v|) it reduces to a P + c dP/dlnk."""
+    k = np.atleast_1d(np.asarray(k, float))
+    xg, wg = np.polynomial.legendre.leggauss(n_gl)
+    phi = 2 * np.pi * np.arange(n_phi) / n_phi
+    mu, nu, ph = np.meshgrid(xg, xg, phi, indexing='ij')
+    st, sn = np.sqrt(1 - mu ** 2), np.sqrt(1 - nu ** 2)
+    kh = np.stack([st * np.cos(ph), st * np.sin(ph), mu])[..., None]
+    qh = np.stack([sn, np.zeros_like(nu), nu])[..., None]
+    out = {(l, n): np.zeros(len(k)) for l in ells for n in ns}
+    Lm = {l: np.polynomial.legendre.Legendre.basis(l)(xg) for l in ells}
+    Ln = {n: np.polynomial.legendre.Legendre.basis(n)(xg) for n in ns}
+    for s0 in range(0, len(k), chunk):
+        K = k[s0:s0 + chunk]
+        kv = kh * K
+        R = 0.0
+        for e in (eps, -eps):
+            q = e * K * qh
+            kb = -kv + q
+            R = R + (_Z2(kv, -q, b1, b2, bs2, f) * _Z1(kv, b1, f) * p_dressed(kv)
+                     + _Z2(kb, -q, b1, b2, bs2, f) * _Z1(kb, b1, f) * p_dressed(kb))
+        R = R.mean(axis=2)                                                    # (mu, nu, k): +-eps and phi averages
+        for l in ells:
+            for n in ns:
+                wgt = (2 * l + 1) / 2 * (2 * n + 1) / 2 * np.outer(wg * Lm[l], wg * Ln[n])
+                out[(l, n)][s0:s0 + chunk] = np.einsum('ij,ijk->k', wgt, R)
+    return out
+
+
 # ----------------------------------------------------------------------------- the covariance
 class SuperSampleCovariance:
     """SSC of the multipoles of a GaussianCovariance's set-up (same tracers, k bins, window library).
@@ -163,14 +199,18 @@ class SuperSampleCovariance:
              terms do, and evaluating S at the cell-mean mu biases it at second order in the mu cell
              (-1% of Q_000 with 24 cells, i.e. -8% in sigma^2_22 for a sphere); 96 cells remove it.
              Small separations matter little for long modes, so fewer near pairs suffice.
+    p_dressed: optional callable P(v) of a wavevector v (3, ...), n^ = z^: the responses are then computed from
+             this dressed power (e.g. thecov.power.dressed: IR-damped P_lin and fingers-of-God damping)
+             instead of the tree-level a P_lin + c dP_lin/dlnk
     dilution: d_k = I_k / norm of the BC term, scalar or per k-bin (default cov.I_k / cov.I, i.e.
              int m^2 / norm for a local window: for footprints with fine veto masks pass the
              pair-averaged value, e.g. WindowSmoothing.I_k / norm)
     """
 
     def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, local_average=True, damping=1.0, n_mu=96,
-                 n_near=300000, dilution=None, discreteness=True):
+                 n_near=300000, dilution=None, discreteness=True, p_dressed=None):
         self.cov = cov
+        self.p_dressed = p_dressed
         self.dilution = dilution
         opts = dict(cov.windows.opts)
         opts.update(n_mu=int(n_mu), n_near=min(int(n_near), int(opts['n_near'])))
@@ -181,7 +221,7 @@ class SuperSampleCovariance:
         self.local_average = bool(local_average)
         self.discreteness = bool(discreteness) and self.local_average
         self.damping = float(damping)
-        self.a, self.c = response_coefficients(self.b1, self.f, self.b2, self.bs2)
+        self.a, self.c = response_coefficients(self.b1, self.f, self.b2, self.bs2)    # (ns_bc; tree level)
         scale = np.max(np.abs(self.a)) + np.max(np.abs(self.c))
         self.ns_bc = tuple(n for j, n in enumerate(ELLS)                   # nu^4 vanishes (to O(eps^2))
                            if np.max(np.abs(self.a[:, j]) + np.abs(self.c[:, j])) > 1e-6 * scale)
@@ -270,7 +310,13 @@ class SuperSampleCovariance:
         return np.sum(K.wq * func(K.kq), axis=1) / K.norm
 
     def responses(self):
-        """{(ell, n): R_ell^(n) averaged over each k bin} (tree level, true-power units)."""
+        """{(ell, n): R_ell^(n) averaged over each k bin} (tree level, true-power units); with p_dressed,
+        from the dressed (damped) power at each k node (response_multipoles)."""
+        if self.p_dressed is not None:
+            K = self.cov.kernels
+            kq = np.asarray(K.kq, float)
+            R = response_multipoles(kq.ravel(), self.p_dressed, self.b1, self.f, self.b2, self.bs2)
+            return {key: np.sum(K.wq * v.reshape(kq.shape), axis=1) / K.norm for key, v in R.items()}
         lk = np.log(self.k_lin)
         spl = CubicSpline(lk, self.p_lin)
         P = lambda k: spl(np.log(k))

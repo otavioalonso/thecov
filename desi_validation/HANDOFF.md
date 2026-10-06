@@ -208,3 +208,17 @@ Covariance = kernel Gaussian + SSC (LA) + discreteness 4-pt:
   multipoles and their derivatives (Barreira & Schmidt style), shared with the SSC response fix; or generic smooth
   templates fitted to subvolumes. Current best remains Gauss + SSC(LA) + disc 4-pt.
 - `sigma_fog` option added to TrispectrumCovariance (Gaussian damping of the four external fields).
+
+### 7.2 BAO + fingers-of-God damping of SSC and discreteness (option 3, 2026-10-06)
+
+- `thecov/power.py`: `no_wiggle` (EH98 shape x smoothed ratio), `ir_damped`, `fog`, `Dressed` (P(|v|) exp(-(v_z s)^2)).
+- `SuperSampleCovariance(p_dressed=...)`: responses from the dressed power at each k node (`response_multipoles`,
+  same squeezed limit, reduces to a P + c dP/dlnk when undamped; nu^4 response stays 0). `DiscretenessCovariance(sigma_fog=)`.
+- Local rebuild from the NERSC npz (ssc_dev/t0_diagnostics/sd_damped.py; rebuild reproduces chi2 1.0285 vs 1.0286):
+  LRG1, sigma_v fitted to the mock P2/P0 with Gaussian damping (NGC 2.09, SGC 2.75 Mpc/h), BAO Sigma = 6:
+    NGC sigma_P2/P0 1.10 -> 0.95 % (mocks 0.94), r02 0.35 -> 0.22 (0.17), l=2 var ratio k 0.2-0.3 0.868 -> 0.930,
+        sigma_P0 0.43 -> 0.41 (0.51), chi2/n 1.0286 -> 1.0317, kmax 0.3 ratios [1.11 1.06 0.96 0.99];
+    SGC sigma_P2/P0 1.85 -> 1.46 % (1.22), r02 0.56 -> 0.33 (0.00), l=2 var ratio 0.800 -> 0.922, chi2/n 1.0456 -> 1.0514.
+  BAO damping alone changes ~nothing; sigma_v = 4 overcorrects (sigma_P2/P0 0.65 %). The remaining chi2 excess is the
+  monopole coupling at high k (the part T0 should supply; tree level fails, see 7.1).
+- ssc_check now applies both by default (sigma_v fitted automatically; --no-damping for the old tree level).

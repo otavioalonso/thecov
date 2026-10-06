@@ -98,3 +98,36 @@ def test_ssc_assembly(sphere_ssc):
     ssc_noLA.windows = ssc.windows                                       # same pair counts
     C2, _ = ssc_noLA.covariance([('T', 'T')], ells=(0,))
     assert np.allclose(C2, np.outer(resp, resp) * ssc_noLA.sigma2('T')[(('W', 0), ('W', 0))], rtol=1e-8)
+
+
+def test_dressed_responses_reduce_to_tree_level():
+    """response_multipoles with the undamped P_lin equals a P + c dP/dlnk; FoG damping lowers the high-k
+    quadrupole response and keeps the nu^4 response zero"""
+    from scipy.interpolate import CubicSpline
+    from thecov.ssc import response_multipoles, response_coefficients
+    from thecov.power import Dressed
+    k = np.logspace(-4, 1, 3000)
+    P = 2e4 * (k / 0.02) / (1 + (k / 0.02) ** 2.6)
+    b1, f, b2, bs2 = 2.2, 0.76, 0.3, -0.7
+    a, c = response_coefficients(b1, f, b2, bs2)
+    spl = CubicSpline(np.log(k), P)
+    ks = np.array([0.03, 0.1, 0.25])
+    R = response_multipoles(ks, Dressed(k, P), b1, f, b2, bs2)
+    for i, l in enumerate((0, 2, 4)):
+        for j, n in enumerate((0, 2)):
+            assert np.allclose(R[(l, n)], a[i, j] * spl(np.log(ks)) + c[i, j] * spl(np.log(ks), 1), rtol=1e-5)
+    Rd = response_multipoles(ks, Dressed(k, P, 4.0), b1, f, b2, bs2)
+    assert Rd[(2, 2)][-1] < 0.8 * R[(2, 2)][-1] and np.isclose(Rd[(0, 0)][0], R[(0, 0)][0], rtol=0.02)
+    assert np.max(np.abs(Rd[(0, 4)])) < 1e-6 * np.max(np.abs(Rd[(0, 0)]))
+
+
+def test_no_wiggle():
+    from thecov.power import no_wiggle, eh_nowiggle, ir_damped
+    k = np.logspace(-4, 1, 3000)
+    h, om, fb = 0.6766, 0.1424, 0.157
+    smooth = eh_nowiggle(k, h, om, fb, n_s=0.965)
+    P = smooth * (1 + 0.05 * np.sin(k * 105.0) * np.exp(-(k / 0.3) ** 2) * (k > 0.02))
+    Pnw = no_wiggle(k, P, h, om, fb, n_s=0.965)
+    sel = (k > 0.4) | (k < 0.005)
+    assert np.allclose(Pnw[sel], smooth[sel], rtol=2e-3)                   # broadband unbiased
+    assert np.allclose(ir_damped(k, P, Pnw, 0.0), P) and np.allclose(ir_damped(k, P, Pnw, 50.0)[k > 0.1], Pnw[k > 0.1])

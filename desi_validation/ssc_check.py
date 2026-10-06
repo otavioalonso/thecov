@@ -16,6 +16,10 @@ Also the discreteness 4-point terms (thecov.DiscretenessCovariance) and the tree
 bGamma3 = 23/42 (b1 - 1); --no-t0 to skip; --workers processes), with their components saved separately
 (C_disc_B, C_disc_P, C_T0_snake, C_T0_star, C_T0_star_b3 = d C_T0 / d b3) for amplitude fits.
 
+Damping (default; --no-damping for the old tree level): BAO damping of P_lin (thecov.power.ir_damped,
+--ir-sigma) and Gaussian fingers-of-God sigma_v fitted to the mock-mean P2/P0 (--sigma-fog to fix it), applied to
+the SSC responses (p_dressed), the discreteness B and P and T0.
+
 Reports per cap and for GCcomb: the predicted coherent amplitudes in the form of rank1_excess
 (sigma_P0, sigma_P2/P0, their correlation, from the same off-diagonal fit applied to C_SSC) against the
 mocks'; chi2/n, residual diagonal variance ratios and joint parameter variance ratios with C + C_SSC
@@ -59,6 +63,20 @@ def fit_b1(k, P0, P2, plin, f, kmax=0.06):
     b1 = float(bs[np.argmin(np.abs(K[1] / K[0] - ratio))])
     d = float(np.mean(P0[sel] / (kaiser(b1, f)[0] * plin(k[sel]))))
     return b1, d
+
+
+def fit_sigma_v(k, P0, P2, b1, f, kmin=0.05, kmax=0.3):
+    """Gaussian fingers-of-God sigma_v [Mpc/h] from the mock-mean P2/P0 (Kaiser x exp(-(k mu sigma_v)^2), b1 fixed)"""
+    from scipy.optimize import minimize_scalar
+    x, w = np.polynomial.legendre.leggauss(32)
+    L2 = 2.5 * (3 * x ** 2 - 1)
+    sel = (k >= kmin) & (k <= kmax)
+    ratio = P2[sel] / P0[sel]
+
+    def model(sig):
+        K = (b1 + f * x ** 2) ** 2 * np.exp(-(k[sel, None] * x * sig) ** 2)
+        return np.sum(w * K * L2, 1) / np.sum(w * K, 1)
+    return float(minimize_scalar(lambda sg: np.sum((model(sg) - ratio) ** 2), bounds=(0, 15), method='bounded').x)
 
 
 def kernel_dilution(out_dir, b, r, k_edges, norm, cache_tag):
@@ -140,6 +158,9 @@ def main():
     ap.add_argument('--b3', type=float, default=None, help='T0: b3 (default: Lazeyras et al. 2016 b3(b1))')
     ap.add_argument('--workers', type=int, default=min(64, os.cpu_count() or 1), help='T0: processes')
     ap.add_argument('--no-t0', action='store_true', help='skip the tree-level trispectrum')
+    ap.add_argument('--sigma-fog', type=float, default=None, help='FoG sigma_v [Mpc/h] (default: fit to the mock P2/P0)')
+    ap.add_argument('--ir-sigma', type=float, default=6.0, help='BAO damping scale of P_lin [Mpc/h]')
+    ap.add_argument('--no-damping', action='store_true', help='tree-level responses with the undamped P_lin (old)')
     args = ap.parse_args()
 
     from cosmoprimo.fiducial import DESI
@@ -162,6 +183,12 @@ def main():
     plin_k = lambda k: plin(np.log(k))
     f = args.f if args.f is not None else float(cosmo.growth_rate(zeff))
     log(f'{b}: z_eff {zeff}, f {f:.3f}, P_lin from cosmoprimo DESI fiducial')
+    from thecov.power import no_wiggle, ir_damped, Dressed
+    try:
+        h, om, fb, ns = cosmo.h, cosmo.Omega0_m * cosmo.h ** 2, cosmo.Omega0_b / cosmo.Omega0_m, cosmo.n_s
+    except Exception:                                           # Planck 2018 / DESI fiducial
+        h, om, fb, ns = 0.6766, 0.14239, 0.15745, 0.9665
+    Pir = Pl if args.no_damping else ir_damped(kl, Pl, no_wiggle(kl, Pl, h, om, fb, n_s=ns), args.ir_sigma)
 
     out, C_ssc, C_disc, C_t0, norms = {}, {}, {}, {}, {}
     os.makedirs(args.out, exist_ok=True)
@@ -183,6 +210,11 @@ def main():
         b1 = args.b1 if args.b1 is not None else b1_fit
         b2 = args.b2 if args.b2 is not None else 0.412 - 2.143 * b1 + 0.929 * b1 ** 2 + 0.008 * b1 ** 3
         bs2 = args.bs2 if args.bs2 is not None else -4 / 7 * (b1 - 1)
+        sigma_v = 0.0 if args.no_damping else (args.sigma_fog if args.sigma_fog is not None
+                                                  else fit_sigma_v(k, Pm[:nb], Pm[nb:2 * nb], b1, f))
+        damp = dict(p_dressed=None if args.no_damping else Dressed(kl, Pir, sigma_v))
+        log(f'{r}: damping: ' + ('none (tree level, undamped P_lin)' if args.no_damping else
+                                 f'BAO Sigma {args.ir_sigma} Mpc/h, FoG sigma_v {sigma_v:.2f} Mpc/h (fit to the mock P2/P0)'))
         d_ker, dil_fn = kernel_dilution(args.dir, b, r, k_edges, norm, args.cache_tag)
         dil = d_ker if d_ker is not None else d_fit
         log(f'{r}: b1 {b1:.3f} (P2/P0 fit {b1_fit:.3f}), b2 {b2:.3f}, bs2 {bs2:.3f}; dilution '
@@ -202,7 +234,7 @@ def main():
         res = {}
         # variants: LA with its Poisson self-calibration term, LA without it, no LA
         for key, la, pois in (('LA', True, True), ('LA_noPoisson', True, False), ('noLA', False, False)):
-            ssc = SuperSampleCovariance(cov, (kl, Pl), b1=b1, f=f, b2=b2, bs2=bs2, local_average=la,
+            ssc = SuperSampleCovariance(cov, (kl, Pl), b1=b1, f=f, b2=b2, bs2=bs2, local_average=la, **damp,
                                         n_near=args.n_near, dilution=dil, discreteness=pois)
             wfile = os.path.join(args.dir, f'ssc_windows_{b}_{r}.npz')
             if key == 'LA':
@@ -223,7 +255,8 @@ def main():
         log(f'{r}: sigma^2 ' + ', '.join(f'{x[0]}{x[1]}-{y[0]}{y[1]} {v:.3e}' for (x, y), v in sig.items() if x <= y))
         print(f'\n{b} {r}  (a00 {ssc.a[0, 0]:.3f}, c00 {ssc.c[0, 0]:.3f}, a02 {ssc.a[0, 1]:.3f}, a20 {ssc.a[1, 0]:.3f}, '
               f'a22 {ssc.a[1, 1]:.3f}; R/P_lin)')
-        disc = DiscretenessCovariance(cov, (kl, Pl), b1=b1, f=f, b2=b2, bs2=bs2)
+        disc = DiscretenessCovariance(cov, (kl, Pir), b1=b1, f=f, b2=b2, bs2=bs2, sigma_fog=sigma_v,
+                                      **(dict(n_mu=16, n_phi=24) if sigma_v else {}))
         dcomp = disc.components([(tr.name, tr.name)], ells=(0, 2, 4))
         Cd = dcomp['B'] + dcomp['P']
         out[f'{r}/C_disc_B'], out[f'{r}/C_disc_P'] = dcomp['B'], dcomp['P']
@@ -238,6 +271,7 @@ def main():
         out[f'{r}/sigma2_keys'] = np.array([f'{x}|{y}' for (x, y) in sig])
         out[f'{r}/sigma2'] = np.array(list(sig.values()))
         out[f'{r}/params'] = np.array([b1, b2, bs2, f, zeff])
+        out[f'{r}/damping'] = np.array([0.0 if args.no_damping else args.ir_sigma, sigma_v])
         out[f'{r}/dilution'] = np.asarray(dil, float) * np.ones(nb)
         save(out)
         variants = [('SSC (LA)', Cs), ('SSC (LA, no Poisson)', res['LA_noPoisson'][1]), ('SSC (no LA)', res['noLA'][1]),
@@ -245,7 +279,8 @@ def main():
         if not args.no_t0:
             b3 = args.b3 if args.b3 is not None else -1.028 + 7.646 * b1 - 6.227 * b1 ** 2 + 0.912 * b1 ** 3
             gb = galileon_bias(b1, b2, bs2, b3=b3)
-            t0 = TrispectrumCovariance(cov, (kl, Pl), gb, f=f, n_workers=args.workers)
+            t0 = TrispectrumCovariance(cov, (kl, Pir), gb, f=f, n_workers=args.workers, sigma_fog=sigma_v,
+                                       **(dict(n_mu=20, n_psi=40) if sigma_v else {}))
             tt = time.time()
             tc = t0.components([(tr.name, tr.name)], ells=(0, 2, 4))
             Ct = tc['snake'] + tc['star']

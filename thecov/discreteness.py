@@ -35,10 +35,12 @@ class DiscretenessCovariance:
     """Poisson non-Gaussian terms for the set-up of a GaussianCovariance (auto-spectra of one tracer).
 
     Parameters: cov (its k bins, normalisation and tracers), p_lin = (k, P) linear matter power at z_eff,
-    b1, f, b2 = 0, bs2 = -4/7 (b1 - 1); n_mu, n_phi, n_k: angular / shell quadrature.
+    b1, f, b2 = 0, bs2 = -4/7 (b1 - 1); n_mu, n_phi, n_k: angular / shell quadrature; sigma_fog: Gaussian
+    fingers-of-God damping [Mpc/h] of the galaxy fields (exp(-(k_z sigma)^2 / 2) each; raise n_mu, n_phi with it).
+    For BAO damping pass an IR-damped p_lin (thecov.power.ir_damped).
     """
 
-    def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, n_mu=12, n_phi=16, n_k=2):
+    def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, n_mu=12, n_phi=16, n_k=2, sigma_fog=0.0):
         self.cov = cov
         k, P = (np.asarray(x, float) for x in p_lin)
         self._spl = CubicSpline(np.log(k), P)
@@ -46,6 +48,7 @@ class DiscretenessCovariance:
         self.b1, self.f, self.b2 = float(b1), float(f), float(b2)
         self.bs2 = -4.0 / 7.0 * (self.b1 - 1.0) if bs2 is None else float(bs2)
         self.n_mu, self.n_phi, self.n_k = int(n_mu), int(n_phi), int(n_k)
+        self.sigma_fog = float(sigma_fog)
 
     def P(self, k):
         k = np.asarray(k, float)
@@ -84,13 +87,17 @@ class DiscretenessCovariance:
         with np.errstate(divide='ignore', invalid='ignore'):
             t = (2 * _Z2(k2, k3, b1, b2, bs2, f) * Z1(k2) * Z1(k3) * P2 * P3
                  + 2 * _Z2(k3, k1, b1, b2, bs2, f) * Z1(k3) * Z1(k1) * P3 * P1)
-        return out + np.where(good, np.nan_to_num(t), 0.0)
+        B = out + np.where(good, np.nan_to_num(t), 0.0)
+        if self.sigma_fog:                                     # exp(-(k_z sigma)^2 / 2) per field
+            B = B * np.exp(-0.5 * self.sigma_fog ** 2 * (k1[2] ** 2 + k2[2] ** 2 + k3[2] ** 2))
+        return B
 
     def _Ps(self, K):
         m = np.sqrt(np.sum(K * K, 0))
         with np.errstate(divide='ignore', invalid='ignore'):
             z1 = np.where(m > 0, _Z1(K, self.b1, self.f), 0.0)
-        return z1 ** 2 * self.P(m)
+        out = z1 ** 2 * self.P(m)
+        return out * np.exp(-(K[2] * self.sigma_fog) ** 2) if self.sigma_fog else out
 
     def covariance(self, spectra, ells=None):
         """C^disc for [P^{AA}_ell(k_i)] ordered by ell, bin (as GaussianCovariance.covariance)."""
