@@ -35,7 +35,9 @@ def no_wiggle(k, P, h, omega_m, f_baryon, n_s=0.9649, width=0.25):
     ref = eh_nowiggle(k, h, omega_m, f_baryon, n_s=n_s)
     lk = np.log(k)
     dl = np.median(np.diff(lk))
-    ratio = np.log(P / ref)
+    good = (P > 0) & (ref > 0)
+    ratio = np.zeros_like(P)
+    ratio[good] = np.log(P[good] / ref[good])
     sm = gaussian_filter1d(ratio, width / dl, mode='nearest')
     return ref * np.exp(sm)
 

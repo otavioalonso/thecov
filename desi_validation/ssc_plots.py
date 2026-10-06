@@ -44,27 +44,26 @@ plt.rcParams.update({'font.size': 9, 'axes.edgecolor': INK2, 'axes.labelcolor': 
 def models(s, r, nola=True):
     """{name: non-Gaussian covariance added to the Gaussian one} present for region r (fixed order)"""
     g = lambda key: s[f'{r}/{key}'] if f'{r}/{key}' in s.files else None
-    ssc, ssc_np, ssc_nola, disc = g('C_ssc'), g('C_ssc_LA_noPoisson'), g('C_ssc_noLA'), g('C_disc')
+    ssc, ssc_nola, disc, disc_loc = g('C_ssc'), g('C_ssc_noLA'), g('C_disc'), g('C_disc_local')
     out = {}
-    if ssc_np is not None:
-        out['SSC (LA, no Poisson)'] = ssc_np
-    elif ssc is not None:
-        out['SSC (LA)'] = ssc
+    if ssc is not None:
+        out['SSC'] = ssc
+    if ssc is not None and disc_loc is not None:
+        out['SSC + disc (local)'] = ssc + disc_loc
     if ssc is not None and disc is not None:
-        out['SSC (LA) + disc 4-pt'] = ssc + disc
-    if ssc_np is not None and disc is not None:
-        out['SSC (LA, no Poisson) + disc 4-pt'] = ssc_np + disc
-    t0 = g('C_T0') if g('C_T0') is not None else (g('C_T0_snake') + g('C_T0_star') if g('C_T0_snake') is not None else None)
+        out['SSC + disc'] = ssc + disc                      # the recommended model (window-convolved discreteness)
+    t0 = g('C_T0_response')
+    if t0 is None and g('C_T0_snake') is not None:
+        t0 = g('C_T0_snake') + g('C_T0_star')
     if ssc is not None and disc is not None and t0 is not None:
-        out['SSC (LA) + disc 4-pt + T0'] = ssc + disc + t0
+        out['SSC + disc + T0 response'] = ssc + disc + t0
     if nola and ssc_nola is not None:
         out['SSC (no LA)'] = ssc_nola
     return out
 
 
-COLOR = {'SSC (LA)': 0, 'SSC (LA, no Poisson)': 0, 'SSC (LA) + disc 4-pt': 1, 'SSC (LA, no Poisson) + disc 4-pt': 2,
-         'SSC (LA) + disc 4-pt + T0': 3, 'SSC (no LA)': 4,
-         'disc 4-pt': 1, 'T0 snake': 2, 'T0 star': 3, 'T0': 3}                # colour follows the model, not its rank
+COLOR = {'SSC': 0, 'SSC + disc (local)': 2, 'SSC + disc': 1, 'SSC + disc + T0 response': 3, 'SSC (no LA)': 4,
+         'disc 4-pt': 1, 'T0 response': 3}                # colour follows the model, not its rank
 
 
 def color(i, name):
@@ -214,9 +213,9 @@ def fig_budget(data, s, fn):
     for row, (r, (V, C, k, M)) in enumerate(data.items()):
         nb = len(k)
         dC = np.diag(C)
-        terms = [(name, s[f'{r}/{key}']) for name, key in (('SSC (LA)', 'C_ssc'), ('SSC (LA, no Poisson)', 'C_ssc_LA_noPoisson'),
-                                                         ('disc 4-pt', 'C_disc'), ('T0 snake', 'C_T0_snake'),
-                                                         ('T0 star', 'C_T0_star'), ('T0', 'C_T0')) if f'{r}/{key}' in s.files]
+        terms = [(name, s[f'{r}/{key}']) for name, key in (('SSC', 'C_ssc'),
+                                                         ('disc 4-pt', 'C_disc'), ('T0 response', 'C_T0_response'))
+                 if f'{r}/{key}' in s.files]
         vm = V.var(0, ddof=1)
         for col, l in enumerate(ELLS):
             ax = axes[row, col]
@@ -224,7 +223,7 @@ def fig_budget(data, s, fn):
             ax.axhline(0, color=INK2, lw=0.8)
             ax.plot(k, vm[sl] / dC[sl] - 1, color=INK, lw=0.8, alpha=0.6, label='mocks / Gaussian - 1')
             for i, (name, X) in enumerate(terms):
-                ax.plot(k, np.diag(X)[sl] / dC[sl], color=color(i, name), ls=':' if name == 'T0 star' else '-', label=name)
+                ax.plot(k, np.diag(X)[sl] / dC[sl], color=color(i, name), label=name)
             ax.set_title(f'{r}  ell={l}', loc='left', fontsize=9, color=INK)
             if col == 0:
                 ax.set_ylabel('fraction of Gaussian diag')

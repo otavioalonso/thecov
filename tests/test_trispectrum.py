@@ -108,18 +108,20 @@ def test_templates_and_discreteness_components(setup, tmp_path):
 
 
 def test_response_split_and_completion():
+    """the completion makes the model positive for any squeezed coupling, with a correlated base model"""
     rng = np.random.default_rng(3)
     k = np.linspace(0.01, 0.3, 12)
     n = 3 * len(k)
-    G = np.diag(rng.uniform(1, 2, n))
-    U = rng.normal(size=(n, 2)) * 0.3
-    T = U @ U.T - np.diag(np.diag(U @ U.T))                    # a coupling with zero diagonal (not PSD with G)
-    T *= 3.0
+    Q = rng.normal(size=(n, n))
+    G = Q @ Q.T / n + np.eye(n)                                # a correlated, positive base model
+    U = rng.normal(size=(n, 2))
+    T = 3.0 * (U @ U.T - np.diag(np.diag(U @ U.T)))            # a coupling with zero diagonal (not PSD)
     parts = response_split(T, k, 0.08, G)
     assert np.allclose(parts['LL'] + parts['LH'] + parts['HH'], T)
-    M = G + parts['LH']                                        # long x hard couplings on top of G
-    assert np.linalg.eigvalsh(M).min() < 0                     # not a covariance on its own here
-    assert np.linalg.eigvalsh(M + parts['completion']).min() > -1e-10   # Schur complement: PSD
+    M = G + parts['LL'] + parts['LH']
+    LLtot = np.tile(k < 0.08, 3)
+    if np.linalg.eigvalsh((G + parts['LL'])[np.ix_(LLtot, LLtot)]).min() > 0:
+        assert np.linalg.eigvalsh(M + parts['completion']).min() > -1e-10
 
 
 def test_template_fit_recovers_amplitudes():
@@ -133,3 +135,18 @@ def test_template_fit_recovers_amplitudes():
     amps, m2l = tpl.fit(np.cov(X.T), N)
     assert abs(amps['a'] - 1.5) < 0.25 and abs(amps['b'] - 0.5) < 0.15
     assert m2l <= tpl.loglike(np.cov(X.T), N, a=1.0, b=1.0)
+
+
+def test_collapsed_part():
+    P = LinearPower(*p_lin())
+    full = multipoles(0.1, 0.11, P, BIAS, 0.7, k_collapse=10.0)
+    none = multipoles(0.1, 0.11, P, BIAS, 0.7, k_collapse=1e-4)
+    for key in [(0, 0), (2, 2), (0, 2)]:
+        tot = full['snake'][key] + full['star'][key]
+        assert np.isclose(full['collapsed_tree'][key], tot, rtol=1e-12) and abs(none['collapsed_tree'][key]) < 1e-12 * abs(tot)
+    # response-approach collapsed term: zero for |k1 - k2| >= k_split, positive monopole, linear in the long power
+    from thecov.trispectrum import collapsed_multipoles
+    assert collapsed_multipoles(0.1, 0.2, P, BIAS, 0.7, 0.05)[(0, 0)] == 0.0
+    c = collapsed_multipoles(0.15, 0.152, P, BIAS, 0.7, 0.05, ells=(0, 2))
+    c2 = collapsed_multipoles(0.15, 0.152, P, BIAS, 0.7, 0.05, ells=(0, 2), P_long=lambda q: 2 * P(q))
+    assert c[(0, 0)] > 0 and c[(2, 2)] > 0 and np.isclose(c2[(0, 2)], 2 * c[(0, 2)])

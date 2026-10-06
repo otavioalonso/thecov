@@ -245,3 +245,25 @@ Covariance = kernel Gaussian + SSC (LA) + discreteness 4-pt:
   variance). ssc_check prints this table per cap and GCcomb (`template_table`).
 - Next: the NERSC run with normalisation (both tracers), then the sub-volume version of the same fit with the
   templates {SSC (fixed or 1 amp), disc, completion}.
+
+### 7.4 Final model (implemented; validated locally on LRG1 + QSO, both caps, 2026-10-06)
+
+Recommended, nothing fitted: Gaussian (kernel) + SSC (LA) + discreteness 4-pt, with
+(i) the linear galaxy power normalised to the mocks (A = 0.73 / 0.70 LRG1, 0.81 / 0.67 QSO NGC / SGC),
+(ii) BAO (Sigma 6) and FoG damping (sigma_v fitted to P2/P0: 2.1 / 2.7 LRG1, 3.3 / 4.0 QSO),
+(iii) the discreteness terms window-convolved: `thecov.covariance_tools.window_convolve` (mixing kernel
+     K = corr(C_G)^1/2, exact for the Gaussian term by construction; removes the local approximation's spurious
+     bin-to-bin structure near the diagonal).
+Local rebuild from the earlier NERSC bundle (ssc_dev/local_rebuild.py), -2 dlnL vs Gaussian / chi2/n:
+    LRG1 NGC  NERSC run -2945 / 1.029  ->  -3320 / 1.023   (sigma_P0 0.52 vs 0.51 %, sigma_P2/P0 0.80 vs 0.94 %, r02 0.16 vs 0.17)
+    LRG1 SGC            -1560 / 1.046  ->  -2594 / 1.034   (0.77 vs 0.66 %, 1.18 vs 1.22 %, 0.12 vs 0.00)
+    QSO  NGC             -698 / 0.995  ->   -676 / 0.995
+    QSO  SGC             -692 / 0.983  ->   -702 / 0.985
+Response-based T0 (thecov.trispectrum): tree for k < k_split (LL), squeezed couplings (LH) + completion
+(X^T A^-1 X + X^T A^-1 B0 + B0^T A^-1 X: PSD by construction), IR-safe collapsed term
+(`collapsed_multipoles`: T = 2 [R(k1, p) P]^2 P_L(p) for p = |k1 -+ k2| < k_split; the masked tree is not IR safe),
+hard block dropped. On LRG1 NGC every T0 piece makes the likelihood worse once the discreteness term is
+window-convolved (LL: +370 to +450; LL + LH + compl: +1100; collapsed: not PD at -0.03 whitened eigenvalue);
+reported as diagnostic only. The Lazeyras b3 is not in the Galileon basis; default b3 = 0.
+Template fits (--fit-templates, diagnostic) earlier wanted disc ~2x before the window convolution.
+Next: the NERSC run of this ssc_check (saves every part), then the sub-volume pipeline if needed.

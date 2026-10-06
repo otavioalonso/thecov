@@ -16,6 +16,14 @@ Also the discreteness 4-point terms (thecov.DiscretenessCovariance) and the tree
 bGamma3 = 23/42 (b1 - 1); --no-t0 to skip; --workers processes), with their components saved separately
 (C_disc_B, C_disc_P, C_T0_snake, C_T0_star, C_T0_star_b3 = d C_T0 / d b3) for amplitude fits.
 
+Recommended non-Gaussian covariance (saved as <cap>/C_nongauss, nothing fitted): SSC (with the local average) +
+discreteness 4-point terms, both built from A P_lin (A: the mock amplitude, fit_amplitude), BAO- and FoG-damped,
+the discreteness terms window-convolved (thecov.covariance_tools.window_convolve; --no-window-local to skip).
+The response-based T0 (tree level for k < --k-split, squeezed couplings + their completion, IR-safe collapsed term)
+is computed and reported as a diagnostic (<cap>/C_T0_*); -2 dlnL tables against the mocks for every variant;
+--fit-templates adds maximum-likelihood template amplitudes (diagnostic). All inputs are saved for local rebuilds
+(desi_validation/ssc_dev/local_rebuild.py); bundle with desi_validation/export_bundle.sh.
+
 Damping (default; --no-damping for the old tree level): BAO damping of P_lin (thecov.power.ir_damped,
 --ir-sigma) and Gaussian fingers-of-God sigma_v fitted to the mock-mean P2/P0 (--sigma-fog to fix it), applied to
 the SSC responses (p_dressed), the discreteness B and P and T0.
@@ -90,14 +98,23 @@ def fit_amplitude(k, P0, dil, b1, f, sigma_v, plin, kmin=0.02, kmax=0.08):
     return float(np.median(P0[sel] / model))
 
 
-TEMPLATE_CASES = [  # (name, templates held at 1, templates fitted); the rest are 0
-    ('SSC + disc', ['ssc', 'disc_B', 'disc_P'], []),
-    ('SSC + disc + T0 (response split)', ['ssc', 'disc_B', 'disc_P', 'T0_LL', 'T0_LH', 'T0_HH', 'T0_completion'], []),
+TEMPLATE_CASES = [  # (name, templates held at 1, templates fitted); the rest are 0 (diagnostic only)
     ('fit: SSC, disc', [], ['ssc', 'disc']),
-    ('fit: SSC, disc, T0', [], ['ssc', 'disc', 'T0']),
-    ('fit: SSC, disc_B, disc_P, T0_LL, T0_LH, T0_HH, compl.', [],
-     ['ssc', 'disc_B', 'disc_P', 'T0_LL', 'T0_LH', 'T0_HH', 'T0_completion']),
+    ('fit: SSC, disc, T0 response', [], ['ssc', 'disc', 'T0resp']),
+    ('fit: SSC, disc_B, disc_P, T0 pieces', [],
+     ['ssc', 'disc_B', 'disc_P', 'T0_LL', 'T0_LH', 'T0_completion', 'T0_collapsed', 'T0_HH']),
 ]
+
+
+def loglike_table(tag, V, C, variants):
+    """-2 Delta ln L (Wishart, mocks) of each covariance variant against the Gaussian covariance alone; nothing fitted"""
+    from thecov import CovarianceTemplates
+    S, N = np.cov(V.T), len(V)
+    ref = CovarianceTemplates(C).loglike(S, N)
+    print(f'  {tag}: -2 dlnL vs the Gaussian covariance (mocks, nothing fitted; lower is better)')
+    for name, Cx in variants:
+        v = CovarianceTemplates(C + Cx).loglike(S, N)
+        print(f'    {name:44s} ' + (f'{v - ref:+9.1f}' if np.isfinite(v) else '   not PD'))
 
 
 def template_table(tag, V, C, comps, k, nb):
@@ -105,10 +122,10 @@ def template_table(tag, V, C, comps, k, nb):
     -2 Delta ln L against the Gaussian covariance alone (what the sub-volume fit will do on the data)."""
     from thecov import CovarianceTemplates
     comps = dict(comps)
-    if 'disc_B' in comps:
+    if 'disc_B' in comps and 'disc' not in comps:
         comps['disc'] = comps['disc_B'] + comps['disc_P']
-    if 'T0_LL' in comps:
-        comps['T0'] = comps['T0_LL'] + comps['T0_LH'] + comps['T0_HH']
+    if 'T0_LL' in comps and 'T0resp' not in comps:
+        comps['T0resp'] = comps['T0_LL'] + comps['T0_LH'] + comps['T0_completion'] + comps.get('T0_collapsed', 0.0)
     S, N = np.cov(V.T), len(V)
     tpl = CovarianceTemplates(C).update(comps)
     zero = {n: 0.0 for n in tpl.names}
@@ -124,10 +141,13 @@ def template_table(tag, V, C, comps, k, nb):
         else:
             amps, m2l = fixed, tpl.loglike(S, N, **fixed)
         M = tpl(**amps)
-        ok = np.isfinite(m2l)
+        try:
+            c2 = f'{chi2(V, M, np.arange(V.shape[1])):.4f}'
+        except np.linalg.LinAlgError:
+            c2 = ' n/PD '
         out[name] = {t: amps[t] for t in ones + free}
-        print(f'    {name:52s} {m2l - ref:+9.1f}  ' + (f'{chi2(V, M, np.arange(V.shape[1])):.4f}' if ok else ' n/PD ')
-              + '  ' + ', '.join(f'{t}={amps[t]:.2f}' for t in ones + free))
+        val = f'{m2l - ref:+9.1f}' if m2l < 1e299 else '   not PD'
+        print(f'    {name:52s} {val}  {c2}  ' + ', '.join(f'{t}={amps[t]:.2f}' for t in ones + free))
     return out
 
 
@@ -207,7 +227,7 @@ def main():
     ap.add_argument('--f', type=float, default=None)
     ap.add_argument('--zeff', type=float, default=None)
     ap.add_argument('--n-near', type=int, default=300000)
-    ap.add_argument('--b3', type=float, default=None, help='T0: b3 (default: Lazeyras et al. 2016 b3(b1))')
+    ap.add_argument('--b3', type=float, default=None, help='T0: Galileon-basis b3 (default 0; the Lazeyras b3(b1) is in another basis)')
     ap.add_argument('--workers', type=int, default=min(64, os.cpu_count() or 1), help='T0: processes')
     ap.add_argument('--no-t0', action='store_true', help='skip the tree-level trispectrum')
     ap.add_argument('--sigma-fog', type=float, default=None, help='FoG sigma_v [Mpc/h] (default: fit to the mock P2/P0)')
@@ -215,12 +235,15 @@ def main():
     ap.add_argument('--no-damping', action='store_true', help='tree-level responses with the undamped P_lin (old)')
     ap.add_argument('--no-normalize', action='store_true', help='do not normalise A P_lin to the mock amplitude')
     ap.add_argument('--k-split', type=float, default=0.06, help='T0 response split: long bins k < k_split')
+    ap.add_argument('--no-window-local', action='store_true', help='do not window-convolve the local-approximation terms')
+    ap.add_argument('--fit-templates', action='store_true', help='also fit template amplitudes to the mocks (diagnostic)')
     args = ap.parse_args()
 
     from cosmoprimo.fiducial import DESI
     from scipy.interpolate import CubicSpline
     from thecov import (GaussianCovariance, PowerSpectrumModel, SuperSampleCovariance, DiscretenessCovariance,
-                        TrispectrumCovariance, galileon_bias)
+                        TrispectrumCovariance, galileon_bias, response_split, response_covariance)
+    from thecov.covariance_tools import window_convolve
 
     paths = dc.Paths(kind='holi_v3', mock=173)
     paths.loader = 'auto'
@@ -315,54 +338,71 @@ def main():
         disc = DiscretenessCovariance(cov, (kl, PirA), b1=b1, f=f, b2=b2, bs2=bs2, sigma_fog=sigma_v,
                                       **(dict(n_mu=16, n_phi=24) if sigma_v else {}))
         dcomp = disc.components([(tr.name, tr.name)], ells=(0, 2, 4))
-        Cd = dcomp['B'] + dcomp['P']
+        Cd_loc = dcomp['B'] + dcomp['P']
+        wconv = (lambda X: X) if args.no_window_local else (lambda X: window_convolve(X, C))
+        Cd = wconv(Cd_loc)                                   # the discreteness terms with the window's mode mixing
         out[f'{r}/C_disc_B'], out[f'{r}/C_disc_P'] = dcomp['B'], dcomp['P']
+        out[f'{r}/C_disc_local'], out[f'{r}/C_disc'] = Cd_loc, Cd
         J_Smm, J_SS = disc.window_integrals(tr.name)
         log(f'{r}: discreteness 4-point: J_Smm {J_Smm:.3e}, J_SS {J_SS:.3e}; diag(C_disc)/diag(C) l=0 at k~0.05, 0.15, 0.25: '
-            + ', '.join(f'{Cd[i, i] / C[i, i]:.3f}' for i in (6, 26, 46)))
-        out[f'{r}/C_disc'] = Cd
+            + ', '.join(f'{Cd[i, i] / C[i, i]:.3f}' for i in (6, 26, 46))
+            + ('' if args.no_window_local else ' (window-convolved)'))
         C_disc[r] = Cd
         C_ssc[r] = Cs
         out[f'{r}/C_ssc'], out[f'{r}/C_ssc_LA_noPoisson'], out[f'{r}/C_ssc_noLA'] = Cs, res['LA_noPoisson'][1], res['noLA'][1]
         out[f'{r}/C'] = C
+        out[f'{r}/C_nongauss'] = Cs + Cd                    # the recommended non-Gaussian covariance (nothing fitted)
         out[f'{r}/sigma2_keys'] = np.array([f'{x}|{y}' for (x, y) in sig])
         out[f'{r}/sigma2'] = np.array(list(sig.values()))
         out[f'{r}/params'] = np.array([b1, b2, bs2, f, zeff])
         out[f'{r}/damping'] = np.array([0.0 if args.no_damping else args.ir_sigma, sigma_v, A_norm])
         out[f'{r}/dilution'] = np.asarray(dil, float) * np.ones(nb)
+        # inputs, so that every term can be rebuilt locally (desi_validation/ssc_dev/local_rebuild.py)
+        out[f'{r}/plin_k'], out[f'{r}/plin_P'], out[f'{r}/plin_P_damped_normalised'] = kl, Pl, PirA
+        out[f'{r}/J_disc'] = np.array([J_Smm, J_SS])
+        out[f'{r}/LA_integrals'] = np.array([var, J, J3, norm])
+        out[f'{r}/k'], out[f'{r}/k_edges'], out[f'{r}/mock_mean'] = k, k_edges, V.mean(0)
         save(out)
         variants = [('SSC (LA)', Cs), ('SSC (LA, no Poisson)', res['LA_noPoisson'][1]), ('SSC (no LA)', res['noLA'][1]),
-                    ('SSC (LA) + disc 4-pt', Cs + Cd), ('SSC (LA, no Poisson) + disc 4-pt', res['LA_noPoisson'][1] + Cd)]
+                    ('SSC (LA) + disc 4-pt (local)', Cs + Cd_loc), ('SSC (LA) + disc 4-pt', Cs + Cd)]
         if not args.no_t0:
-            b3 = args.b3 if args.b3 is not None else -1.028 + 7.646 * b1 - 6.227 * b1 ** 2 + 0.912 * b1 ** 3
+            b3 = args.b3 if args.b3 is not None else 0.0
             gb = galileon_bias(b1, b2, bs2, b3=b3)
             t0 = TrispectrumCovariance(cov, (kl, PirA), gb, f=f, n_workers=args.workers, sigma_fog=sigma_v,
                                        **(dict(n_mu=20, n_psi=40) if sigma_v else {}))
             tt = time.time()
             tc = t0.components([(tr.name, tr.name)], ells=(0, 2, 4))
+            Ccoll = t0.collapsed([(tr.name, tr.name)], args.k_split, ells=(0, 2, 4))
+            J4 = t0.window_integral(tr.name)
             Ct = tc['snake'] + tc['star']
-            log(f'{r}: T0 ({gb}, J4 {t0.window_integral(tr.name):.3e}, {time.time() - tt:.0f} s with {args.workers} '
-                'processes); diag(C_T0)/diag(C) l=0 at k~0.05, 0.15, 0.25: '
-                + ', '.join(f'{Ct[i, i] / C[i, i]:.3f}' for i in (6, 26, 46))
-                + '; snake / star at k~0.15: ' + f"{tc['snake'][26, 26] / tc['star'][26, 26]:.2f}")
+            log(f'{r}: T0 ({gb}, J4 {J4:.3e}, {time.time() - tt:.0f} s with {args.workers} processes); '
+                'diag(C_T0)/diag(C) l=0 at k~0.05, 0.15, 0.25: ' + ', '.join(f'{Ct[i, i] / C[i, i]:.3f}' for i in (6, 26, 46))
+                + '; collapsed (k_split %.3g): ' % args.k_split + ', '.join(f'{Ccoll[i, i] / C[i, i]:.3f}' for i in (6, 26, 46)))
             for key, M in tc.items():
                 out[f'{r}/C_T0_{key}'] = M
+            out[f'{r}/C_T0_collapsed_local'] = Ccoll
             out[f'{r}/bias_galileon'] = np.array(list(gb.as_dict().values()))
-            C_t0[r], C_t0[r + '_b3'] = Ct, tc['star_b3']
-            save(out)
-            from thecov import response_split
-            sp = response_split(Ct, k, args.k_split, C + Cs)
+            out[f'{r}/J4'] = np.array(J4)
+            sp = response_split(wconv(Ct), k, args.k_split, C + Cs + Cd, C_collapsed=wconv(Ccoll))
             for key, M in sp.items():
                 out[f'{r}/C_T0_{key}'] = M
-            variants += [('SSC (LA) + disc 4-pt + T0', Cs + Cd + Ct),
-                         ('SSC (LA) + disc 4-pt + T0 + compl.', Cs + Cd + Ct + sp['completion'])]
+            Cresp = response_covariance(sp)
+            out[f'{r}/C_T0_response'] = Cresp
+            C_t0[r] = Cresp
+            save(out)
+            variants += [('SSC + disc + T0 tree', Cs + Cd + wconv(Ct)),
+                         ('SSC + disc + T0 LL + squeezed + compl.', Cs + Cd + sp['LL'] + sp['LH'] + sp['completion']),
+                         ('SSC + disc + T0 response (+ collapsed)', Cs + Cd + Cresp)]
         for tag, Cx in variants:
-            summarize(f'{tag:33s}', V, C, Cx, k, nb)
-        comps = {'ssc': Cs, 'disc_B': dcomp['B'], 'disc_P': dcomp['P']}
-        if not args.no_t0:
-            comps.update({f'T0_{key}': M for key, M in sp.items()})
-        amps = template_table(f'{b} {r}', V, C, comps, k, nb)
-        out[f'{r}/template_fits'] = np.array(repr(amps))
+            summarize(f'{tag:40s}', V, C, Cx, k, nb)
+        loglike_table(f'{b} {r}', V, C, variants)
+        if args.fit_templates:
+            comps = {'ssc': Cs, 'disc_B': wconv(dcomp['B']), 'disc_P': wconv(dcomp['P'])}
+            if not args.no_t0:
+                comps.update({f'T0_{key}': sp[key] for key in ('LL', 'LH', 'HH', 'completion')})
+                comps['T0_collapsed'] = sp['HH_collapsed']
+            amps = template_table(f'{b} {r}', V, C, comps, k, nb)
+            out[f'{r}/template_fits'] = np.array(repr(amps))
         save(out)
         C_ssc[r + '_noP'] = res['LA_noPoisson'][1]
         del tr, cov
@@ -372,23 +412,25 @@ def main():
     Cgn = dc.combine_regions([C_ssc['NGC_noP'], C_ssc['SGC_noP']], [norms['NGC'], norms['SGC']])
     Cgd = dc.combine_regions([C_disc['NGC'], C_disc['SGC']], [norms['NGC'], norms['SGC']])
     out['GCcomb/C_ssc'], out['GCcomb/C_ssc_LA_noPoisson'], out['GCcomb/C_disc'] = Cg, Cgn, Cgd
+    out['GCcomb/C_nongauss'] = Cg + Cgd
     variants = [('SSC (LA)', Cg), ('SSC (LA) + disc 4-pt', Cg + Cgd), ('SSC (LA, no Poisson) + disc 4-pt', Cgn + Cgd)]
     if C_t0:
         Cgt = dc.combine_regions([C_t0['NGC'], C_t0['SGC']], [norms['NGC'], norms['SGC']])
-        out['GCcomb/C_T0'] = Cgt
-        variants.append(('SSC (LA) + disc 4-pt + T0', Cg + Cgd + Cgt))
+        out['GCcomb/C_T0_response'] = Cgt
+        variants.append(('SSC + disc + T0 response (+ collapsed)', Cg + Cgd + Cgt))
     save(out)
     print(f'\n{b} GCcomb')
     for tag, Cx in variants:
-        summarize(f'{tag:33s}', V, C, Cx, k, len(k))
-    comb = lambda key: dc.combine_regions([out[f'NGC/{key}'], out[f'SGC/{key}']], [norms['NGC'], norms['SGC']])
-    comps = {'ssc': Cg, 'disc_B': comb('C_disc_B'), 'disc_P': comb('C_disc_P')}
-    if C_t0:
-        comps.update({f'T0_{key}': comb(f'C_T0_{key}') for key in ('LL', 'LH', 'HH', 'completion')})
-    amps = template_table(f'{b} GCcomb', V, C, comps, k, len(k))
-    out['GCcomb/template_fits'] = np.array(repr(amps))
+        summarize(f'{tag:40s}', V, C, Cx, k, len(k))
+    loglike_table(f'{b} GCcomb', V, C, variants)
+    if args.fit_templates:
+        comb = lambda key: dc.combine_regions([out[f'NGC/{key}'], out[f'SGC/{key}']], [norms['NGC'], norms['SGC']])
+        comps = {'ssc': Cg, 'disc': Cgd}
+        if C_t0:
+            comps['T0resp'] = Cgt
+        amps = template_table(f'{b} GCcomb', V, C, comps, k, len(k))
+        out['GCcomb/template_fits'] = np.array(repr(amps))
     save(out)
-
 
 if __name__ == '__main__':
     main()

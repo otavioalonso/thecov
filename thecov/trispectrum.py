@@ -339,11 +339,14 @@ def mu12_nodes(n_mid=64, n_end=32, delta=0.05, eps=1e-12):
 
 
 def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None, parts=('snake', 'star', 'star_b3'),
-               sigma_fog=0.0):
+               sigma_fog=0.0, k_collapse=None):
     """{part: {(l1, l2): (2 l1 + 1)(2 l2 + 1) < L_l1(mu1) L_l2(mu2) T(k1, -k1, k2, -k2) >}} at |k1|, |k2|.
 
     sigma_fog: Gaussian fingers-of-God damping of the four external fields, T -> T exp(-(k1 mu1 s)^2 - (k2 mu2 s)^2)
-    (phenomenological; the angular rule is then no longer exact: raise n_mu, n_psi)."""
+    (phenomenological; the angular rule is then no longer exact: raise n_mu, n_psi).
+    k_collapse: also return 'collapsed_tree', the snake + star restricted to the configurations with
+    min |k1 +- k2| < k_collapse. Diagnostic only: the bulk-flow (IR) pieces of the snake cancel against star
+    contributions from all configurations, so this restriction is not IR safe; use collapsed_multipoles."""
     mu, wmu = mu12_nodes() if mu12 is None else mu12
     xg, wg = np.polynomial.legendre.leggauss(n_mu)
     psi = 2 * np.pi * (np.arange(n_psi) + 0.5) / n_psi
@@ -361,9 +364,60 @@ def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None,
     if sigma_fog:
         D = np.exp(-(k1 * mu1 * sigma_fog) ** 2 - (k2 * mu2 * sigma_fog) ** 2)
         T = {p: t * D for p, t in T.items()}
+    if k_collapse is not None and 'snake' in T and 'star' in T:
+        kmin12 = np.sqrt(np.clip(k1 ** 2 + k2 ** 2 - 2 * k1 * k2 * np.abs(M), 0, None))
+        T['collapsed_tree'] = (T['snake'] + T['star']) * (kmin12 < k_collapse)
     L = {l: (np.polynomial.legendre.Legendre.basis(l)(mu1), np.polynomial.legendre.Legendre.basis(l)(mu2)) for l in ells}
     return {part: {(l1, l2): (2 * l1 + 1) * (2 * l2 + 1) * float(np.sum(W * L[l1][0] * L[l2][1] * Tp))
                    for l1 in ells for l2 in ells} for part, Tp in T.items()}
+
+
+def squeezed_response(k, q, P, bias, f):
+    """R(k, q) P(k) = B_ggm(k, -k + q, -q) / P_L(q) at tree level for vectors k (hard) and q (soft), n^ = z^:
+    2 Z2(k, -q) Z1(k) P(k) + 2 Z2(-k + q, -q) Z1(-k + q) P(|k - q|), evaluated at finite q (its bulk-flow 1/q terms
+    cancel between the two terms, so it is finite as q -> 0; for q -> 0 it is the SSC response). P: callable of |k|."""
+    kb = -k + q
+    return (2 * Z2(k, -q, bias, f) * Z1(k, bias, f) * P(np.sqrt(np.sum(k * k, 0)))
+            + 2 * Z2(kb, -q, bias, f) * Z1(kb, bias, f) * P(np.sqrt(np.sum(kb * kb, 0))))
+
+
+def collapsed_multipoles(k1, k2, P, bias, f, k_split, ells=(0, 2, 4), n_mu=20, n_psi=40, n_q=32, sigma_fog=0.0,
+                         P_long=None):
+    """Response-approach collapsed term: for |k1 -+ k2| = p < k_split the four-point function factorises into two
+    squeezed bispectra, T ~ B(k1, -k2, -p) B(-k1, k2, p) / P_L(p) = R(k1, p)^2 P(k1)^2 P_L(p), plus the same for
+    p = k1 + k2 (equal by parity for even l): T_coll = 2 [R(k1, p) P(k1)]^2 P_L(p). IR safe (each factor is),
+    positive configuration by configuration. Returns {(l1, l2): (2 l1 + 1)(2 l2 + 1) < L L T_coll >} with the
+    same normalisation as multipoles (the mu12 average restricted to p < k_split, done in ln p).
+    P: the hard power (e.g. normalised, BAO-damped), P_long: the long-mode power (default P)."""
+    P_long = P if P_long is None else P_long
+    out = {(l1, l2): 0.0 for l1 in ells for l2 in ells}
+    pmin = max(abs(k1 - k2), 1e-5)
+    if pmin >= k_split:
+        return out
+    t, wt = np.polynomial.legendre.leggauss(n_q)
+    lo, hi = np.log(pmin), np.log(k_split)
+    pq = np.exp(0.5 * (hi - lo) * t + 0.5 * (hi + lo))
+    wq = 0.5 * (hi - lo) * wt * pq ** 2 / (2 * k1 * k2)            # dmu12 / 2 = p dp / (2 k1 k2)
+    mu = np.clip((k1 ** 2 + k2 ** 2 - pq ** 2) / (2 * k1 * k2), -1, 1)
+    xg, wg = np.polynomial.legendre.leggauss(n_mu)
+    psi = 2 * np.pi * (np.arange(n_psi) + 0.5) / n_psi
+    M, C1, PS = np.meshgrid(mu, xg, psi, indexing='ij')
+    W = np.meshgrid(wq, wg / 2, np.full(n_psi, 1 / n_psi), indexing='ij')
+    W = W[0] * W[1] * W[2]
+    S1 = np.sqrt(1 - C1 ** 2)
+    SM = np.sqrt(np.clip(1 - M ** 2, 0, None))
+    e1 = np.stack([S1, np.zeros_like(S1), C1])
+    ea = np.stack([C1, np.zeros_like(C1), -S1])
+    eb = np.stack([np.zeros_like(C1), np.ones_like(C1), np.zeros_like(C1)])
+    e2 = M * e1 + SM * (np.cos(PS) * ea + np.sin(PS) * eb)
+    kv1, kv2 = k1 * e1, k2 * e2
+    pv = kv1 - kv2
+    T = 2 * squeezed_response(kv1, pv, P, bias, f) ** 2 * P_long(np.sqrt(np.sum(pv * pv, 0)))
+    if sigma_fog:
+        T = T * np.exp(-(kv1[2] * sigma_fog) ** 2 - (kv2[2] * sigma_fog) ** 2)
+    mu1, mu2 = C1, e2[2]
+    L = {l: (np.polynomial.legendre.Legendre.basis(l)(mu1), np.polynomial.legendre.Legendre.basis(l)(mu2)) for l in ells}
+    return {(l1, l2): (2 * l1 + 1) * (2 * l2 + 1) * float(np.sum(W * L[l1][0] * L[l2][1] * T)) for l1 in ells for l2 in ells}
 
 
 # ----------------------------------------------------------------------------- covariance
@@ -385,13 +439,14 @@ class LinearPower:
 
 def _row(args):
     """multipoles of all pairs (bin i, bin j >= i), bin-averaged: [{part: {(l1, l2): value}}] (one per j)"""
-    i, kn, kw, P, bias, f, ells, n_mu, n_psi, mu12, sigma_fog = args
+    i, kn, kw, P, bias, f, ells, n_mu, n_psi, mu12, sigma_fog, k_collapse = args
     rows = []
     for j in range(i, len(kn)):
         acc = {}
         for wa, ka in zip(kw[i], kn[i]):
             for wb, kb in zip(kw[j], kn[j]):
-                m = multipoles(ka, kb, P, bias, f, ells=ells, n_mu=n_mu, n_psi=n_psi, mu12=mu12, sigma_fog=sigma_fog)
+                m = multipoles(ka, kb, P, bias, f, ells=ells, n_mu=n_mu, n_psi=n_psi, mu12=mu12, sigma_fog=sigma_fog,
+                               k_collapse=k_collapse)
                 for p, d in m.items():
                     a = acc.setdefault(p, {})
                     for key, v in d.items():
@@ -411,7 +466,7 @@ class TrispectrumCovariance:
     """
 
     def __init__(self, cov, p_lin, bias, f, n_mu=12, n_psi=24, n_mid=64, n_end=32, n_k=1, J4=None, n_workers=1,
-                 sigma_fog=0.0, **bias_kw):
+                 sigma_fog=0.0, k_collapse=None, **bias_kw):
         self.cov = cov
         self.P = LinearPower(*p_lin)
         self.bias = bias if isinstance(bias, Bias) else Bias(bias, **bias_kw)
@@ -421,6 +476,7 @@ class TrispectrumCovariance:
         self._J4 = J4
         self.n_workers = int(n_workers)
         self.sigma_fog = float(sigma_fog)
+        self.k_collapse = None if k_collapse is None else float(k_collapse)
 
     def window_integral(self, A):
         """J4 = int m^4 / norm^2 = alpha sum_r w_r m_r^3 / norm^2 (m = nbar w at the randoms)"""
@@ -454,7 +510,8 @@ class TrispectrumCovariance:
         J4 = self.window_integral(A)
         kn, kw = self._nodes()
         nb, nl = len(kn), len(ells)
-        tasks = [(i, kn, kw, self.P, self.bias, self.f, ells, self.n_mu, self.n_psi, self.mu12, self.sigma_fog)
+        tasks = [(i, kn, kw, self.P, self.bias, self.f, ells, self.n_mu, self.n_psi, self.mu12, self.sigma_fog,
+                  self.k_collapse)
                  for i in range(nb)]
         if self.n_workers > 1:
             from concurrent.futures import ProcessPoolExecutor
@@ -467,7 +524,7 @@ class TrispectrumCovariance:
                 if verbose:
                     print(f'T0: bin {t[0] + 1}/{nb}', flush=True)
                 rows.append(_row(t))
-        out = {p: np.zeros((nl * nb, nl * nb)) for p in ('snake', 'star', 'star_b3')}
+        out = {p: np.zeros((nl * nb, nl * nb)) for p in rows[0][0]}
         for i, row in enumerate(rows):
             for dj, acc in enumerate(row):
                 j = i + dj
@@ -479,6 +536,32 @@ class TrispectrumCovariance:
                             out[p][b * nb + j, a * nb + i] = v
         return out
 
+    def collapsed(self, spectra, k_split, ells=None):
+        """Response-approach collapsed term (collapsed_multipoles) for all bin pairs with |k_i - k_j| < k_split,
+        window factor J4, same layout as components(); k-bin average with the n_k nodes."""
+        cov = self.cov
+        ells = cov.ells if ells is None else tuple(ells)
+        A = str(spectra[0][0])
+        J4 = self.window_integral(A)
+        kn, kw = self._nodes()
+        nb, nl = len(kn), len(ells)
+        out = np.zeros((nl * nb, nl * nb))
+        for i in range(nb):
+            for j in range(i, nb):
+                acc = {key: 0.0 for key in ((l1, l2) for l1 in ells for l2 in ells)}
+                for wa, ka in zip(kw[i], kn[i]):
+                    for wb, kb in zip(kw[j], kn[j]):
+                        if abs(ka - kb) >= k_split:
+                            continue
+                        m = collapsed_multipoles(ka, kb, self.P, self.bias, self.f, k_split, ells=ells,
+                                                 n_mu=max(self.n_mu, 16), n_psi=max(self.n_psi, 32), sigma_fog=self.sigma_fog)
+                        for key, v in m.items():
+                            acc[key] += wa * wb * v
+                for a, l1 in enumerate(ells):
+                    for b, l2 in enumerate(ells):
+                        out[a * nb + i, b * nb + j] = out[b * nb + j, a * nb + i] = J4 * acc[(l1, l2)]
+        return out
+
     def covariance(self, spectra, ells=None, verbose=False):
         comps = self.components(spectra, ells=ells, verbose=verbose)
         ells = self.cov.ells if ells is None else tuple(ells)
@@ -487,30 +570,46 @@ class TrispectrumCovariance:
 
 
 # ----------------------------------------------------------------------------- response-based split
-def response_split(C_T, k, k_split, C_long, ells=(0, 2, 4)):
+def response_split(C_T, k, k_split, C_base, ells=(0, 2, 4), C_collapsed=None):
     """Split a trispectrum covariance into the response-approach pieces at the scale k_split.
 
     Bins with k < k_split are 'long' (L), the others 'hard' (H). Returns
-      LL : both long  (tree level is valid there),
-      LH : long x hard, the squeezed couplings (the hard power responds to the realised long-mode power),
-      HH : both hard (collapsed + hard configurations),
-      completion : C_HL C_LL^-1 C_LH on the HH block, the variance the hard modes inherit from the long-mode
-                   power they respond to. It is O(P^4) (beyond the tree-level trispectrum) but required for a
-                   positive covariance: with it, [[C_LL, C_LH], [C_HL, C_HH + completion]] is positive whenever
-                   C_HH is (Schur complement). C_long: covariance of the long bins (e.g. Gaussian + SSC), full
-                   matrix in the same (ell, bin) order; only its LL block is used.
-    The blocks sum to C_T (completion excluded)."""
+      LL : both long (tree level is valid there),
+      LH : long x hard, the squeezed couplings X (the hard power responds to the realised long-mode power),
+      HH : both hard (tree level; dropped by the response approach),
+      HH_collapsed : with C_collapsed (TrispectrumCovariance.collapsed), its HH block,
+      completion : the hard-hard variance implied by the squeezed couplings. Model the hard power as
+           P_H = P_H0 + J (P_L - <P_L>), with (P_L, P_H0) distributed as the rest of the model
+           [[A, B0], [B0^T, D0]] (A = (C_base + LL)_LL, B0 = (C_base)_LH): then Cov(P_L, P_H) = B0 + A J^T = B0 + X
+           gives J = X^T A^-1 and the extra hard-hard covariance X^T A^-1 X + X^T A^-1 B0 + B0^T A^-1 X.
+           It is O(P^4) (beyond tree level) and makes the total positive whenever the rest of the model is.
+    C_base: the rest of the covariance model (Gaussian + SSC + discreteness), full matrix in (ell, bin) order.
+    LL + LH + HH = C_T."""
     k = np.asarray(k, float)
     L = np.tile(k < k_split, len(ells))
     H = ~L
     LL, HH = np.outer(L, L), np.outer(H, H)
     out = {'LL': np.where(LL, C_T, 0.0), 'HH': np.where(HH, C_T, 0.0), 'LH': np.where(~(LL | HH), C_T, 0.0)}
+    if C_collapsed is not None:
+        out['HH_collapsed'] = np.where(HH, C_collapsed, 0.0)
     comp = np.zeros_like(C_T)
     if L.any() and H.any():
-        X = C_T[np.ix_(L, H)]
-        comp[np.ix_(H, H)] = X.T @ np.linalg.solve(np.asarray(C_long)[np.ix_(L, L)], X)
+        C_base = np.asarray(C_base)
+        A = (C_base + out['LL'])[np.ix_(L, L)]
+        X, B0 = C_T[np.ix_(L, H)], C_base[np.ix_(L, H)]
+        AiX = np.linalg.solve(A, X)
+        cross = B0.T @ AiX
+        comp[np.ix_(H, H)] = X.T @ AiX + cross + cross.T
     out['completion'] = comp
     return out
+
+
+def response_covariance(parts, hard=False):
+    """The response-based T0 covariance from response_split's parts: long-long (tree level) + squeezed couplings +
+    their completion + the collapsed term (+ the tree-level hard-hard block if hard=True, for diagnostics; the
+    response approach drops it)."""
+    C = parts['LL'] + parts['LH'] + parts['completion'] + parts.get('HH_collapsed', 0.0)
+    return C + parts['HH'] if (hard or 'HH_collapsed' not in parts) else C
 
 
 # ----------------------------------------------------------------------------- templates
@@ -569,6 +668,8 @@ class CovarianceTemplates:
             amps = dict(base, **dict(zip(free, x)))
             v = self.loglike(S, n_samples, **amps)
             return v if np.isfinite(v) else 1e300
+        if f(x0) >= 1e300:                                     # start not positive definite: start small
+            x0 = np.full_like(x0, 0.1)
         best = None
         for i in range(max(1, restarts)):
             r = minimize(f, x0 if i == 0 else x0 * (1 + 0.3 * i) + 0.1 * i, method='Powell',
