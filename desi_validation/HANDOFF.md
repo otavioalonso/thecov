@@ -322,3 +322,19 @@ ssc_dev/t0_diagnostics/ksplit_scan.py (bundle npz; unfitted, -2 dlnL vs Gaussian
    (template amplitudes 0.02-0.25 on holi and Abacus): tree-level responses with Gaussian FoG overestimate the galaxy
    redshift-space responses at k ~ 0.1-0.3. A proper version needs (i) a window-convolved (non-local) low-k T0 and
    (ii) nonlinear responses, e.g. measured from sub-volumes (position-dependent power spectrum).
+
+### 7.9 What the recommended model still misses (residual analysis, 2026-10-07)
+
+Whitened residuals of the mocks under C + C_nongauss (holi LRG1/QSO, 859 mocks; Abacus complete LRG1, 25):
+- QSO: consistent with noise after a uniform rescale (chi2/n 0.985-0.995, i.e. 0.5-1.5 % too much variance); one
+  6.8 sigma eigenvalue in NGC. Open: r02 sign, shot-noise parameter variance 1.2 (NGC, kmax 0.3).
+- LRG1: every single multipole and every pair is at chi2/n 0.99-1.005, but all three together give 1.023 / 1.034:
+  the whole excess is var(l=4 | l=0, l=2) = 1.07 (NGC) / 1.11 (SGC), peaking at 0.1 < k < 0.2 (1.08-1.09), already
+  present in the Gaussian part alone and unchanged by SSC / disc; the top whitened eigenvalues (2.2-3.0 vs noise
+  2.05 +- 0.02) are l=4-dominated, bin-to-bin oscillating directions. Abacus COMPLETE shows the same (1.16 / 1.12
+  +- 0.04) -> not fiber assignment. Not P6+ truncation of the model (P6/P0 < 0.2 % for the fitted damping; box test
+  changes var(l4|l0,l2) by < 0.1 %). Not seen for QSO (shot-noise dominated, where window/LOS anisotropy couplings
+  matter little). Candidates: the anisotropic (l-mixing) structure of the Gaussian term at nP > 1 (window
+  multipoles / kernel smoothing anisotropy), the estimator's line-of-sight convention vs thecov's, non-Gaussian
+  l=4 couplings. Parameter-level: quadrupole-amplitude variance still 1.15-1.18x the model at kmax 0.3 (LRG1).
+- T0 is not needed (sec. 7.7-7.8).
