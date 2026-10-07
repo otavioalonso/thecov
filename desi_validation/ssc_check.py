@@ -100,6 +100,8 @@ def fit_amplitude(k, P0, dil, b1, f, sigma_v, plin, kmin=0.02, kmax=0.08):
 
 TEMPLATE_CASES = [  # (name, templates held at 1, templates fitted); the rest are 0 (diagnostic only)
     ('fit: SSC, disc', [], ['ssc', 'disc']),
+    ('fit: SSC, disc, T0 tree', [], ['ssc', 'disc', 'T0tree']),
+    ('fit: SSC, disc_B, disc_P, T0 tree', [], ['ssc', 'disc_B', 'disc_P', 'T0tree']),
     ('fit: SSC, disc, T0 response', [], ['ssc', 'disc', 'T0resp']),
     ('fit: SSC, disc_B, disc_P, T0 pieces', [],
      ['ssc', 'disc_B', 'disc_P', 'T0_LL', 'T0_LH', 'T0_completion', 'T0_collapsed', 'T0_HH']),
@@ -147,7 +149,18 @@ def template_table(tag, V, C, comps, k, nb):
             c2 = ' n/PD '
         out[name] = {t: amps[t] for t in ones + free}
         val = f'{m2l - ref:+9.1f}' if m2l < 1e299 else '   not PD'
-        print(f'    {name:52s} {val}  {c2}  ' + ', '.join(f'{t}={amps[t]:.2f}' for t in ones + free))
+        err = {}
+        if free and m2l < 1e299:                             # Fisher errors at the best fit (Wishart, N - 1 dof)
+            Mi = np.linalg.inv(M)
+            X = [Mi @ tpl.templates[t] for t in free]
+            F = np.array([[0.5 * (N - 1) * np.sum(a * b.T) for b in X] for a in X])
+            try:
+                err = dict(zip(free, np.sqrt(np.diag(np.linalg.inv(F)))))
+            except np.linalg.LinAlgError:
+                pass
+        out[name + ' (errors)'] = err
+        print(f'    {name:52s} {val}  {c2}  ' + ', '.join(f'{t}={amps[t]:.2f}' + (f'+-{err[t]:.2f}' if t in err else '')
+                                                       for t in ones + free))
     return out
 
 
@@ -237,6 +250,8 @@ def main():
     ap.add_argument('--k-split', type=float, default=0.06, help='T0 response split: long bins k < k_split')
     ap.add_argument('--no-window-local', action='store_true', help='do not window-convolve the local-approximation terms')
     ap.add_argument('--fit-templates', action='store_true', help='also fit template amplitudes to the mocks (diagnostic)')
+    ap.add_argument('--cs-version', default='holi-v3-altmtl', help='mock catalogues (e.g. abacus-2ndgen-dr2-altmtl)')
+    ap.add_argument('--mock', type=int, default=173, help='mock whose randoms / footprint are used (abacus: 0)')
     args = ap.parse_args()
 
     from cosmoprimo.fiducial import DESI
@@ -245,9 +260,9 @@ def main():
                         TrispectrumCovariance, galileon_bias, response_split, response_covariance)
     from thecov.covariance_tools import window_convolve
 
-    paths = dc.Paths(kind='holi_v3', mock=173)
+    paths = dc.Paths(kind='holi_v3', mock=args.mock)
     paths.loader = 'auto'
-    paths.cs_version, paths.cs_parent_version = 'holi-v3-altmtl', 'data-dr2-v2'
+    paths.cs_version, paths.cs_parent_version = args.cs_version, 'data-dr2-v2'
     cfg = pl.Config()
     z = np.load(os.path.join(args.dir, f'report_data_{args.label}.npz'))
     b = args.bin
@@ -399,6 +414,7 @@ def main():
         if args.fit_templates:
             comps = {'ssc': Cs, 'disc_B': wconv(dcomp['B']), 'disc_P': wconv(dcomp['P'])}
             if not args.no_t0:
+                comps['T0tree'] = wconv(Ct)
                 comps.update({f'T0_{key}': sp[key] for key in ('LL', 'LH', 'HH', 'completion')})
                 comps['T0_collapsed'] = sp['HH_collapsed']
             amps = template_table(f'{b} {r}', V, C, comps, k, nb)

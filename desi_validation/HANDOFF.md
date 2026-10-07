@@ -286,3 +286,12 @@ within ~2-5 % at all k and l. Template fits (diagnostic) gain little: LRG1 NGC S
 Response T0 (diagnostic): its pieces get ML amplitudes 0.02-0.3; with the windowed collapsed term the model has a
 whitened eigenvalue of 34 (badly wrong) -> not used. Open: residual chi2/n 1.02-1.03 for LRG (diffuse, not a
 low-rank term), the QSO r02 sign, the QSO shot-noise parameter variance (1.2 at kmax 0.3, NGC).
+
+### 7.6 Abacus T0 test (prepared 2026-10-07)
+
+`bash desi_validation/run_abacus_t0_test.sh [altmtl|complete]`: kernel Gaussian dumps for the 25 AbacusSummit DR2 mocks
+(LRG1, same options as holi-kcore2), then ssc_check (--cs-version abacus-2ndgen-dr2-<v> --mock 0 --fit-templates) and
+the bundle. Question: is the tree-level T0 amplitude (template fit with SSC and disc free; Fisher errors printed)
+~1 in N-body (Abacus) while ~0.07 +- 0.02 in holi (NGC)? Forecast sigma(A_T0) ~ 0.07-0.09 with 25 mocks, both caps;
+control: holi with 25 mocks gives 0.17 +- 0.08. Caveats: SSC differs (2 Gpc/h periodic boxes; left free); caps may be
+correlated (compare per cap); model mean from 25 mocks.
