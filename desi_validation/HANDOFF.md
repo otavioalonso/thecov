@@ -308,3 +308,17 @@ Abacus caveats: the Gaussian model is worse than for holi (x4 bins chi2/n 1.14-1
 mocks); NGC and SGC share box modes (same-bin cap correlation +0.15 at k < 0.12, ~2-3 sigma), so GCcomb (chi2 1.12)
 is not valid as an independent combination; SSC amplitude unconstrained (+-0.6). The altmtl run would only test the
 fiber-assignment interplay (lower priority).
+
+### 7.8 k_split scan of the tree (low k) + response (high k) T0 (holi LRG1, 2026-10-07)
+
+ssc_dev/t0_diagnostics/ksplit_scan.py (bundle npz; unfitted, -2 dlnL vs Gaussian; recommended SSC + disc: -3321 NGC, -2594 SGC):
+  tree LL only (all k < k_split): k_split 0.04 -3283 / 0.06 -2957 / 0.08 -1777 / 0.10 not PD / 0.12 not PD (NGC; SGC alike)
+  LL + squeezed + completion: always worse (-381 to -2097 NGC), chi2/n can drop (1.009) while ln L worsens: too much variance
+  collapsed (response) term: worse at 0.04, not PD (window-convolved) for k_split >= 0.06
+=> the tree-level T0 fails already inside its nominal regime (k < 0.1): its low-k block is not compatible with
+   Gaussian + SSC + disc. Likely cause: for the thin LRG1 shell the low k bins are near the window scale, where the local
+   (narrow-window) T0 is invalid and the long-mode coupling is what SSC + local average already describe (with the LA
+   cancellation that the in-survey squeezed T0 lacks). The response pieces at high k come out 4-10x too large
+   (template amplitudes 0.02-0.25 on holi and Abacus): tree-level responses with Gaussian FoG overestimate the galaxy
+   redshift-space responses at k ~ 0.1-0.3. A proper version needs (i) a window-convolved (non-local) low-k T0 and
+   (ii) nonlinear responses, e.g. measured from sub-volumes (position-dependent power spectrum).
