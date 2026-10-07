@@ -383,3 +383,15 @@ the DESI spectra pipeline (clustering_statistics, not public) made is settled at
 Read: (1) the `split` argument of the pipeline's call; (2) the slope (1 vs 2) and the residual; (3) which candidate's
 ratio to the file's norm has rms << 0.4 %. If it is DR, the tree-level net response is wrong in sign for these galaxies
 and the responses must be measured (review sec. 3.B); if it is RRsplit / NXr, rerun ssc_check with `--norm-kind alpha`.
+
+**Confirmed (2026-10-07, from the pipeline code): split=None, the pypower convention, norm = alpha sum_c D_c R_c / V_c.**
+So `norm_kind='data-randoms'` (the default) is the right bookkeeping, and with randoms that take the mock's own redshifts
+alpha n_r(x) is the realised radial profile n_rad(z): norm ∝ ∫ n_rad^2, delta_norm = 2 D^W for every long mode, and the
+net monopole response is R - 2 g = R_phys, the local-mean-referenced response, = -1.1 P_0 for b1 = 2.2 (bias response
+2 (b1 + b2 - b1^2) / b1 = -2.15 dominates). The measured slope +0.1 to +0.25 P_0 therefore cannot be a tree-level SSC +
+LA effect (it would need R ~ 8-9 P_0, b2 ~ 5). What the scripts now decide: whether the stored P_hat are divided by the
+per-mock norm at all (`norm_convention.py`: the P_0 amplitude-mode slope on delta_norm is ~ -0.3 if they are, ~ +0.7 for a
+fixed normalisation; check also in lsstypes how `.value()` applies `norm`), and the residual of ln norm on ln num_shotnoise
+(the weighting difference between the m^2-weighted norm and the w^2-weighted count plus Poisson, expected 0.1-0.2 %).
+Whatever the answer, the P_0 amplitude mode of the mocks (0.5 %, r = 0.14 with delta_norm) is not the isotropic SSC of this
+model, and the responses should be measured from the mocks (review sec. 3.B) before the SSC term is trusted for LRG.

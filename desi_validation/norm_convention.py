@@ -74,6 +74,10 @@ def analyse(tag, V, k, norm, nsn, nb):
     A = ((V[:, :nb][:, sel] - Pm[:nb][sel]) @ T) / (T @ T)
     print(f'  P0 amplitude mode: rms {A.std(ddof=1) * 100:.3f}%, corr with delta_norm {np.corrcoef(A, dn)[0, 1]:+.3f}, '
           f'with delta_nsn {np.corrcoef(A, ds)[0, 1]:+.3f}; slope on delta_norm {regress(A, dn)[0]:+.3f}')
+    print('  reading (norm = alpha sum D_c R_c, randoms with the mock\'s own redshifts, tree-level LRG responses): the amplitude slope '
+          'on delta_norm is ~ -0.3 if P_hat is divided by the per-mock norm (net response R - 2g = -1.1 P0) and ~ +0.7 if the '
+          'stored P_hat carry a fixed normalisation (no local average); the two differ by exactly 1. A value near +0.2 '
+          'means one realised factor only, or a global-mean response R ~ 8-9 P0 (b2 ~ 5): then the responses must be measured.')
 
 
 def main():

@@ -102,6 +102,13 @@ sum_cells R1_c R2_c / V_c over two disjoint random subsamples (randoms only, `al
 the mock's own shuffled redshifts). Which call the DESI pipeline made is decided by the three scripts of HANDOFF 8.1
 (`inspect_norm_code.py`, `norm_convention.py`, `check_norm_catalogs.py`).
 
+**Confirmed by the author from the pipeline code: `split=None`, the pypower convention (data x randoms).** With randoms
+whose redshifts are the mock's own, alpha n_r(x) is the realised radial profile, norm ∝ ∫ n_rad(z)^2 and delta_norm = 2 D^W
+for every long mode; the net response is the local-mean one, R_phys = -1.1 P_0, so the measured positive slope is not a
+tree-level SSC + LA effect (it would need a global-mean response of 8-9 P_0). The open question moves to the estimator
+(are the stored multipoles divided by the per-mock norm?) and to the responses of these galaxies, both of which the
+scripts of HANDOFF 8.1 and the measured-response approach (section 3.B) address.
+
 What was added:
 
 - `SuperSampleCovariance(norm_kind=...)`: `'data-randoms'` (as before), `'randoms'` (alpha^2 sum R^2: alpha twice),
