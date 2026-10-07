@@ -192,6 +192,12 @@ class SuperSampleCovariance:
     b1, f  : linear bias and growth rate; b2 (default 0) and bs2 (default -4/7 (b1 - 1), local
              Lagrangian) enter the responses
     local_average : include the LA term of a per-realisation alpha and norm (pypower / jaxpower)
+    norm_kind : which averages of the long mode the realised normalisation contains: 'data-randoms'
+             (norm = alpha sum_c D_c R_c: alpha's m-weighted mean AND the data's m^2-weighted mean, the
+             module docstring), 'randoms' (norm = alpha^2 sum_c R_c^2: alpha twice), 'alpha' (norm = alpha x a
+             fixed randoms integral: alpha once). The net P_0 response changes sign between the first and the
+             last for b1 ~ 2 (BC - 2 g_0 P vs BC - g_0 P); `local_average_statistics` gives the sigma(delta_norm)
+             and the P_hat-delta_norm regression slope that each implies, to be compared with the mocks.
     discreteness  : include the Poisson (and collapsed-bispectrum) part of the LA (needs local_average)
     damping: Gaussian damping [Mpc/h] of P_lin in xi_lam (regularises xi at s -> 0; irrelevant for SSC)
     n_mu, n_near : the SSC's own pair counts (same s bins, far-pair sampling and seed as cov). The
@@ -207,8 +213,12 @@ class SuperSampleCovariance:
              pair-averaged value, e.g. WindowSmoothing.I_k / norm)
     """
 
+    NORM_KINDS = {'data-randoms': {'M': 1.0, 'W': 1.0},   # norm = alpha sum_c D_c R_c: alpha and the data realised
+                  'randoms': {'M': 2.0, 'W': 0.0},        # norm = alpha^2 sum_c R_c^2: realised through alpha only, twice
+                  'alpha': {'M': 1.0, 'W': 0.0}}          # norm = alpha x (fixed randoms integral, e.g. sum_r nbar w^2)
+
     def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, local_average=True, damping=1.0, n_mu=96,
-                 n_near=300000, dilution=None, discreteness=True, p_dressed=None):
+                 n_near=300000, dilution=None, discreteness=True, p_dressed=None, norm_kind='data-randoms'):
         self.cov = cov
         self.p_dressed = p_dressed
         self.dilution = dilution
@@ -220,6 +230,13 @@ class SuperSampleCovariance:
         self.bs2 = -4.0 / 7.0 * (self.b1 - 1.0) if bs2 is None else float(bs2)
         self.local_average = bool(local_average)
         self.discreteness = bool(discreteness) and self.local_average
+        if norm_kind not in self.NORM_KINDS:
+            raise ValueError(f'norm_kind must be one of {sorted(self.NORM_KINDS)}')
+        self.norm_kind = norm_kind
+        # lam_x: how many times the x-weighted mean of the long mode (and its Poisson noise) enters ln norm:
+        # delta_norm = sum_n g_n (lam_W D^W_n + lam_M D^M_n) + eps_N. Which convention jaxpower uses decides the
+        # sign of the net P_0 response (see local_average_statistics); it must be checked on the mocks.
+        self.lam = dict(self.NORM_KINDS[norm_kind]) if self.local_average else {'M': 0.0, 'W': 0.0}
         self.damping = float(damping)
         self.a, self.c = response_coefficients(self.b1, self.f, self.b2, self.bs2)    # (ns_bc; tree level)
         scale = np.max(np.abs(self.a)) + np.max(np.abs(self.c))
@@ -235,8 +252,8 @@ class SuperSampleCovariance:
 
     def _modes(self):
         """the long-mode projections X = (window, n) that enter"""
-        modes = [('W', n) for n in sorted(set(self.ns_bc) | (set(self.g) if self.local_average else set()))]
-        if self.local_average:
+        modes = [('W', n) for n in sorted(set(self.ns_bc) | (set(self.g) if self.lam['W'] else set()))]
+        if self.lam['M']:
             modes += [('M', n) for n in sorted(self.g)]
         return modes
 
@@ -346,8 +363,8 @@ class SuperSampleCovariance:
                 v = np.zeros(cov.nbins)
                 if x == 'W' and (l, n) in R:
                     v += d * R[(l, n)]
-                if self.local_average and n in self.g:
-                    v -= Pmeas[l] * self.g[n]
+                if self.lam[x] and n in self.g:
+                    v -= self.lam[x] * Pmeas[l] * self.g[n]
                 vec.append(v)
             out[(x, n)] = np.concatenate(vec)
         return out
@@ -358,10 +375,61 @@ class SuperSampleCovariance:
         a, w, m = T.alpha, np.asarray(T.w, float), np.asarray(T.mw, float)
         w2 = a * T.shotnoise_scale * w ** 2                    # sum_g w^2 g  ->  sum_r w2_r g(x_r)
         I_M, I_W = a * np.sum(w), a * np.sum(w * m)
-        var = np.sum(w2 * (1.0 / I_M + m / I_W) ** 2)
-        J = np.sum(w2 * m) / I_M + np.sum(w2 * m ** 2) / I_W
-        J3 = a * np.sum(w * m ** 2) / I_M + a * np.sum(w * m ** 3) / I_W
+        lM, lW = self.lam['M'], self.lam['W']
+        var = np.sum(w2 * (lM / I_M + lW * m / I_W) ** 2)
+        J = lM * np.sum(w2 * m) / I_M + lW * np.sum(w2 * m ** 2) / I_W
+        J3 = lM * a * np.sum(w * m ** 2) / I_M + lW * a * np.sum(w * m ** 3) / I_W
         return var, J, J3
+
+    def local_average_statistics(self, A, ells=None, C_total=None):
+        """What the per-realisation normalisation implies, for a direct test on mocks (no fitting):
+        delta_norm = norm / <norm> - 1 = sum_n g_n (lam_W D^W_n + lam_M D^M_n) + eps_N, so
+            Var(delta_norm) = sum_XY lam_X lam_Y g_X g_Y sigma^2_XY + Var_P(eps_N),
+            Cov(P_hat_l(k), delta_norm) = sum_XY c^X_l(k) lam_Y g_Y sigma^2_XY + T_l(k) - P_hat_l(k) Var_P(eps_N).
+        Returns dict(sigma_norm, sigma_norm_clustering, sigma_norm_poisson, cov, slope, corr, P_hat) with cov the
+        (len(ells) nbins,) covariance, slope = cov / Var(delta_norm) / P_hat (the regression slope of P_hat_l on
+        delta_norm in units of the measured multipole), corr the correlation of the long-mode (clustering) parts of
+        P_hat_l(k) and delta_norm (|corr| <= 1; ~ +-1 when one long-mode component dominates both) and, with C_total
+        (the full covariance of the data vector, Gaussian + non-Gaussian), corr_total = cov / sqrt(C_total_ii Var).
+        On the mocks: std(norm) / mean(norm), and the regression of each P_hat_l(k) on delta_norm, are the same
+        quantities; they fix the normalisation convention (`norm_kind`) and test the long-mode variances and the
+        net (beat coupling minus local average) response at once. The Poisson parts (Var_P, T_l) are included whatever
+        `discreteness` is, since the realised norm carries them."""
+        cov = self.cov
+        ells = cov.ells if ells is None else tuple(ells)
+        if not self.local_average:
+            raise RuntimeError('local_average_statistics needs local_average=True')
+        sig = self.sigma2(A)
+        cf = self.coefficients(A, ells)
+        gl = {x: self.lam[x[0]] * self.g.get(x[1], 0.0) for x in cf}       # the weight of D^X in delta_norm
+        var_c = sum(gl[x] * gl[y] * sig[(x, y)] for x in cf for y in cf)
+        var_p, J, J3 = self.discreteness_integrals(A)
+        var = var_c + var_p
+        var_bin_c = sum(cf[x] * cf[y] * sig[(x, y)] for x in cf for y in cf)          # clustering SSC variance per bin
+        d = self._dilution(A)
+        norm = cov.I(A, A)
+        lk = np.log(self.k_lin)
+        spl = CubicSpline(lk, self.p_lin)
+        P2 = self._bin_average(lambda k: spl(np.log(k)) ** 2)
+        b1, f = self.b1, self.f
+        kais = {0: b1 ** 2 + 2 / 3 * b1 * f + f ** 2 / 5, 2: 4 / 3 * b1 * f + 4 / 7 * f ** 2, 4: 8 / 35 * f ** 2}
+        zc = self.b2 + 2.0 / 3.0 * self.bs2
+        Pm, Tv = [], []
+        for l in ells:
+            p = self._bin_average(lambda k: cov.model(A, A, l, k))
+            p = p if cov.masked else p * d
+            Pm.append(p)
+            Tv.append(2.0 * p / d * J / norm + zc * kais.get(l, 0.0) * P2 * J3 / norm)
+        Pm, Tv = np.concatenate(Pm), np.concatenate(Tv)
+        cov_c = sum(cf[x] * gl[y] * sig[(x, y)] for x in cf for y in cf)
+        cov_v = cov_c + Tv - Pm * var_p
+        with np.errstate(divide='ignore', invalid='ignore'):
+            corr = np.where(var_bin_c * var_c > 0, cov_c / np.sqrt(np.abs(var_bin_c * var_c)), 0.0)
+        out = dict(sigma_norm=math.sqrt(var), sigma_norm_clustering=math.sqrt(max(var_c, 0.0)),
+                   sigma_norm_poisson=math.sqrt(var_p), cov=cov_v, slope=cov_v / var / Pm, corr=corr, P_hat=Pm)
+        if C_total is not None:
+            out['corr_total'] = cov_v / np.sqrt(np.diag(np.asarray(C_total, float)) * var)
+        return out
 
     def discreteness_covariance(self, A, ells):
         """the Poisson / collapsed-bispectrum part of the local average, (len(ells) nbins)^2"""

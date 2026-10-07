@@ -226,6 +226,40 @@ def summarize(tag, V, C, Cssc, k, nb):
               f' -> {np.round(param_ratios(V, M, k, nb, kmax), 2)}')
 
 
+NORM_K = (0.05, 0.1, 0.2)
+
+
+def norm_statistics(tag, V, norm_arr, k, nb, variants, C_total, A):
+    """The direct, fit-free test of the local-average term: sigma(delta_norm) and the regression slope of each
+    P_hat_l(k) on delta_norm = norm_i / <norm> - 1 over the mocks, against SuperSampleCovariance.local_average_statistics
+    for each normalisation convention (`variants`: {norm_kind: ssc}). The slope's sign is the net (beat coupling minus
+    local average) response: tree level gives ~ -0.2 P_0 for 'data-randoms' and ~ +0.5 P_0 for 'alpha' (b1 ~ 2)."""
+    dn = norm_arr / norm_arr.mean() - 1.0
+    Vc = V - V.mean(0)
+    cov_m = (Vc * dn[:, None]).mean(0) * len(V) / (len(V) - 1)
+    slope_m = cov_m / dn.var(ddof=1) / V.mean(0)
+    corr_m = cov_m / (V.std(0, ddof=1) * dn.std(ddof=1))
+    idx = [int(np.argmin(np.abs(k - kk))) for kk in NORM_K]
+    print(f'  {tag}: normalisation per mock: sigma(delta_norm) mocks {dn.std(ddof=1) * 100:.3f}%')
+    for l, lab in ((0, 'l=0'), (1, 'l=2')):
+        print(f'      mocks      {lab}: slope dP/dnorm / P at k ~ {NORM_K}: '
+              + ' '.join(f'{slope_m[l * nb + i]:+.2f}' for i in idx)
+              + ' | corr(P_hat, delta_norm): ' + ' '.join(f'{corr_m[l * nb + i]:+.2f}' for i in idx))
+    for kind, ssc in variants.items():
+        try:
+            st = ssc.local_average_statistics(A, ells=(0, 2, 4), C_total=C_total)
+        except Exception as e:                                  # diagnostic only: never stop the run
+            print(f'      {kind:12s}: local_average_statistics failed: {e}')
+            continue
+        print(f'      {kind:12s}: sigma(delta_norm) {st["sigma_norm"] * 100:.3f}% (clustering {st["sigma_norm_clustering"] * 100:.3f}%,'
+              f' Poisson {st["sigma_norm_poisson"] * 100:.3f}%)')
+        for l, lab in ((0, 'l=0'), (1, 'l=2')):
+            print(f'                    {lab}: slope ' + ' '.join(f'{st["slope"][l * nb + i]:+.2f}' for i in idx)
+                  + ' | corr ' + ' '.join(f'{st["corr_total"][l * nb + i]:+.2f}' for i in idx)
+                  + ' | corr of the long-mode parts ' + ' '.join(f'{st["corr"][l * nb + i]:+.2f}' for i in idx))
+    return dict(sigma_norm_mocks=dn.std(ddof=1), slope_mocks=slope_m, corr_mocks=corr_m)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bin', default='LRG1')
@@ -240,6 +274,9 @@ def main():
     ap.add_argument('--f', type=float, default=None)
     ap.add_argument('--zeff', type=float, default=None)
     ap.add_argument('--n-near', type=int, default=300000)
+    ap.add_argument('--norm-kind', default='data-randoms', choices=('data-randoms', 'randoms', 'alpha'),
+                    help="what jaxpower's realised norm contains (see thecov.ssc.SuperSampleCovariance); all three are "
+                         "compared with the mocks' sigma(delta_norm) and P_hat-delta_norm slopes in the log")
     ap.add_argument('--b3', type=float, default=None, help='T0: Galileon-basis b3 (default 0; the Lazeyras b3(b1) is in another basis)')
     ap.add_argument('--workers', type=int, default=min(64, os.cpu_count() or 1), help='T0: processes')
     ap.add_argument('--no-t0', action='store_true', help='skip the tree-level trispectrum')
@@ -330,7 +367,7 @@ def main():
         # variants: LA with its Poisson self-calibration term, LA without it, no LA
         for key, la, pois in (('LA', True, True), ('LA_noPoisson', True, False), ('noLA', False, False)):
             ssc = SuperSampleCovariance(cov, (kl, PlA), b1=b1, f=f, b2=b2, bs2=bs2, local_average=la, **damp,
-                                        n_near=args.n_near, dilution=dil, discreteness=pois)
+                                        n_near=args.n_near, dilution=dil, discreteness=pois, norm_kind=args.norm_kind)
             wfile = os.path.join(args.dir, f'ssc_windows_{b}_{r}.npz')
             if key == 'LA':
                 if os.path.exists(wfile):
@@ -350,6 +387,19 @@ def main():
         log(f'{r}: sigma^2 ' + ', '.join(f'{x[0]}{x[1]}-{y[0]}{y[1]} {v:.3e}' for (x, y), v in sig.items() if x <= y))
         print(f'\n{b} {r}  (a00 {ssc.a[0, 0]:.3f}, c00 {ssc.c[0, 0]:.3f}, a02 {ssc.a[0, 1]:.3f}, a20 {ssc.a[1, 0]:.3f}, '
               f'a22 {ssc.a[1, 1]:.3f}; R/P_lin)')
+        norm_arr = np.asarray(z[f'{b}/{r}/x1/norm'], float).ravel()
+        if norm_arr.size == len(V):
+            kinds = {}
+            for kind in ('data-randoms', 'randoms', 'alpha'):
+                sk = SuperSampleCovariance(cov, (kl, PlA), b1=b1, f=f, b2=b2, bs2=bs2, local_average=True, **damp,
+                                           n_near=args.n_near, dilution=dil, discreteness=True, norm_kind=kind)
+                sk.windows = windows
+                kinds[kind] = sk
+            ns = norm_statistics(f'{b} {r}', V, norm_arr, k, nb, kinds, C + Cs, tr.name)
+            out[f'{r}/norm_stats_mocks'] = np.array([ns['sigma_norm_mocks']])
+            out[f'{r}/norm_slope_mocks'], out[f'{r}/norm_corr_mocks'] = ns['slope_mocks'], ns['corr_mocks']
+        else:
+            log(f'{r}: no per-mock norm array in the dump ({norm_arr.size} values for {len(V)} mocks): norm statistics skipped')
         disc = DiscretenessCovariance(cov, (kl, PirA), b1=b1, f=f, b2=b2, bs2=bs2, sigma_fog=sigma_v,
                                       **(dict(n_mu=16, n_phi=24) if sigma_v else {}))
         dcomp = disc.components([(tr.name, tr.name)], ells=(0, 2, 4))

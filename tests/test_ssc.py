@@ -131,3 +131,43 @@ def test_no_wiggle():
     sel = (k > 0.4) | (k < 0.005)
     assert np.allclose(Pnw[sel], smooth[sel], rtol=2e-3)                   # broadband unbiased
     assert np.allclose(ir_damped(k, P, Pnw, 0.0), P) and np.allclose(ir_damped(k, P, Pnw, 50.0)[k > 0.1], Pnw[k > 0.1])
+
+
+def test_local_average_statistics_and_norm_kinds(sphere_ssc):
+    """uniform sphere, real space, b1 = 2: delta_norm = 2 b1 D (data-randoms) has variance 4 b1^2 sigma_00 + Poisson,
+    the P0-delta_norm covariance is (R - 2 b1 P0) 2 b1 sigma_00 - P0 Var_P + T; 'alpha' uses one factor and
+    'randoms' two factors of the M average only"""
+    ssc, R = sphere_ssc
+    cov, b1 = ssc.cov, ssc.b1
+    st = ssc.local_average_statistics('T', ells=(0,))
+    sig = ssc.sigma2('T')
+    s00 = sig[(('W', 0), ('W', 0))]
+    assert np.isclose(st['sigma_norm_clustering'] ** 2, 4 * b1 ** 2 * s00, rtol=0.05)        # D^W ~ D^M for a uniform sphere
+    var_p, J, J3 = ssc.discreteness_integrals('T')
+    assert np.isclose(st['sigma_norm'] ** 2, st['sigma_norm_clustering'] ** 2 + var_p, rtol=1e-8)
+    P0 = ssc._bin_average(lambda kk: cov.model('T', 'T', 0, kk))
+    resp = ssc.responses()[(0, 0)]
+    from scipy.interpolate import CubicSpline
+    kl, Pl = p_lin()
+    P2 = ssc._bin_average(lambda kk: CubicSpline(np.log(kl), Pl)(np.log(kk)) ** 2)
+    T = 2 * P0 * J / cov.I('T', 'T') + (ssc.b2 + 2 / 3 * ssc.bs2) * b1 ** 2 * P2 * J3 / cov.I('T', 'T')   # <P_raw eps_N>
+    d = ssc._dilution('T')                                                              # I_k / I (~1 for the sphere)
+    c = {('W', 0): d * (resp - b1 * P0), ('M', 0): -b1 * d * P0}                        # the LA weights g_0 = b1
+    expect = sum(c[x] * b1 * sig[(x, y)] for x in c for y in c) + T - d * P0 * var_p
+    assert np.allclose(st['cov'], expect, rtol=1e-6)
+    assert np.allclose(st['cov'], (resp - 2 * b1 * P0) * 2 * b1 * s00 + T - P0 * var_p, rtol=0.25)  # sphere: all sigma^2 ~ s00, d ~ 1
+    assert np.allclose(st['slope'] * st['sigma_norm'] ** 2 * P0, st['cov'])
+    assert np.all(np.abs(st['corr']) <= 1 + 1e-9) and np.all(st['corr'] < -0.9)       # one long mode: fully (anti)correlated
+    G = np.diag(np.full(len(P0), 1e6))
+    st2 = ssc.local_average_statistics('T', ells=(0,), C_total=G)
+    assert np.allclose(st2['corr_total'], st['cov'] / np.sqrt(1e6 * st['sigma_norm'] ** 2))
+    for kind, lam_M, lam_W in (('alpha', 1.0, 0.0), ('randoms', 2.0, 0.0), ('data-randoms', 1.0, 1.0)):
+        s = SuperSampleCovariance(cov, p_lin(), b1=2.0, f=0.0, discreteness=False, norm_kind=kind)
+        s.windows = ssc.windows
+        cf = s.coefficients('T', (0,))
+        assert np.allclose(cf[('W', 0)], d * (resp - lam_W * b1 * P0)) and (('M', 0) not in cf or np.allclose(cf[('M', 0)], -lam_M * b1 * d * P0))
+        assert (('M', 0) in cf) == (lam_M > 0)
+        st = s.local_average_statistics('T', ells=(0,))
+        assert np.isclose(st['sigma_norm_clustering'] ** 2, (lam_M + lam_W) ** 2 * b1 ** 2 * s00, rtol=0.05)
+    with pytest.raises(ValueError):
+        SuperSampleCovariance(cov, p_lin(), b1=2.0, f=0.0, norm_kind='mesh')

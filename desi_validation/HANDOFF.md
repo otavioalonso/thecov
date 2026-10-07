@@ -338,3 +338,17 @@ Whitened residuals of the mocks under C + C_nongauss (holi LRG1/QSO, 859 mocks; 
   multipoles / kernel smoothing anisotropy), the estimator's line-of-sight convention vs thecov's, non-Gaussian
   l=4 couplings. Parameter-level: quadrupole-amplitude variance still 1.15-1.18x the model at kmax 0.3 (LRG1).
 - T0 is not needed (sec. 7.7-7.8).
+
+## 8. Review of the SSC and T0 implementations (2026-10-07): `report/ssc_t0_review.md`
+
+Read it before the next `ssc_check` run. In short: the algebra of `thecov/ssc.py`, `discreteness.py` and `trispectrum.py`
+is verified (independent kernel paths, IR limit, from-scratch T0 assembly; `ssc_dev/review_checks.py`), but the
+local-average term as implemented (norm = alpha sum D R, `norm_kind='data-randoms'`) predicts a NEGATIVE regression
+slope of P_hat_0 on delta_norm (-0.2 to -0.4 P_0, net response R_0 - 2 g_0 = -1.1 P_0 for LRG1) and |corr| ~ 1 between
+the coherent P_0 mode and delta_norm, while the report measured +0.1 to +0.25 P_0 and r = +0.14 / +0.17; the measured
+sigma(delta_norm) = 0.43 % also bounds the isotropic long mode to sigma_0 <~ 0.08 % under that convention, i.e. an
+isotropic SSC of <~ 0.1 % in P_0, not 0.43 %. A normalisation that realises alpha only (`norm_kind='alpha'`) reproduces
+the slope, the correlation and sigma(delta_norm) at tree level. `ssc_check` now prints, per cap, the mocks' sigma(delta_norm),
+slopes and correlations next to the predictions of all three conventions (`--norm-kind` selects the one used for C_SSC):
+read that block first in the next run and settle the convention in jaxpower. Then: measured responses (sub-volumes),
+the sub-sampling test that separates T0 from the discreteness terms, and the Gaussian-field test of var(l=4 | l=0, 2).
