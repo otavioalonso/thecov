@@ -96,6 +96,12 @@ Consequences, independent of the pair-count sigma^2 values of the NERSC run:
   nearly zero at tree level, so the candidates are the response of P_0 to the realised in-survey long-mode power
   (section 3.D) or a non-perturbative response.
 
+jaxpower itself (github.com/adematti/jax-power, `jaxpower/mesh2.py`, read 2026-10-07) implements both: `compute_fkp2_normalization`
+with `split=None` is alpha x sum_cells D_c R_c / V_c (data x randoms, `data-randoms`), with `split=<seed>` it is alpha x
+sum_cells R1_c R2_c / V_c over two disjoint random subsamples (randoms only, `alpha`-like, except that the mock randoms carry
+the mock's own shuffled redshifts). Which call the DESI pipeline made is decided by the three scripts of HANDOFF 8.1
+(`inspect_norm_code.py`, `norm_convention.py`, `check_norm_catalogs.py`).
+
 What was added:
 
 - `SuperSampleCovariance(norm_kind=...)`: `'data-randoms'` (as before), `'randoms'` (alpha^2 sum R^2: alpha twice),

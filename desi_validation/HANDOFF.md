@@ -352,3 +352,34 @@ the slope, the correlation and sigma(delta_norm) at tree level. `ssc_check` now 
 slopes and correlations next to the predictions of all three conventions (`--norm-kind` selects the one used for C_SSC):
 read that block first in the next run and settle the convention in jaxpower. Then: measured responses (sub-volumes),
 the sub-sampling test that separates T0 from the discreteness terms, and the Gaussian-field test of var(l=4 | l=0, 2).
+
+### 8.1 How jaxpower computes norm (read from github.com/adematti/jax-power, jaxpower/mesh2.py, 2026-10-07)
+
+`compute_fkp2_normalization(fkp, cellsize=10, split=None)`: with `split=None` ("the pypower normalization")
+norm = alpha x sum_cells D_c R_c / V_c (CIC on 10 Mpc/h cells, data x randoms, alpha = sum w_d / sum w_r) -- thecov's
+`norm_kind='data-randoms'`; with `split=<seed>` norm = alpha x sum_cells R1_c R2_c / V_c over two disjoint random
+subsamples (randoms only: alpha realised once; but the mock randoms take their redshifts from the mock's data, so the
+randoms' integral still carries the realised radial n(z)). num_shotnoise = sum_d w_d^2 + alpha^2 sum_r w_r^2. Which call
+the DESI spectra pipeline (clustering_statistics, not public) made is settled at NERSC by three scripts, in this order:
+
+    # 1. the code itself (no job, ~1 min): prints the 'norm' / 'split' functions of jaxpower and clustering_statistics
+    #    and the attributes of one spectrum file
+    source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main && cd ~/thecov && git pull origin thecov2 && \
+      PYTHONPATH=$HOME/thecov:$PYTHONPATH python -m desi_validation.inspect_norm_code --bin LRG1 --region NGC --mock 173 \
+      > /global/cfs/cdirs/desicollab/users/oalves/thecov_validation/norm_code.txt 2>&1
+    # 2. the dump alone (seconds): slope of ln norm on ln num_shotnoise over the 859 mocks (1: alpha only, ~2: data x randoms
+    #    or randoms^2), residual rms, and the P_hat regressions on delta_norm and delta_nsn
+    PYTHONPATH=$HOME/thecov:$PYTHONPATH python -m desi_validation.norm_convention --bin LRG1 --label holi-kcore2-LRG1 \
+      > /global/cfs/cdirs/desicollab/users/oalves/thecov_validation/norm_convention_LRG1.txt
+    PYTHONPATH=$HOME/thecov:$PYTHONPATH python -m desi_validation.norm_convention --bin QSO --label holi-kcore2-QSO \
+      > /global/cfs/cdirs/desicollab/users/oalves/thecov_validation/norm_convention_QSO.txt
+    # 3. the catalogues of 8 mocks (debug queue, ~20 min): DR, RRsplit, NX-based candidates vs the files' norm, mock by mock
+    cd ~/thecov && sbatch -N 1 -C cpu -q debug -t 00:30:00 -J normcat -o /global/cfs/cdirs/desicollab/users/oalves/thecov_validation/norm_catalogs_LRG1.log \
+      --wrap "source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main && export PYTHONPATH=\$HOME/thecov:\$PYTHONPATH && cd ~/thecov && python -u -m desi_validation.check_norm_catalogs --bin LRG1 --label holi-kcore2-LRG1 --mocks 0 1 2 3 4 5 6 7"
+    # 4. then the SSC with the convention found (and the predicted vs measured norm statistics in the log)
+    cd ~/thecov && sbatch -N 1 -C cpu -q debug -t 00:30:00 -J sscLRG1 -o /global/cfs/cdirs/desicollab/users/oalves/thecov_validation/ssc_norm_LRG1.log \
+      --wrap "source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main && export PYTHONPATH=\$HOME/thecov:\$PYTHONPATH && cd ~/thecov && python -u -m desi_validation.ssc_check --bin LRG1 --label holi-kcore2-LRG1 --no-t0 --norm-kind data-randoms"
+
+Read: (1) the `split` argument of the pipeline's call; (2) the slope (1 vs 2) and the residual; (3) which candidate's
+ratio to the file's norm has rms << 0.4 %. If it is DR, the tree-level net response is wrong in sign for these galaxies
+and the responses must be measured (review sec. 3.B); if it is RRsplit / NXr, rerun ssc_check with `--norm-kind alpha`.
