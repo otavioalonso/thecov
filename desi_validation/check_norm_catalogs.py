@@ -83,6 +83,7 @@ def main():
     ap.add_argument('--n-random-files', type=int, default=1)
     ap.add_argument('--cellsize', type=float, default=10.0)
     ap.add_argument('--cs-version', default='holi-v3-altmtl')
+    ap.add_argument('--nz-bins', type=int, default=10, help='z bins of the n(z) scatter test')
     args = ap.parse_args()
 
     b = args.bin
@@ -94,6 +95,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     rows = {r: [] for r in args.regions}
     prints = {r: [] for r in args.regions}
+    nz = {r: [] for r in args.regions}
     names = ['norm_file', 'nsn_file', 'alpha', 'DR', 'RRsplit', 'NXr', 'NXd', 'nsn_recomputed']
     rng = np.random.default_rng(0)
     for r in args.regions:
@@ -115,7 +117,7 @@ def main():
             cs = args.cellsize
             DR = alpha * cell_sum(pd, wd, pr, wr, cs, lo)
             half = rng.random(len(wr)) < 0.5
-            RRsplit = alpha * cell_sum(pr[half], wr[half], pr[~half], wr[~half], cs, lo) * (wr.sum() / wr[half].sum()) * (wr.sum() / wr[~half].sum())
+            RRsplit = alpha ** 2 * cell_sum(pr[half], wr[half], pr[~half], wr[~half], cs, lo) * (wr.sum() / wr[half].sum()) * (wr.sum() / wr[~half].sum())
             nx_d = np.asarray(d.get('NX', np.full(len(wd), np.nan)), float)
             nx_r = np.asarray(ra.get('NX', np.full(len(wr), np.nan)), float)
             NXd, NXr = float(np.sum(wd ** 2 * nx_d)), float(alpha * np.sum(wr ** 2 * nx_r))
@@ -124,16 +126,31 @@ def main():
             row = [nf, sf, alpha, DR, RRsplit, NXr, NXd, nsn_re]
             rows[r].append(row)
             prints[r].append(fingerprint(ra))
+            # the data n(z) of this mock: counts (and total weights) in z bins, for the mock-to-mock scatter test below
+            edges = np.linspace(zr[0], zr[1], args.nz_bins + 1)
+            nz[r].append(np.histogram(d['Z'], edges)[0].astype(float))
             log(f'{r} mock {mock} ({src}): norm_file {nf:.6g} | DR/norm {DR / nf:.5f} RRsplit/norm {RRsplit / nf:.5f} '
                 f'NXr/norm {NXr / nf:.5f} NXd/norm {NXd / nf:.5f} | nsn_recomputed/nsn_file {nsn_re / sf:.5f} | alpha {alpha:.5g}; '
                 f'{len(wd)} data, {len(wr)} randoms')
-            np.savez(out_fn, **{f'{rr}/rows': np.array(v, float) for rr, v in rows.items() if v}, names=np.array(names),
-                     mocks=np.array(args.mocks))
+            np.savez(out_fn, **{f'{rr}/rows': np.array(v, float) for rr, v in rows.items() if v},
+                     **{f'{rr}/nz': np.array(v, float) for rr, v in nz.items() if v}, names=np.array(names), mocks=np.array(args.mocks))
             del rc, d, ra, pd, pr
         R = np.array(rows[r], float)
         if len(R) < 2:
             continue
-        print(f'\n{b} {r}: {len(R)} mocks. sigma(delta_norm_file) {np.std(np.log(R[:, 0]), ddof=1) * 100:.3f}%')
+        NZ = np.array(nz[r], float)
+        frac = NZ.std(0, ddof=1) / NZ.mean(0)
+        print(f'\n{b} {r}: n(z) scatter over {len(NZ)} mocks in {args.nz_bins} z bins: std/mean per bin (%) '
+              + ' '.join(f'{x * 100:.2f}' for x in frac) + '\n      Poisson 1/sqrt(N) (%)                        '
+              + ' '.join(f'{x * 100:.2f}' for x in 1 / np.sqrt(NZ.mean(0)))
+              + f'\n      total count: std/mean {NZ.sum(1).std(ddof=1) / NZ.sum(1).mean() * 100:.3f}% (Poisson {100 / np.sqrt(NZ.sum(1).mean()):.3f}%)'
+              + '\n      linear theory for a 50 Mpc/h slab of the footprint: ~2-3 % per bin for LRG; ~Poisson means the mocks\' n(z) is fixed by construction')
+        ok = np.isfinite(R[:, 0])
+        R = R[ok]
+        if len(R) < 2:
+            print('  no mocks with spectrum files among those loaded: no comparison with the files\' norm')
+            continue
+        print(f'  {len(R)} mocks with spectrum files. sigma(delta_norm_file) {np.std(np.log(R[:, 0]), ddof=1) * 100:.3f}%')
         for j, name in enumerate(names[3:], 3):
             lr = np.log(R[:, j] / R[:, 0])
             dc_, dn = np.log(R[:, j]) - np.log(R[:, j]).mean(), np.log(R[:, 0]) - np.log(R[:, 0]).mean()
@@ -142,7 +159,7 @@ def main():
                   f'corr of fluctuations {corr:+.3f}, sigma(delta) {np.std(np.log(R[:, j]), ddof=1) * 100:.3f}%')
         lr = np.log(R[:, 7] / R[:, 1])
         print(f'  num_shotnoise recomputed / file: mean {np.exp(lr.mean()):.5f}, rms {lr.std(ddof=1) * 100:.3f}% '
-              '(~0 means these are the pipeline catalogues and weights)')
+              '(constant ratio = same catalogues and weights up to the number of random files)')
         fp = prints[r]
         same = {c: all(f.get(c) == fp[0].get(c) for f in fp) for c in fp[0]}
         print(f'  randoms identical across mocks? {same}  (False for Z: redshifts shuffled from each mock\'s data)')

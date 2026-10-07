@@ -395,3 +395,29 @@ fixed normalisation; check also in lsstypes how `.value()` applies `norm`), and 
 (the weighting difference between the m^2-weighted norm and the w^2-weighted count plus Poisson, expected 0.1-0.2 %).
 Whatever the answer, the P_0 amplitude mode of the mocks (0.5 %, r = 0.14 with delta_norm) is not the isotropic SSC of this
 model, and the responses should be measured from the mocks (review sec. 3.B) before the SSC term is trusted for LRG.
+
+### 8.2 Results of the normalisation checks (2026-10-07, bundle norm_checks_20261007.tgz)
+
+- **Convention settled**: the pipeline calls `compute_fkp2_normalization(fkp, cellsize=10)` (spectrum2_tools.py:474-501,
+  `norm = {'cellsize': 10.}`, no split): norm = alpha sum_c D_c R_c / V_c. Recomputed DR tracks the files' norm mock by
+  mock (corr 0.95 / 0.97 NGC / SGC over 6 mocks, residual 0.14-0.17 % from NGP vs CIC and one random file). The randoms
+  differ between mocks (positions, redshifts, NX). `norm_kind='data-randoms'` is right.
+- **The model's long-mode variance is 2.3x too large for LRG1 in sigma (5x in variance)**: predicted sigma(delta_norm)
+  0.99 % NGC / 1.39 % SGC (clustering 0.96 / 1.34 %, pair-count sigma^2_W0W0 = 3.1e-6 / 6.2e-6) against the mocks'
+  0.43 / 0.75 % (clustering part ~0.36 / 0.66 % after the Poisson 0.24 / 0.36 %). For QSO it is consistent (0.22 vs
+  0.25 %, 0.33 vs 0.31 %). The pair-count sigma_b (0.18 % NGC) is what linear theory gives for a 1.2e9 (Mpc/h)^3 shell
+  (sigma_b^2 ~ P(q ~ 1/L_r)/V), so the holi LRG1 mocks have ~2.7x less rms in the shell's mean density than a
+  linear-theory realisation of the DESI fiducial cosmology. Candidates: the mocks' n(z) is (partly) fixed by construction
+  (galaxies downsampled to a target n(z) per mock, which removes the radial long modes), or the parent box lacks the
+  600-1200 Mpc/h radial modes. `check_norm_catalogs.py` now prints the mock-to-mock n(z) scatter per z bin against
+  Poisson (linear theory: 2-3 % per 50 Mpc/h slab for LRG; Poisson ~0.5 %): rerun it. If the n(z) is fixed per mock, the
+  mocks cannot validate the LRG super-sample term (the real data keep those modes) and the 6.1 / 7.5 agreement of
+  sigma_P0 (0.43 vs 0.51 %) was reached with a long-mode variance 5x larger than the mocks contain.
+- **The P_hat-delta_norm slope**: mocks l = 0 at k ~ 0.1, 0.2: +0.12, +0.19 (NGC), +0.02, +0.24 (SGC); correlations
+  0.03-0.10; the P_0 amplitude mode has r = +0.03 with delta_norm (NGC, SGC). The model (data-randoms) gives -0.25 to
+  -0.18 and r(long-mode parts) = -1. Note the Poisson part of delta_norm gives slope ~0, not -1: the extra pairs of a
+  Poisson-high realisation cancel its normalisation (T - P Var_P ~ 0 for a uniform window). So the mocks' P_0 mode is
+  not driven by the realised mean density, consistent with the radial modes being largely absent from them.
+- `norm_convention.py`: num_shotnoise is not a clean density tracer for LRG1 (sigma 0.68 % vs 0.43 % for norm, corr
+  0.3; QSO 0.13 % and corr 0.84): the alpha^2 sum_r w_r^2 term with per-mock randoms dominates its scatter. Ignore its
+  slope test; the catalogue DR test is the one that settled the convention.
