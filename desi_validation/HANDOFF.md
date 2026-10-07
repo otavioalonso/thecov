@@ -267,3 +267,22 @@ window-convolved (LL: +370 to +450; LL + LH + compl: +1100; collapsed: not PD at
 reported as diagnostic only. The Lazeyras b3 is not in the Galileon basis; default b3 = 0.
 Template fits (--fit-templates, diagnostic) earlier wanted disc ~2x before the window convolution.
 Next: the NERSC run of this ssc_check (saves every part), then the sub-volume pipeline if needed.
+
+### 7.5 NERSC run of the final model (2026-10-06, log ssc_final_LRG1_QSO.log; figures report/final_run/)
+
+Recommended C_nongauss = SSC (LA) + window-convolved discreteness, normalised + damped, nothing fitted. Reproduces
+the local rebuild exactly (LRG1 NGC -3321 vs -3320). chi2/n (Gaussian -> model), kmax 0.3 joint variance ratios
+(A, A2, alpha, SN):
+    LRG1 NGC     1.0625 -> 1.0231   [1.25 2.11 1.09 1.22] -> [1.04 1.18 0.97 1.01]
+    LRG1 SGC     1.0705 -> 1.0342   [1.60 1.80 1.46 1.43] -> [1.07 1.15 1.05 1.03]
+    LRG1 GCcomb  1.0652 -> 1.0262   [1.31 1.95 1.15 1.26] -> [1.04 1.12 0.98 1.00]
+    QSO  NGC     1.0068 -> 0.9948   [1.00 1.03 0.96 1.41] -> [0.95 0.97 0.92 1.20]
+    QSO  SGC     1.0000 -> 0.9854   [1.08 0.99 1.05 1.39] -> [1.00 0.94 0.97 1.09]
+    QSO  GCcomb  1.0027 -> 0.9899   [1.07 1.00 1.07 1.43] -> [1.02 0.95 1.02 1.18]
+Coherent amplitudes LRG1 GCcomb: sigma_P0 0.42 % (mocks 0.41), sigma_P2/P0 0.67 % (0.74), r02 0.14 (0.16).
+Largest whitened mock eigenvalue ~2.3 (Wishart edge 2.1): no remaining rank-1 excess; diagonal variance ratios
+within ~2-5 % at all k and l. Template fits (diagnostic) gain little: LRG1 NGC SSC 1.23 / disc 1.22 for -22 in
+-2 lnL, SGC 1.36 / 0.90 for -12, GCcomb 1.18 / 1.13 for -9; QSO amplitudes are degenerate.
+Response T0 (diagnostic): its pieces get ML amplitudes 0.02-0.3; with the windowed collapsed term the model has a
+whitened eigenvalue of 34 (badly wrong) -> not used. Open: residual chi2/n 1.02-1.03 for LRG (diffuse, not a
+low-rank term), the QSO r02 sign, the QSO shot-noise parameter variance (1.2 at kmax 0.3, NGC).
