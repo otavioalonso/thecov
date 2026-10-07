@@ -295,3 +295,16 @@ the bundle. Question: is the tree-level T0 amplitude (template fit with SSC and 
 ~1 in N-body (Abacus) while ~0.07 +- 0.02 in holi (NGC)? Forecast sigma(A_T0) ~ 0.07-0.09 with 25 mocks, both caps;
 control: holi with 25 mocks gives 0.17 +- 0.08. Caveats: SSC differs (2 Gpc/h periodic boxes; left free); caps may be
 correlated (compare per cap); model mean from 25 mocks.
+
+### 7.7 Abacus complete T0 test: tree-level T0 rejected by N-body too (2026-10-07)
+
+25 AbacusSummit DR2 complete mocks, LRG1 (log abacus_t0_complete_ssc.log). Template fit (Wishart ML, Fisher errors),
+SSC and disc free: T0 tree amplitude NGC 0.09 +- 0.11, SGC 0.21 +- 0.06, combined 0.18 +- 0.05 (holi NGC: 0.07 +- 0.02);
+T0 response 0.05 +- 0.06 / 0.04 +- 0.07. T0 = 1 is excluded at > 8 sigma in each cap; with T0 fixed at 1 the model is
+not PD. So the rejection is not a holi artefact: tree-level redshift-space T0 overpredicts the connected coupling at
+k ~ 0.1-0.3 also in N-body; at most ~20 % of it is present beyond SSC + window-convolved discreteness.
+Recommended model on Abacus: chi2/n 1.102 -> 1.065 (NGC), 1.096 -> 1.069 (SGC); -2 dlnL -91 / -40 (unfitted).
+Abacus caveats: the Gaussian model is worse than for holi (x4 bins chi2/n 1.14-1.22 in the dump; model mean from 25
+mocks); NGC and SGC share box modes (same-bin cap correlation +0.15 at k < 0.12, ~2-3 sigma), so GCcomb (chi2 1.12)
+is not valid as an independent combination; SSC amplitude unconstrained (+-0.6). The altmtl run would only test the
+fiber-assignment interplay (lower priority).
