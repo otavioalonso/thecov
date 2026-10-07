@@ -421,3 +421,16 @@ model, and the responses should be measured from the mocks (review sec. 3.B) bef
 - `norm_convention.py`: num_shotnoise is not a clean density tracer for LRG1 (sigma 0.68 % vs 0.43 % for norm, corr
   0.3; QSO 0.13 % and corr 0.84): the alpha^2 sum_r w_r^2 term with per-mock randoms dominates its scatter. Ignore its
   slope test; the catalogue DR test is the one that settled the convention.
+
+### 8.3 n(z) scatter of 8 mocks (nz_check_20261007_0351.tgz) and the 859-mock measurement to run
+
+8 mocks, 10 z bins: the radial density scatter per 50-100 Mpc/h bin is 1.3-2.2 % (NGC), 1.3-3.4 % (SGC), well above Poisson
+(0.4-0.6 %) and 0.75-0.8 of the linear slab prediction; but the whole-shell (500 Mpc/h) count scatters by 0.19 % (NGC,
+clustering part) against 0.59 % predicted (ratio 0.32), consistent with the 859-mock delta_norm ratio 0.37 (NGC) / 0.49
+(SGC). So the mocks have the 50-100 Mpc/h radial modes and lack the >~ 250 Mpc/h ones: a parent-box / replication or a
+wide-bin n(z) rescaling in the mock construction, not a fixed n(z). Consequences: (i) the pair-count sigma^2 and the
+tree-level LA are not falsified by these mocks; the mocks simply do not contain the modes; (ii) the LRG super-sample term
+cannot be validated on holi at the 500 Mpc/h scale, and the model's sigma_P0 "agreement" was accidental; (iii) a
+mock-calibrated validation can use the measured radial covariance. `desi_validation/nz_scatter.py` measures n(z) of all
+859 mocks from the data files (seconds per mock), the scatter per radial scale against theory, the NGC-SGC correlation
+of the shell counts (shared parent-box modes), and saves C_nz(z, z').
