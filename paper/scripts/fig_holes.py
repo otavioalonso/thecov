@@ -14,21 +14,18 @@ import healpy as hp
 
 z = load('paper_maps_LRG1')
 R = 'NGC'
-pix, n, E, nside = z[f'{R}/pix'], z[f'{R}/n'].astype(float), float(z[f'{R}/E']), int(z[f'{R}/nside'])
+E = float(z[f'{R}/E'])             # expected randoms in a full nside-2048 pixel
 
 
-def fill_map(ns):
-    shift = 2 * int(np.log2(nside // ns))
+def fill_map(ns, pix, n):
     m = np.full(hp.nside2npix(ns), hp.UNSEEN)
-    c = np.bincount(pix >> shift, weights=n, minlength=hp.nside2npix(ns))
-    occ = c > 0
-    m[occ] = c[occ] / (E * 4 ** (shift // 2))
+    m[pix] = n / (E * (2048 // ns) ** 2)
     return hp.reorder(m, n2r=True)
 
 
 fig = plt.figure(figsize=(TEXTWIDTH, 2.5))
 gs = fig.add_gridspec(1, 3, width_ratios=[1.5, 1, 1.05], wspace=0.6)
-m256 = fill_map(256)
+m256 = fill_map(256, z[f'{R}/pix256'], z[f'{R}/n256'])
 th, ph = hp.pix2ang(256, np.flatnonzero(m256 != hp.UNSEEN), lonlat=True)
 ra_c = np.degrees(np.angle(np.mean(np.exp(1j * np.radians(th))))) % 360
 proj = hp.projector.CartesianProj(rot=(ra_c, 0), lonra=[-60, 60], latra=[-15, 85], xsize=900)
@@ -42,10 +39,8 @@ ax.set_title('(a) fill fraction, nside 256', fontsize=8)
 ax.grid(False)
 fig.colorbar(im, ax=ax, fraction=0.05, pad=0.02, ticks=[0.6, 0.8, 1.0])
 # zoom on a well-populated patch
-m2048 = fill_map(2048)
-good = np.flatnonzero(m2048 != hp.UNSEEN)
-tz, pz = hp.pix2ang(2048, good, lonlat=True)
-ra0, dec0 = np.median(tz), np.median(pz)
+m2048 = fill_map(2048, z[f'{R}/zoom_pix'], z[f'{R}/zoom_n'])
+ra0, dec0 = z[f'{R}/zoom_center']
 gp = hp.projector.GnomonicProj(rot=(ra0, dec0), xsize=500, reso=4 * 60 / 500)
 zoom = gp.projmap(m2048, lambda x, y, zz: hp.vec2pix(2048, x, y, zz))
 ax.add_patch(matplotlib.patches.Rectangle((ra0 - 2, dec0 - 2), 4, 4, fill=False, color=RED, lw=1.0))

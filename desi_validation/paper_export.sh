@@ -8,6 +8,7 @@ OUT=/global/cfs/cdirs/desicollab/users/oalves/thecov_validation
 ENV="source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main && export PYTHONPATH=\$HOME/thecov:\$PYTHONPATH && cd \$HOME/thecov"
 SB="sbatch --parsable -N 1 -C cpu -q debug -t 00:30:00"
 if [ "$1" == "--bundle" ]; then
+  ( eval "$ENV" && python -u -m desi_validation.paper_export --slim )
   STAGE=$(mktemp -d)
   for f in paper_maps_LRG1.npz paper_maps_QSO.npz hole_fraction_LRG1.json hole_fraction_QSO.json nz_scatter_LRG1.npz \
            nz_scatter_QSO.npz paper_maps.log paper_nz_LRG1.log paper_nz_QSO.log; do
