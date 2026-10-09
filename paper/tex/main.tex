@@ -1,0 +1,52 @@
+\documentclass[a4paper,11pt]{article}
+\IfFileExists{jcappub.sty}{\usepackage{jcappub}}{\usepackage{jcappub-standin}}
+\usepackage{graphicx,booktabs,amsmath,amssymb,xcolor}
+\usepackage[capitalise,noabbrev]{cleveref}
+\graphicspath{{../figures/}}
+
+% ---- every number in the text comes from scripts/make_numbers.py (tex/numbers.tex): \val{key}
+\makeatletter
+\newcommand{\val}[1]{\ifcsname val@#1\endcsname\csname val@#1\endcsname\else\textbf{\textcolor{red}{??}}\fi}
+\makeatother
+\InputIfFileExists{numbers}{}{\typeout{numbers.tex missing: run make numbers}}
+% ---- figures come from scripts/fig_<name>.py; a missing one leaves a visible placeholder
+\newcommand{\paperfig}[2][\textwidth]{\IfFileExists{../figures/#2.pdf}{\includegraphics[width=#1]{#2}}%
+  {\fbox{\parbox{0.9#1}{\centering\vspace{2em}figure \texttt{#2} pending (\texttt{scripts/fig\_#2.py})\vspace{2em}}}}}
+\newcommand{\todo}[1]{\textcolor{red}{[#1]}}
+\newcommand{\thecov}{\texttt{thecov}}
+\newcommand{\hMpc}{h\,\mathrm{Mpc}^{-1}}
+\newcommand{\Mpch}{h^{-1}\mathrm{Mpc}}
+\newcommand{\bk}{\boldsymbol{k}}
+\newcommand{\bx}{\boldsymbol{x}}
+\newcommand{\br}{\boldsymbol{r}}
+
+\title{Validating analytic covariance matrices of DESI DR2 power-spectrum multipoles with mocks: what each term does, and how to tell}
+
+\author[a]{\todo{author list}}
+\affiliation[a]{\todo{affiliations}}
+
+\abstract{We validate an analytic covariance model for the power-spectrum multipoles of DESI DR2 luminous red galaxies (LRG, $0.4<z<0.6$) and quasars against 859 approximate mocks and 25 $N$-body (AbacusSummit) mocks. The model, implemented in \thecov, combines a windowed Gaussian term, super-sample covariance with the local-average effect, and the two discreteness four-point terms, all computed from the survey randoms with nothing fitted to the mocks. We find that (i) the local approximation to the survey window, $W=m^2$, underestimates the LRG Gaussian variance by $\simeq\val{kernelgain/LRG1/NGC}$\% because of small-scale structure in the veto mask, which a pair-averaged window built from the correlation function itself recovers; (ii) the remaining LRG excess is dominated by two coherent amplitude modes of the monopole and quadrupole, the signature of super-sample covariance, which the model captures, reducing $\langle\chi^2\rangle/n$ at $k<0.3\,\hMpc$ from $\val{trace/LRG1/NGC/G/0.3}$ to $\val{trace/LRG1/NGC/rec/0.3}$; (iii) the tree-level and response-based connected trispectrum is rejected by both mock suites, with fitted amplitudes $\lesssim0.1$; (iv) fibre assignment does not change the covariance beyond what the model predicts. We present the validation methodology in detail---noise-calibrated residual maps, whitened eigenvalue spectra against null ensembles, cross-validated principal directions, template likelihoods, and bin-width variations that separate Gaussian-like from non-Gaussian errors---and discuss which terms these mocks can and cannot validate: the approximate mocks lack the radial modes above $\sim250\,\Mpch$ that dominate super-sample covariance in a thin redshift shell.}
+
+\keywords{galaxy clustering, power spectrum, covariance matrix, redshift surveys}
+
+\begin{document}
+\maketitle
+\flushbottom
+
+\input{sections/intro}
+\input{sections/model}
+\input{sections/mocks}
+\input{sections/method}
+\input{sections/results}
+\input{sections/limits}
+\input{sections/conclusions}
+
+\acknowledgments
+\todo{DESI acknowledgments; NERSC.}
+
+\appendix
+\input{sections/appendix}
+
+\IfFileExists{JHEP.bst}{\bibliographystyle{JHEP}}{\bibliographystyle{unsrt}}
+\bibliography{refs}
+\end{document}

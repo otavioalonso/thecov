@@ -1,0 +1,12 @@
+products/
+figures/
+tex/numbers.tex
+tex/*.aux
+tex/*.bbl
+tex/*.blg
+tex/*.log
+tex/*.out
+tex/*.toc
+tex/main.pdf
+tex/sections/*.aux
+scripts/__pycache__/

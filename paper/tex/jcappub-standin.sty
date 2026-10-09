@@ -1,0 +1,49 @@
+% Stand-in for JCAP's jcappub.sty, used only when the official file is absent (it could not be downloaded where this
+% draft was set up). It provides the same user commands so that main.tex compiles unchanged with either file:
+%   \author[a,b]{..}  \affiliation[a]{..}  \emailAdd{..}  \abstract{..}  \keywords{..}  \arxivnumber{..}
+%   \acknowledgments  \flushbottom (no-op here)
+% To use the real style: put jcappub.sty (and JHEP.bst) from https://jcap.sissa.it/jcap/help/JCAP_TeXclass.jsp in
+% paper/tex/; main.tex picks it up automatically.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{jcappub-standin}[2026/10/09 stand-in for jcappub.sty]
+\RequirePackage[a4paper,top=2.5cm,bottom=2.5cm,left=2.6cm,right=2.6cm]{geometry}
+\RequirePackage{amsmath,amssymb}
+\RequirePackage[hidelinks]{hyperref}
+\RequirePackage{xcolor}
+\RequirePackage{lmodern}
+\RequirePackage[T1]{fontenc}
+\RequirePackage{microtype}
+
+\def\@affils{}
+\def\@emails{}
+\def\@abstract{}
+\def\@keywords{}
+\def\@arxiv{}
+\def\@authorlist{}
+\renewcommand{\author}[2][]{%
+  \ifx\@authorlist\@empty\g@addto@macro\@authorlist{#2\textsuperscript{#1}}%
+  \else\g@addto@macro\@authorlist{, #2\textsuperscript{#1}}\fi}
+\newcommand{\affiliation}[2][]{\g@addto@macro\@affils{\par\noindent\textsuperscript{#1}\,#2}}
+\newcommand{\emailAdd}[1]{\ifx\@emails\@empty\g@addto@macro\@emails{\href{mailto:#1}{#1}}%
+  \else\g@addto@macro\@emails{, \href{mailto:#1}{#1}}\fi}
+\renewcommand{\abstract}[1]{\def\@abstract{#1}}
+\newcommand{\keywords}[1]{\def\@keywords{#1}}
+\newcommand{\arxivnumber}[1]{\def\@arxiv{#1}}
+\newcommand{\acknowledgments}{\section*{Acknowledgments}}
+\let\acknowledgements\acknowledgments
+\renewcommand{\flushbottom}{}
+
+\renewcommand{\maketitle}{%
+  \thispagestyle{empty}%
+  \noindent{\color{gray}\small Prepared for submission to JCAP \hfill draft, \today}\par\vspace{1.2cm}
+  \noindent{\LARGE\bfseries\@title\par}\vspace{0.8cm}
+  \noindent{\large\@authorlist\par}\vspace{0.4cm}
+  {\small\itshape\@affils\par}\vspace{0.2cm}
+  \ifx\@emails\@empty\else{\small\noindent E-mail: \@emails\par}\fi
+  \vspace{0.8cm}
+  \noindent\textbf{Abstract.} \@abstract\par\vspace{0.4cm}
+  \ifx\@keywords\@empty\else\noindent\textbf{Keywords:} \@keywords\par\fi
+  \ifx\@arxiv\@empty\else\noindent\textbf{ArXiv ePrint:} \@arxiv\par\fi
+  \vspace{0.6cm}\hrule\vspace{0.3cm}
+  \tableofcontents\vspace{0.3cm}\hrule\vspace{0.6cm}}
+\endinput

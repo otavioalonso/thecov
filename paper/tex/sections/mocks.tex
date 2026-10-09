@@ -1,0 +1,8 @@
+\section{Mocks and measurements}
+\label{sec:mocks}
+
+\paragraph{holi.} We use the $\val{Nmocks}$ realisations of the DESI DR2 \texttt{holi v3} approximate mocks with the \texttt{altmtl} fibre assignment \todo{reference and one-line description of the method}. The multipoles $\ell=0,2,4$ are measured in $\Delta k=0.005\,\hMpc$ bins over $0.02<k<0.3\,\hMpc$ ($n=\val{nbins}$), in the two Galactic caps (NGC, SGC) and their combination, with the DESI pipeline. Each mock is normalised by its own data and randoms. All covariance terms are computed for the footprint, $n(z)$ and weights of one realisation (mock 173). The windows are built from its randoms, and the shot noise is rescaled to the mean realised shot noise of the mocks.
+
+\paragraph{AbacusSummit.} The 25 AbacusSummit realisations \cite{Maksimova2021} of the same tracers exist in two versions with the same initial conditions: \texttt{complete} (all targets observed) and \texttt{altmtl} (fibre-assigned). Because they share the initial conditions, the two versions can be compared mock by mock (\cref{sec:fiber}), and they provide an $N$-body check of the trispectrum term (\cref{sec:t0}). Both caps are cut from the same $2\,h^{-1}{\rm Gpc}$ boxes, so the caps are correlated (correlation $\simeq0.15$ at low $k$).
+
+\paragraph{Binning.} Besides $\Delta k=0.005$, the same mocks are binned at $\Delta k=0.01$ and $0.02$. The coarser vectors are the mode-weighted averages of the fine ones, to $<10^{-7}$. The model covariances transform with the same rebinning matrix, $C\to RCR^{\rm T}$; for the Gaussian term this agrees with a direct computation to $<0.2$\%.

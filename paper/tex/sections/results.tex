@@ -1,0 +1,116 @@
+\section{Results}
+\label{sec:results}
+
+\subsection{The Gaussian term and the window}
+\label{sec:gauss}
+
+\Cref{fig:diagonals} shows the mock variance over the model variance for LRG1. With the local window $m^2$, the Gaussian term underestimates the LRG1 variance by $\simeq10$\% at all $k$ and in all multipoles: $\langle\chi^2\rangle/n=\val{trace/LRG1/NGC/G_local/0.3}$ (NGC) and $\val{trace/LRG1/SGC/G_local/0.3}$ (SGC) at $k<0.3\,\hMpc$. A scale-independent deficit shared by all multipoles is the signature of a Gaussian-like error. The pair-averaged window removes half of it, $\val{kernelgain/LRG1/NGC}$\%, and the rest is the low-rank term of \cref{sec:directions}. For QSO the Gaussian term alone already agrees with the mocks: $\langle\chi^2\rangle/n=\val{trace/QSO/NGC/G/0.3}$ (NGC) and $\val{trace/QSO/SGC/G/0.3}$ (SGC; \cref{fig:diagonals_qso} in \cref{app:qso}).
+
+\begin{figure}
+  \centering\paperfig{diagonals_LRG1}
+  \caption{LRG1: variance of the $\val{Nmocks}$ mocks over the model variance, per multipole, averaged over groups of four $0.005\,\hMpc$ bins, with the Wishart error of the group mean under each model. Grey: Gaussian term with the local window; blue: with the $\xi$-kernel window; green: the recommended model (Gaussian + SSC + discreteness), with nothing fitted.}
+  \label{fig:diagonals}
+\end{figure}
+
+\paragraph{Why the local window fails for LRG1: the veto mask.} The local window is exact only if $m(\bx)$ is constant over a correlation length. The DESI veto mask removes thousands of small holes around bright stars and imaging artefacts, on arcminute scales, i.e.\ a few $\Mpch$ at $z\simeq0.5$. Their \emph{average} effect cancels against the normalisation; only their \emph{variation} across the footprint changes the covariance. The relevant statistic is $R_{PP}=\langle f^2\rangle/\langle f\rangle^2$ of the fill fraction $f$ (\cref{fig:holes}). It is flat from $\sim7'$ to $\sim1^\circ$ at $1.03$--$1.04$ for LRG1, so any window that averages over the holes recovers the same answer; this is what the $\xi$-kernel does without a free scale. Three independent estimates agree on a 4--5\% effect for LRG1: Gaussian realisations on the real footprint with a fill-resolved window, \thecov\ with a fill window, and the hole-fraction statistic. For QSO the higher shot noise dilutes it.
+
+\begin{figure}
+  \centering\paperfig{holes}
+  \caption{The veto holes of the LRG1 NGC footprint. (a) Fill fraction of the randoms (nside 256). (b) A $4^\circ\times4^\circ$ zoom at nside 2048, where individual holes are resolved. (c) $R_{PP}=\langle f^2\rangle/\langle f\rangle^2$ against pixel scale: the extra Gaussian variance that the hole-fraction inhomogeneity can add relative to the local window. \todo{needs the NERSC export (paper/README.md).}}
+  \label{fig:holes}
+\end{figure}
+
+\subsection{Correlations and \texorpdfstring{$\chi^2$}{chi2}}
+\label{sec:corr}
+
+\Cref{fig:corr} compares correlation matrices and shows the noise-normalised residuals. The LRG1 residuals of the Gaussian term are positive and coherent over whole blocks of the monopole and quadrupole auto-covariances: these are the amplitude modes. The recommended model removes them. What remains is weaker structure in the blocks involving $\ell=4$, discussed in \cref{sec:directions}. The QSO residuals are consistent with noise for both models, except for a weak coherent monopole block that SSC removes.
+
+\begin{figure}
+  \centering\paperfig{corr}
+  \caption{(a) Correlation matrix of the LRG1 NGC mocks (upper left) and of the recommended model (lower right). (b, c) Sample-minus-model covariance in units of its Wishart standard deviation under the model, for the Gaussian term (upper left) and the recommended model (lower right), LRG1 and QSO NGC. Multipole blocks $\ell=0,2,4$, each $0.02<k<0.3\,\hMpc$.}
+  \label{fig:corr}
+\end{figure}
+
+\Cref{fig:chi2} shows the $\chi^2$ distributions and $\langle\chi^2\rangle/n$ against $k_{\max}$. For LRG1 the recommended model brings $\langle\chi^2\rangle/n$ to $\val{trace/LRG1/NGC/rec/0.3}$ (NGC), $\val{trace/LRG1/SGC/rec/0.3}$ (SGC) and $\val{trace/LRG1/GCcomb/rec/0.3}$ (combined caps), from $\val{trace/LRG1/NGC/G/0.3}$, $\val{trace/LRG1/SGC/G/0.3}$ and $\val{trace/LRG1/GCcomb/G/0.3}$ for the Gaussian term. For QSO it slightly overshoots: $\val{trace/QSO/NGC/rec/0.3}$ and $\val{trace/QSO/SGC/rec/0.3}$. The histograms in \cref{fig:chi2}a illustrate the methodological point of \cref{sec:method}: shifts of the mean that matter for parameter errors are barely visible in the distribution of $\chi^2$.
+
+\begin{figure}
+  \centering\paperfig{chi2}
+  \caption{(a) $\chi^2$ of each LRG1 NGC mock ($k<0.3\,\hMpc$, $n=\val{nbins}$) under three models; ticks mark the means; dashed: the $\chi^2_n$ distribution. (b, c) $\langle\chi^2\rangle/n$ against $k_{\max}$ for LRG1 and QSO, NGC (solid) and SGC (dashed); the grey band is the $1\sigma$ scatter of the mean for $N$ mocks under the model.}
+  \label{fig:chi2}
+\end{figure}
+
+\subsection{Which directions carry the excess}
+\label{sec:directions}
+
+\Cref{fig:eigen} shows the whitened eigenvalue spectra relative to null ensembles. For the Gaussian term the LRG1 spectrum has two isolated eigenvalues, $\lambda_1=\val{lam1/LRG1/NGC/G}$ and $\lambda_2\simeq3.6$ (NGC), on top of a bulk raised by a few percent. Two directions carry most of the excess. With the recommended model the isolated eigenvalues are gone and the bulk returns to the null. QSO shows a single, weaker isolated eigenvalue, which SSC also removes.
+
+\begin{figure}
+  \centering\paperfig{eigen}
+  \caption{Eigenvalues of the whitened sample covariance $C^{-1/2}SC^{-1/2}$, sorted, divided by the median of the same statistic in 200 Gaussian ensembles of $N$ vectors drawn from the model (grey: their 95\% envelope). LRG1 and QSO, NGC, $k<0.3\,\hMpc$.}
+  \label{fig:eigen}
+\end{figure}
+
+\Cref{fig:clouds} makes this quantitative without selection bias:
+\begin{itemize}
+\item \emph{Gaussian term.} The directions chosen on half of the mocks carry, in the other half, variances $\val{cv/LRG1/NGC/G/1}$ and $\val{cv/LRG1/NGC/G/2}$ times the model ($\pm\val{cverr}$ per unit variance). Both are coherent across all $k$: the first is a monopole amplitude growing with $k$, the second a quadrupole amplitude (\cref{fig:clouds}e).
+\item \emph{Recommended model.} The leading directions carry $\val{cv/LRG1/NGC/rec/1}$ and $\val{cv/LRG1/NGC/rec/2}$, although their in-sample eigenvalues are $\simeq\val{insample/LRG1/NGC/rec/1}$. Without the split, one would conclude that a large excess remains.
+\item \emph{Directions fixed a priori.} With the recommended model, the amplitudes of $P_0$ and $P_2$ vary by $\val{ampvar/LRG1/NGC/P0}$ and $\val{ampvar/LRG1/NGC/P2}$ times the prediction (NGC; SGC $\val{ampvar/LRG1/SGC/P0}$, $\val{ampvar/LRG1/SGC/P2}$). The quadrupole amplitude remains the main residual.
+\end{itemize}
+
+\begin{figure}
+  \centering\paperfig{clouds}
+  \caption{LRG1 NGC mocks in whitened coordinates along directions not chosen on the mocks plotted. (a, b) Half B of the mocks projected on the two leading directions of $C^{-1/2}S_AC^{-1/2}$ from half A, for the Gaussian and the recommended model. Blue circles: model $1\sigma$, $2\sigma$; red: the sample $1\sigma$ ellipse. (c) Amplitudes of $P_0$ and $P_2$ (all mocks), model ellipses dashed. (d) Out-of-sample variance along A's 20 leading directions, measured on B, against the in-sample eigenvalues. (e) The two leading directions of (a) as patterns in the data vector: amplitude modes.}
+  \label{fig:clouds}
+\end{figure}
+
+\paragraph{The residual in the hexadecapole.} The remaining excess is concentrated in the hexadecapole conditioned on the monopole and quadrupole: ${\rm var}(\ell=4\,|\,\ell=0,2)$ is $\simeq7$\% (NGC) and $11$\% (SGC) above the model at $0.1<k<0.2\,\hMpc$, and it is present in the Gaussian term alone. It is not caused by fibre assignment (it is equally present in Abacus \texttt{complete}) and not by the truncation of the multipole expansion at $\ell=4$ \todo{numbers from the conditional analysis; Gaussian-field test on the footprint pending}.
+
+\subsection{The connected trispectrum is rejected}
+\label{sec:t0}
+
+\Cref{fig:templates} shows the template amplitudes preferred by the mocks.
+\begin{itemize}
+\item \emph{SSC and discreteness.} With these two terms alone, both amplitudes are of order unity for LRG1: SSC $\val{tpl/holi_LRG1_NGC/base/ssc}\pm\val{tplerr/holi_LRG1_NGC/base/ssc}$ and discreteness $\val{tpl/holi_LRG1_NGC/base/disc}\pm\val{tplerr/holi_LRG1_NGC/base/disc}$ (NGC).
+\item \emph{Tree-level $T_0$.} Adding it, the mocks want an amplitude of $\val{tpl/holi_LRG1_NGC/tree/T0_tree}\pm\val{tplerr/holi_LRG1_NGC/tree/T0_tree}$ (holi NGC), $\val{tpl/Abacus_LRG1_NGC/tree/T0_tree}\pm\val{tplerr/Abacus_LRG1_NGC/tree/T0_tree}$ and $\val{tpl/Abacus_LRG1_SGC/tree/T0_tree}\pm\val{tplerr/Abacus_LRG1_SGC/tree/T0_tree}$ (Abacus NGC, SGC).
+\item \emph{Response $T_0$.} Its amplitude is $\val{tpl/holi_LRG1_NGC/resp/T0_response}\pm\val{tplerr/holi_LRG1_NGC/resp/T0_response}$ (holi NGC).
+\end{itemize}
+Both the approximate and the $N$-body mocks therefore reject the perturbative trispectrum at the predicted amplitude by $>5\sigma$; adding it at amplitude one makes the covariance worse ($\langle\chi^2\rangle/n=\val{trace/LRG1/NGC/rec+T0tree/0.3}$) or non-positive. Tree level overpredicts the couplings at $k\gtrsim0.1\,\hMpc$, where it is not valid. The response approach, valid in the squeezed limit, overpredicts them by factors of 4--10 at high $k$ as well. A scan of the split scale between the tree-level (low-$k$) and response (high-$k$) regimes does not change this conclusion \todo{k-split scan figure?}. For QSO the trispectrum is $<10^{-3}$ of the Gaussian term and its amplitude is unconstrained.
+
+\begin{figure}
+  \centering\paperfig{templates}
+  \caption{Amplitudes of the non-Gaussian templates preferred by the mocks (Wishart maximum likelihood, $1\sigma$ Fisher errors), $C=C_{\rm G}+\sum_a\theta_aT_a$; $\theta=1$ is the prediction. Arrows: values outside the axis. Abacus: 25 \texttt{complete} mocks.}
+  \label{fig:templates}
+\end{figure}
+
+\subsection{Bin width}
+\label{sec:binwidth}
+
+\Cref{fig:binning} shows the same mocks at $\Delta k=0.005$, $0.01$ and $0.02\,\hMpc$. With the Gaussian term alone, the whitened trace grows from $\val{bintrace/NGC/G/x1}$ to $\val{bintrace/NGC/G/x4}$ (NGC), and the monopole diagonal ratio at $0.1<k<0.3$ grows roughly in proportion to $\Delta k$: a non-Gaussian term is missing. The leading whitened direction is the same monopole amplitude mode at every bin width, with an eigenvalue independent of $\Delta k$ ($\simeq5.5$). This is the signature of a low-rank term, i.e.\ super-sample covariance. With the recommended model the trace is $\val{bintrace/NGC/rec/x1}$, $\val{bintrace/NGC/rec/x2}$ and $\val{bintrace/NGC/rec/x4}$: slightly below one at coarse binning. The smooth terms are therefore, if anything, slightly overestimated for the broad bins; the fitted discreteness amplitude is mixed ($\val{tpl/holi_LRG1_NGC/base/disc}$ NGC, $\val{tpl/holi_LRG1_SGC/base/disc}$ SGC).
+
+\begin{figure}
+  \centering\paperfig{binning}
+  \caption{LRG1 at three bin widths. (a) Whitened trace $\mathrm{tr}(C^{-1}S)/n$, NGC filled, SGC open. (b) Mean diagonal ratio at $0.1<k<0.3\,\hMpc$ per multipole, Gaussian term (solid) and recommended model (dotted). (c) The leading direction of $C_{\rm G}^{-1/2}SC_{\rm G}^{-1/2}$ at each bin width (NGC), with its eigenvalue: the same amplitude mode at every binning.}
+  \label{fig:binning}
+\end{figure}
+
+\subsection{Fibre assignment}
+\label{sec:fiber}
+
+The paired Abacus mocks isolate the effect of fibre assignment on the covariance (\cref{fig:fiber}). Each version is compared with its own Gaussian model, whose window carries the fibre-assigned density. The per-mock $\chi^2$ are correlated at $r=\val{fiber/NGC/corr}$ (NGC) and $\val{fiber/SGC/corr}$ (SGC), so their paired difference is measured to $\pm\val{fiber/NGC/differr}$. The difference altmtl $-$ complete is $\val{fiber/NGC/diff}\pm\val{fiber/NGC/differr}$ (NGC) and $\val{fiber/SGC/diff}\pm\val{fiber/SGC/differr}$ (SGC). The double ratio of mock to model variance per multipole and $k$ range is mostly consistent with one within the 5--10\% paired errors. The largest departure, $\simeq0.88$ for the NGC quadrupole at $0.1<k<0.2\,\hMpc$, is not repeated in SGC. Fibre assignment changes the covariance only through the change of density and weights, which the window already includes, and the excess over the Gaussian term is equally present in the \texttt{complete} mocks.
+
+\begin{figure}
+  \centering\paperfig{fiber}
+  \caption{Fibre assignment, from the 25 paired AbacusSummit LRG1 mocks. (a) $\chi^2_i/n$ ($k<0.3\,\hMpc$) of each mock with fibre assignment (altmtl) against the same realisation without (complete), each against its own Gaussian model. (b) Paired double ratio of mock to model variance, altmtl over complete, per multipole and $k$ range; paired-bootstrap $68$\% intervals. Filled: NGC; open: SGC.}
+  \label{fig:fiber}
+\end{figure}
+
+\subsection{Parameter errors}
+\label{sec:params}
+
+\Cref{fig:params} translates the comparison into parameter errors. With the Gaussian term, the variance of the quadrupole amplitude $A_2$ is underestimated by a factor $\val{par/LRG1/NGC/G/0.200/A2}$ (NGC) and $\val{par/LRG1/SGC/G/0.200/A2}$ (SGC) at $k_{\max}=0.2\,\hMpc$, and by up to a factor of two at $k_{\max}=0.3$. With the recommended model the ratios at $k_{\max}=0.2$ are $\val{par/LRG1/NGC/rec/0.200/A}$, $\val{par/LRG1/NGC/rec/0.200/A2}$, $\val{par/LRG1/NGC/rec/0.200/alpha}$ and $\val{par/LRG1/NGC/rec/0.200/SN}$ for $(A,A_2,\alpha,N_{\rm SN})$ in NGC, and $\val{par/LRG1/SGC/rec/0.200/A}$, $\val{par/LRG1/SGC/rec/0.200/A2}$, $\val{par/LRG1/SGC/rec/0.200/alpha}$, $\val{par/LRG1/SGC/rec/0.200/SN}$ in SGC. The quadrupole amplitude remains underestimated by 12--16\%, the same residual as in \cref{sec:directions}. For QSO the model is within $\simeq10$\% for $A$, $A_2$ and $\alpha$ at all $k_{\max}$, slightly conservative at low $k_{\max}$. The variance of the monopole constant $N_{\rm SN}$ is underestimated by 20--40\% at $k_{\max}>0.2$, which points to the shot-noise-like discreteness term.
+
+\begin{figure}
+  \centering\paperfig{params}
+  \caption{Variance over the mocks of the generalised-least-squares estimates of $(A,A_2,\alpha,N_{\rm SN})$, divided by the variance predicted by each model, against $k_{\max}$. Grey band: $\pm\sqrt{2/(N-1)}$.}
+  \label{fig:params}
+\end{figure}

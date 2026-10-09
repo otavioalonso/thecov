@@ -1,0 +1,19 @@
+\section{Conclusions}
+\label{sec:conclusions}
+
+We validated an analytic covariance model for the DESI DR2 LRG1 and QSO power-spectrum multipoles against 859 approximate and 25 $N$-body mocks. The main results:
+\begin{enumerate}
+\item The Gaussian term is accurate for the window it is given. For QSO it agrees with the mocks to $\simeq1$\% in $\langle\chi^2\rangle/n$, per-element variances and parameter errors.
+\item For LRG1 the local window $m^2$ underestimates the Gaussian variance by $\simeq5$\%, because the veto mask varies on scales below the correlation length. A window pair-averaged with the $\xi$-kernel recovers it with no free parameter. Object-to-object weight variations must be averaged locally, not taken per random, for the same reason.
+\item The remaining LRG1 excess is concentrated in two amplitude modes of the monopole and quadrupole, the signature of super-sample covariance. Super-sample covariance with the local-average effect, together with the window-convolved discreteness terms and nothing fitted, brings $\langle\chi^2\rangle/n$ to $\val{trace/LRG1/NGC/rec/0.3}$ (NGC) and $\val{trace/LRG1/SGC/rec/0.3}$ (SGC) at $k<0.3\,\hMpc$, and parameter-error ratios to within 10\% except for the quadrupole amplitude.
+\item The perturbative connected trispectrum, at tree level and in the response approximation, is rejected by both mock suites at the predicted amplitude.
+\item Fibre assignment does not change the covariance beyond the change of density and weights included in the window.
+\item The residual is a 7--16\% excess of the hexadecapole variance conditioned on the lower multipoles, and a 12--16\% excess of the quadrupole-amplitude variance. Its origin is open.
+\end{enumerate}
+
+On methodology:
+\begin{itemize}
+\item Distributions of $\chi^2$ and per-element variance ratios are weak tests of a covariance matrix. Most of the information is in a few directions, which must be found without overfitting: in-sample eigenvalues of the whitened sample covariance overstate the excess by a factor of two, while cross-validated variances are unbiased.
+\item Varying the bin width separates Gaussian-like errors from missing non-Gaussian terms, and an eigenvalue that does not change with the bin width identifies a low-rank term.
+\item A validation against mocks is only as complete as the mocks. The approximate mocks lack the long radial modes that dominate super-sample covariance in a thin shell, and this should be checked before the agreement of such a term is taken as validation.
+\end{itemize}

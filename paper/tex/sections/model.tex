@@ -1,0 +1,71 @@
+\section{The covariance model}
+\label{sec:model}
+
+\subsection{Estimator and Gaussian term}
+
+The weighted overdensity is $F(\bx)=w(\bx)[n_g(\bx)-\alpha n_r(\bx)]$, with $n_g$ and $n_r$ the galaxy and random densities, $w$ the total weight (completeness $\times$ FKP \cite{FKP1994}) and $\alpha=\sum_g w/\sum_r w$. The multipoles are estimated with the line of sight to one member of each pair and normalised by the estimator's own normalisation, computed from the data and randoms on $10\,\Mpch$ cells.
+
+For a Gaussian field, the covariance of the multipoles follows from Wick's theorem. In the local plane-parallel approximation, every two-point function of $F$ is a window times a locally anisotropic power spectrum,
+\begin{equation}
+  \langle F(\bx)F(\bx+\br)\rangle \simeq W(\bx)\,\xi(\br;\hat{\bx}) + S(\bx)\,\delta_D(\br),
+  \label{eq:local}
+\end{equation}
+with $W=m^2$ and $S=(1+\alpha)\bar n\langle w^2\rangle$. Here $m=\bar n\langle w\rangle$ is the \emph{mean weighted density} and $\langle w\rangle(\bx)$ the local mean weight. The windows are evaluated by pair counts of the randoms in bins of separation, and the angular structure is reduced by the Wigner--Eckart theorem to a finite set of window multipoles \todo{ref to the formalism note / appendix}.
+
+Two details of the window turn out to matter at the percent level for LRG1, both because the window has structure on scales comparable to the correlation length:
+\begin{itemize}
+\item \emph{Weights.} DESI weights vary from object to object, and the randoms inherit them from random data objects. The clustering window needs $\langle w\rangle^2$, not $\langle w^2\rangle$. Evaluating $W$ with each random's own weight puts a self-pair into the clustering window and overestimates it by $1+{\rm var}(w)/\langle w\rangle^2$. We use the mean weight of the 32 nearest \emph{other} randoms. The size of this effect, measured as the Gaussian variance with own weights over that with mean weights, is $+\val{ownweight/LRG1/NGC}$\% for LRG1 and $+\val{ownweight/QSO/NGC}$\% for QSO (NGC; \cref{fig:window}c).
+\item \emph{Pair averaging.} \Cref{eq:local} replaces $m(\bx)m(\bx+\br)$ by $m^2(\bx)$, which fails where the window varies within a correlation length: veto holes around bright stars, footprint edges, completeness boundaries. Keeping the partner inside the separation integral gives $W_k(\bx)=m(\bx)\,(K_k*m)(\bx)$ with the kernel $K_k(r)=\xi_0(r)\,j_0(kr)/P_0(k)$ (\cref{fig:window}a). The kernel is fixed by the correlation function itself, so there is no free smoothing scale. It is evaluated on a compressed basis of kernels and windows. For LRG1 it raises the Gaussian variance by $\val{kernelgain/LRG1/NGC}$\% (NGC) and $\val{kernelgain/LRG1/SGC}$\% (SGC); for the much sparser QSO sample it changes nothing ($\val{kernelgain/QSO/NGC}$\%), as expected, since shot noise dominates.
+\end{itemize}
+
+\begin{figure}
+  \centering\paperfig{window}
+  \caption{The window of the Gaussian term. (a) The $\xi$-kernel $K_k(r)$ that pair-averages the window: it extends over a correlation length, $\sim20$--$50\,\Mpch$. (b) The resulting change of the Gaussian variance relative to the local window $m^2$, per multipole. (c) The change when the window is evaluated with each random's own weight instead of the local mean weight. LRG1 thick, QSO thin; NGC solid, SGC dashed.}
+  \label{fig:window}
+\end{figure}
+
+\subsection{Super-sample covariance}
+
+Modes longer than the survey modulate the local power spectrum. For the multipoles in redshift space the response to a long mode $\delta_L(\boldsymbol q)$ has an isotropic (density) part and a tidal, line-of-sight part, $\delta\hat P_\ell(k) = \sum_n R^{(n)}_\ell(k)\,\delta^{(n)}_W$. The amplitudes $\delta^{(0)}_W$ and $\delta^{(2)}_W$ are window-weighted long modes, whose variances $\sigma^2_{nn'}$ we compute from tripolar pair counts of the window. Because the estimator is normalised by the realised density, a long mode also shifts the normalisation (the \emph{local-average} effect), which subtracts $2b_{\rm eff}P_\ell$ from the isotropic response. The responses are evaluated at tree level with the bias and growth rate of the sample, on a linear power spectrum that is IR-resummed and multiplied by a Gaussian fingers-of-God factor, $\exp[-(k\mu\sigma_v)^2]$; $\sigma_v$ is fitted to the mock quadrupole-to-monopole ratio. The result is
+\begin{equation}
+  C^{\rm SSC}_{\ell\ell'}(k,k') = \sum_{nn'} R^{(n)}_\ell(k)\,R^{(n')}_{\ell'}(k')\,\sigma^2_{nn'},
+\end{equation}
+a matrix of rank at most the number of long-mode components (\cref{fig:anatomy}). The local-average term nearly cancels the isotropic response of the LRG monopole, so that the SSC diagonal of $P_0$ is small and even negative at intermediate $k$ (\cref{fig:budget}). What remains is mostly the tidal mode acting on the quadrupole.
+
+\subsection{Discreteness}
+
+The Poisson sampling of the galaxy field adds connected four-point terms in which two or three of the four galaxies coincide. The two leading ones are the bispectrum term $\propto B/\bar n$ (window $\int S m^2$) and the power-spectrum term $\propto P/\bar n^2$ (window $\int S^2$). We compute them in the local approximation with the tree-level bispectrum \cite{SCF1999}. We then apply the window's mode mixing with the kernel $K=\mathrm{corr}(C_{\rm G})^{1/2}$, which is exact for the Gaussian term and removes spurious bin-to-bin oscillations of the local terms. The discreteness terms are broad in $k$ and smooth (\cref{fig:anatomy}c). They reach $\sim20$\% of the Gaussian diagonal for the LRG monopole at $k\simeq0.25\,\hMpc$ and a few percent for QSO (\cref{fig:budget}).
+
+\subsection{Connected trispectrum}
+
+We also compute the connected trispectrum term $T_0$ in two ways:
+\begin{itemize}
+\item at tree level, with the redshift-space kernels of \cite{SCF1999} and a Galileon bias basis;
+\item in the response approximation: tree level below a split scale $k_{\rm split}$, the squeezed (response) couplings across it, and an IR-safe collapsed term.
+\end{itemize}
+\Cref{sec:t0} shows that the mocks reject both at the predicted amplitude. We keep them out of the recommended model.
+
+\subsection{What each term does}
+
+\Cref{fig:budget} shows the size of each term on the diagonal, relative to the Gaussian term. \Cref{fig:anatomy} shows its structure: the eigenvalues of the term whitened by the Gaussian covariance, $C_{\rm G}^{-1/2}C_XC_{\rm G}^{-1/2}$, say on how many directions of the data vector it acts and how strongly; the leading eigenvectors say which directions these are. The distinction drives the whole validation:
+\begin{itemize}
+\item SSC acts on $\le4$ directions, which are coherent amplitude changes of the multipoles across all $k$. It is invisible on the diagonal at the percent level and dominant in a few directions.
+\item The discreteness terms and $T_0$ act on many directions with slowly decaying eigenvalues: they are near-diagonal in $k$ but coherent over $\Delta k\sim0.05$--$0.1\,\hMpc$.
+\end{itemize}
+
+\begin{figure}
+  \centering\paperfig{budget}
+  \caption{Diagonal of each non-Gaussian term relative to the Gaussian term, per multipole, for LRG1 and QSO (NGC). Thick translucent segments mark negative values (absolute value shown): with the local-average effect, the SSC monopole diagonal changes sign. Dotted: SSC without the local average. Dashed and dotted coloured: the two connected-trispectrum models, which the mocks reject (\cref{sec:t0}).}
+  \label{fig:budget}
+\end{figure}
+
+\begin{figure}
+  \centering\paperfig{anatomy}
+  \caption{Structure of the non-Gaussian terms (LRG1 NGC). (a) Eigenvalues of $C_{\rm G}^{-1/2}C_XC_{\rm G}^{-1/2}$: SSC has rank $\le4$; the discreteness and trispectrum terms act on many directions. (b, c) The two leading directions of SSC and of the discreteness term, as patterns in the data vector in units of the Gaussian error of each bin.}
+  \label{fig:anatomy}
+\end{figure}
+
+The recommended model, with nothing fitted to the mocks, is
+\begin{equation}
+  C = C_{\rm G}[W_k] + C^{\rm SSC} + K\,C^{\rm disc}K^{\rm T}.
+\end{equation}

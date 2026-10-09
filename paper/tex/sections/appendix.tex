@@ -1,0 +1,13 @@
+\section{QSO}
+\label{app:qso}
+
+\begin{figure}[h]
+  \centering\paperfig{diagonals_QSO}
+  \caption{As \cref{fig:diagonals}, for QSO.}
+  \label{fig:diagonals_qso}
+\end{figure}
+
+\section{Reproducibility}
+\label{app:repro}
+
+Every figure and every number in this paper is produced by the scripts in \texttt{paper/scripts} of the \thecov\ repository, from reduced data products that record the NERSC runs they come from (\texttt{products/manifest.json}): \texttt{make products} reduces the raw bundles, \texttt{make figures numbers} rebuilds all figures and \texttt{tex/numbers.tex}, and \texttt{make paper} compiles the text. Each PDF figure carries in its metadata the script, the git commit and the hash of the products it read.

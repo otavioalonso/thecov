@@ -1,0 +1,15 @@
+\section{What these mocks can and cannot validate}
+\label{sec:limits}
+
+A validation against mocks tests the model and the mocks together. Three properties of the mocks limit what can be concluded.
+
+\paragraph{Long radial modes.} In a thin redshift shell ($0.4<z<0.6$ is $\simeq500\,\Mpch$ deep) super-sample covariance is dominated by radial modes of wavelength comparable to the shell depth, which change the mean density of the shell. Two measurements show that the holi mocks lack these modes:
+\begin{itemize}
+\item The mock-to-mock scatter of the realised normalisation, $\delta_{\rm norm}$, a direct tracer of the shell-mean density, is $0.43$\% (NGC) and $0.75$\% (SGC) for LRG1. Linear theory with the window's long-mode variance predicts $0.99$\% and $1.39$\%: the mocks contain a fifth (NGC) to a third (SGC) of the predicted variance.
+\item The scatter of the mock $n(z)$ per radial bin matches linear theory on $50$--$100\,\Mpch$ but falls to $\simeq0.3$ of it for the whole shell \todo{figure from the 859-mock $n(z)$ measurement; paper\_export.sh}.
+\end{itemize}
+For QSO, a much deeper sample, prediction and mocks agree. The mocks therefore cannot validate the isotropic LRG super-sample term on the scale of the shell. The agreement of the SSC amplitude in \cref{fig:templates} reflects mainly the tidal (quadrupole) mode and the shorter radial modes, which the mocks do contain. For the data, which contain all long modes, the model's SSC is the more faithful description. \todo{discuss the consequence for the error budget; mock-calibrated variant with the measured radial covariance.}
+
+\paragraph{Correlated caps.} The AbacusSummit caps are cut from the same boxes, and their measurements are correlated at $\simeq0.15$ on large scales. A combined-cap covariance that assumes independent caps underestimates the Abacus scatter on those scales, while the data caps are independent. The holi caps are uncorrelated (mean correlation of the $P_0$ bins at $k<0.06\,\hMpc$ below $0.01$ over the $\val{Nmocks}$ mocks).
+
+\paragraph{Statistical power.} With $N=\val{Nmocks}$, a single variance ratio is known to $\val{wishart}$\%, the whitened trace over $n=\val{nbins}$ elements to $\simeq0.4$\%, and a template amplitude to the Fisher errors of \cref{fig:templates}. Terms that change the covariance by less than $\simeq1$\% in every direction cannot be validated with these mocks. The 25 AbacusSummit mocks constrain only the largest terms.

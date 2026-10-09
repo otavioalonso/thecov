@@ -1,0 +1,26 @@
+\section{Validation methodology}
+\label{sec:method}
+
+With $N$ mocks and a model $C$, the sample covariance $S$ is Wishart-distributed with $N-1$ degrees of freedom if the model is right and the field Gaussian. Every statistic below has a known distribution under this null hypothesis, and we quote all departures in units of it. The noise floor is set by
+\begin{equation}
+  \frac{{\rm Var}[S_{ij}]}{C_{ii}C_{jj}} = \frac{1+\rho_{ij}^2}{N-1},
+\end{equation}
+with $\rho$ the model correlation. Each diagonal variance ratio is therefore known only to $\sqrt{2/(N-1)}=\val{wishart}$\%, and a single off-diagonal correlation to $\simeq1/\sqrt N$. The statistics below are ordered from the least to the most informative.
+
+\paragraph{Diagonal ratios.} $\hat\sigma^2_i/C_{ii}$ per multipole, averaged over groups of four bins. The Wishart error of each group mean includes the correlation of neighbouring bins, $\sum_{ij\in g}2\rho_{ij}^2/[(N-1)|g|^2]$.
+
+\paragraph{Noise-normalised residual maps.} $(S-C)_{ij}/\sigma_W(C)_{ij}$ with $\sigma_W^2=(C_{ii}C_{jj}+C_{ij}^2)/(N-1)$. A correlation-matrix comparison by eye is dominated by the diagonal and hides where the differences are significant; the normalised residual shows coherent off-diagonal structure at the $1\sigma$ level per element.
+
+\paragraph{$\chi^2$ and the whitened trace.} The $\chi^2$ of each mock about the sample mean, and its average $\langle\chi^2\rangle/n=\mathrm{tr}(C^{-1}S)/n$, as a function of $k_{\max}$. No Hartlap correction is needed: the model is analytic. The distribution of $\chi^2$ is a weak test of a covariance matrix. A 4\% error of the mean, which changes parameter errors by $\sim2$\%, is $0.4\sigma$ of a single mock's $\chi^2$ at $n=168$.
+
+\paragraph{Whitened eigenvalue spectra.} The eigenvalues of $C^{-1/2}SC^{-1/2}$, sorted. Under the null their large-$n$ distribution is the Marchenko--Pastur law \cite{MarchenkoPastur1967}. We compare instead with the spectra of $200$ Gaussian ensembles of $N$ vectors drawn from $C$, which include finite-$n$ effects and the fluctuation of the extreme eigenvalues. The bulk of the spectrum measures an overall misnormalisation; isolated large eigenvalues are missing low-rank terms.
+
+\paragraph{Cross-validated directions.} The leading eigenvectors of $C^{-1/2}SC^{-1/2}$ are the directions in which the model most underestimates the mocks, but their in-sample eigenvalues are biased upward by construction: even for a perfect model the top eigenvalue is $\simeq(1+\sqrt{n/N})^2\simeq2$. We therefore split the mocks at random into halves A and B, find the directions on A, and measure the variance along them on B (\cref{fig:clouds}d). This out-of-sample variance is unbiased and has the Wishart error of $N/2$ vectors. We complement the data-driven directions with directions fixed a priori: the amplitudes of the monopole and quadrupole, i.e.\ the generalised-least-squares projections on the mean multipoles.
+
+\paragraph{Template likelihood.} To test a term $T_a$ we fit its amplitude, $C(\theta)=C_{\rm G}+\sum_a\theta_aT_a$, by maximising the Wishart likelihood, $-2\ln L=(N-1)[\mathrm{tr}(C^{-1}S)+\ln\det C]$, with Fisher errors $F_{ab}=\frac{N-1}{2}\mathrm{tr}(C^{-1}T_aC^{-1}T_b)$. Positive-definiteness is enforced with a Cholesky test. A sign test is not enough: an indefinite matrix with an even number of negative eigenvalues has a positive determinant and produced a spurious minimum in a first version of this analysis.
+
+\paragraph{Bin width.} Varying $\Delta k$ separates two kinds of model error. A Gaussian-like error (window, shot noise) changes the mock-to-model variance ratio by the same factor at every bin width. A missing smooth non-Gaussian term changes it in proportion to $\Delta k$, because the Gaussian term scales as $1/N_{\rm modes}\propto1/\Delta k$ while smooth terms do not. A missing low-rank term (SSC) adds a whitened eigenvalue that is independent of $\Delta k$: the information in an amplitude mode does not depend on how finely it is binned. One caveat: neighbouring $0.005$ bins are correlated at $\simeq0.4$ through the window, so a fit of the ratio to $a+b\,\Delta k$ mislabels part of a coherent term as Gaussian-like. We show the trends rather than such a decomposition.
+
+\paragraph{Parameter level.} Each mock is fitted for the amplitude of the multipoles ($A$), an extra quadrupole amplitude ($A_2$), an isotropic dilation ($\alpha$) and a monopole constant ($N_{\rm SN}$), by generalised least squares with the model covariance. We compare the variance of the estimates over the mocks with the prediction.
+
+\paragraph{Null and injection tests.} \todo{Calibrate every statistic above on Gaussian ensembles drawn from $C$ (false-positive rate), and on ensembles drawn from $C+\epsilon T$ for known $T$ (SSC $\times2$, a 5\% amplitude mode, the discreteness term): detection power per statistic. To be added.}
