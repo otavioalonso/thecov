@@ -434,3 +434,21 @@ cannot be validated on holi at the 500 Mpc/h scale, and the model's sigma_P0 "ag
 mock-calibrated validation can use the measured radial covariance. `desi_validation/nz_scatter.py` measures n(z) of all
 859 mocks from the data files (seconds per mock), the scatter per radial scale against theory, the NGC-SGC correlation
 of the shell counts (shared parent-box modes), and saves C_nz(z, z').
+
+### 8.4 n(z) of all 1000 holi mocks (paper_inputs_20261009_0214.tgz): 12 defective LRG mocks; 8.3 superseded
+
+- **12 defective LRG mocks**: 122, 131, 166, 218, 470, 573, 664, 667, 699, 746, 793, 880 have +55-65% galaxies in the
+  single slice 0.46 < z < 0.47, in both caps (QSO: none). 11 of them are in the 859 used so far. They are now excluded by
+  the paper pipeline (`paper/products/excluded_mocks.json`, written by `make_products.py` from nz_scatter, 6-MAD
+  criterion; `PAPER_KEEP_ALL_MOCKS=1` keeps them). Effect: LRG1 NGC Gaussian-model lambda_1 5.57 -> 5.15, P0-amplitude
+  variance ratio (recommended model) 1.14 -> 1.05; chi2/n of the recommended model changes by < 0.002. Report them to the
+  mock makers.
+- **8.3 was noise.** With 988 clean mocks the clustering rms of the LRG1 slab counts over linear theory, (b1 + f)
+  sigma_slab, is 0.86-0.88 for L <~ 100 Mpc/h and 0.75-0.78 (NGC) / 0.69-0.72 (SGC) at 230-450 Mpc/h: the mocks
+  contain ~60% of the linear variance of the shell-scale mode, not ~10%. QSO: 0.9-0.95 up to ~900 Mpc/h (the
+  whole-shell value is Poisson-dominated; nz_scatter's Poisson term ignores the weights).
+- So the mocks' sigma(delta_norm) = 0.43 / 0.75% is ~half what their shell counts imply (~0.8% for delta_norm = 2
+  delta_shell): the normalisation responds only partly to the shell-mean density (the per-mock randoms follow the mock's
+  own n(z)). The local-average term should be re-derived for that normalisation before the next SSC run.
+- The caps share long modes: NGC-SGC correlation of the total counts 0.34 (LRG1, clean) and 0.45 (QSO), although the
+  P(k) bins are uncorrelated. A GCcomb SSC that assumes independent caps underestimates the mocks' shell-mean mode.

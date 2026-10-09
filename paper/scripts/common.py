@@ -82,11 +82,22 @@ def save(fig, name):
 
 
 # ------------------------------------------------------------------ data access
+def excluded(b):
+    """mock ids excluded from the holi statistics (defective n(z); products/excluded_mocks.json from make_products.py)"""
+    fn = os.path.join(PROD, 'excluded_mocks.json')
+    if os.environ.get('PAPER_KEEP_ALL_MOCKS') or not os.path.exists(fn):
+        return []
+    return json.load(open(fn)).get(b, {}).get('mocks', [])
+
+
 def holi(b, cap, f=1):
-    """mock vectors, k grid and every covariance model for holi tracer b, cap, binning factor f"""
+    """mock vectors, k grid and every covariance model for holi tracer b, cap, binning factor f (defective mocks removed;
+    PAPER_KEEP_ALL_MOCKS=1 keeps them)"""
     z = load(f'holi_{b}')
     p = f'{cap}/x{f}/'
-    d = dict(V=z[p + 'V'], k=z[p + 'k'], edges=z[p + 'k_edges'], nmodes=z[p + 'nmodes'], norm=z[p + 'norm'])
+    keep = ~np.isin(z[p + 'mock_ids'], excluded(b))
+    d = dict(V=z[p + 'V'][keep], k=z[p + 'k'], edges=z[p + 'k_edges'], nmodes=z[p + 'nmodes'], norm=z[p + 'norm'][keep],
+             mock_ids=z[p + 'mock_ids'][keep])
     d['C'] = models(z, p)
     for key in ('mock_mean', 'params', 'template_fits', 'plin_k', 'plin_P_damped_normalised', 'damping'):
         if p + key in z.files:

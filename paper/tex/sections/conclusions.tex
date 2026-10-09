@@ -15,5 +15,5 @@ On methodology:
 \begin{itemize}
 \item Distributions of $\chi^2$ and per-element variance ratios are weak tests of a covariance matrix. Most of the information is in a few directions, which must be found without overfitting: in-sample eigenvalues of the whitened sample covariance overstate the excess by a factor of two, while cross-validated variances are unbiased.
 \item Varying the bin width separates Gaussian-like errors from missing non-Gaussian terms, and an eigenvalue that does not change with the bin width identifies a low-rank term.
-\item A validation against mocks is only as complete as the mocks. The approximate mocks lack the long radial modes that dominate super-sample covariance in a thin shell, and this should be checked before the agreement of such a term is taken as validation.
+\item A validation against mocks is only as complete as the mocks. The redshift distributions of all mocks should be checked: they revealed twelve defective realisations, a $\simeq40$\% deficit of variance in the shell-scale radial modes that dominate super-sample covariance, and long modes shared between the caps.
 \end{itemize}

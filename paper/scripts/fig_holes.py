@@ -39,17 +39,19 @@ ax.set_title('(a) fill fraction, nside 256', fontsize=8)
 ax.grid(False)
 fig.colorbar(im, ax=ax, fraction=0.05, pad=0.02, ticks=[0.6, 0.8, 1.0])
 # zoom on a well-populated patch
-m2048 = fill_map(2048, z[f'{R}/zoom_pix'], z[f'{R}/zoom_n'])
+NZ = 1024                         # zoom resolution (3.4'): nside 2048 has only ~5 LRG randoms per full pixel
+zp, zi = np.unique(z[f'{R}/zoom_pix'] >> 2, return_inverse=True)
+m2048 = fill_map(NZ, zp, np.bincount(zi, weights=z[f'{R}/zoom_n']))
 ra0, dec0 = z[f'{R}/zoom_center']
 gp = hp.projector.GnomonicProj(rot=(ra0, dec0), xsize=500, reso=4 * 60 / 500)
-zoom = gp.projmap(m2048, lambda x, y, zz: hp.vec2pix(2048, x, y, zz))
+zoom = gp.projmap(m2048, lambda x, y, zz: hp.vec2pix(NZ, x, y, zz))
 ax.add_patch(matplotlib.patches.Rectangle((ra0 - 2, dec0 - 2), 4, 4, fill=False, color=RED, lw=1.0))
 ax = fig.add_subplot(gs[1])
 ax.imshow(np.ma.masked_less(zoom, -1e30), origin='lower', extent=(2, -2, -2, 2), cmap=SEQUENTIAL, vmin=0, vmax=1.2,
           interpolation='nearest')
 ax.set_xlabel(r'$\Delta$RA [deg]')
 ax.set_ylabel(r'$\Delta$Dec [deg]')
-ax.set_title(f'(b) zoom, nside 2048', fontsize=8)
+ax.set_title(f'(b) zoom, nside {NZ}', fontsize=8)
 ax.grid(False)
 ax = fig.add_subplot(gs[2])
 for b, lw in (('LRG1', 1.4), ('QSO', 0.9)):

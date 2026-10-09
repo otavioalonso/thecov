@@ -73,6 +73,7 @@ def holi(dirs, b, manifest):
             out[f'{r}/x{f}/V'] = zk[p + '/V'].astype(np.float64)
             for key in ('k', 'k_edges', 'nmodes', 'norm', 'num_shotnoise'):
                 out[f'{r}/x{f}/{key}'] = zk[f'{p}/{key}']
+            out[f'{r}/x{f}/mock_ids'] = np.array([int(str(s)[4:]) for s in zk[p + '/mock_ids']])
             out[f'{r}/x{f}/C_G'] = zk[f'{p}/C/{g}']
             if zl is not None and p + '/V' in zl.files:
                 assert (zl[p + '/mock_ids'] == zk[p + '/mock_ids']).all(), 'mock sets differ'
@@ -144,6 +145,33 @@ def passthrough(dirs, manifest):
             print(f'copied {name}')
 
 
+def defective_mocks(manifest, nsig=6.0):
+    """mocks whose n(z) has a bin more than nsig robust standard deviations from the median, in either cap (holi v3:
+    12 LRG mocks with +55-65% galaxies in 0.46 < z < 0.47). Written to products/excluded_mocks.json and removed from
+    every holi statistic by common.holi()."""
+    out = {}
+    for b in ('LRG1', 'QSO'):
+        fn = os.path.join(PROD, f'nz_scatter_{b}.npz')
+        if not os.path.exists(fn):
+            continue
+        z = np.load(fn, allow_pickle=False)
+        bad, detail = set(), {}
+        for r in ('NGC', 'SGC'):
+            NZ, ids = z[f'{r}/NZ'], z[f'{r}/mocks']
+            d = NZ / np.median(NZ, 0) - 1
+            mad = 1.4826 * np.median(np.abs(d - np.median(d, 0)), 0)
+            hit = np.abs(d - np.median(d, 0)) > nsig * mad
+            for i in np.flatnonzero(hit.any(1)):
+                bad.add(int(ids[i]))
+                j = int(np.argmax(np.abs(d[i]) * hit[i]))
+                detail.setdefault(str(int(ids[i])), {})[r] = dict(z_bin=[float(z['edges'][j]), float(z['edges'][j + 1])],
+                                                                  excess=float(d[i, j]))
+        out[b] = dict(mocks=sorted(bad), detail=detail, criterion=f'|delta n(z)| > {nsig} MAD in any bin')
+        print(f'{b}: {len(bad)} defective mocks {sorted(bad)}')
+    json.dump(out, open(os.path.join(PROD, 'excluded_mocks.json'), 'w'), indent=1)
+    manifest['excluded_mocks.json'] = {'from': 'nz_scatter_<b>.npz'}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--raw', nargs='+', required=True, help='directories holding the unpacked NERSC bundles')
@@ -155,6 +183,7 @@ def main():
         holi(args.raw, b, manifest)
     abacus(args.raw, manifest)
     passthrough(args.raw, manifest)
+    defective_mocks(manifest)
     try:
         commit = subprocess.run(['git', '-C', HERE, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
     except OSError:

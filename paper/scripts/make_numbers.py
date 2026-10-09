@@ -11,7 +11,7 @@ def put(key, x, fmt='{:.3f}'):
     V[key] = fmt.format(x) if not isinstance(x, str) else x
 
 
-put('Nmocks', len(holi('LRG1', 'NGC')['V']), '{:d}')
+put('Nmocks', len(holi('QSO', 'NGC')['V']), '{:d}')
 put('nbins', holi('LRG1', 'NGC')['V'].shape[1], '{:d}')
 put('wishart', 100 * np.sqrt(2 / (len(holi('LRG1', 'NGC')['V']) - 1)), '{:.1f}')
 for b in ('LRG1', 'QSO'):
@@ -60,7 +60,16 @@ for m in ('G', 'rec'):
     put(f'insample/LRG1/NGC/{m}/1', lam[-1], '{:.2f}')
 put('cverr', np.sqrt(2 / (N // 2 - 1)), '{:.2f}')
 
-for name in ('fiber', 'templates', 'binning', 'params'):
+put('Nexcluded', len(excluded('LRG1')), '{:d}')
+put('Nclean', len(holi('LRG1', 'NGC')['V']), '{:d}')
+z = load('nz_scatter_LRG1')
+okz = ~np.isin(z['NGC/mocks'], excluded('LRG1'))
+put('nzcapcorr/LRG1', np.corrcoef(z['NGC/NZ'][okz].sum(1), z['SGC/NZ'][okz].sum(1))[0, 1], '{:.2f}')
+z = load('nz_scatter_QSO')
+put('nzcapcorr/QSO', np.corrcoef(z['NGC/NZ'].sum(1), z['SGC/NZ'].sum(1))[0, 1], '{:.2f}')
+put('nNZmocks', len(z['NGC/mocks']), '{:d}')
+
+for name in ('fiber', 'templates', 'binning', 'params', 'nz'):
     fn = os.path.join(PROD, f'numbers_{name}.json')
     if not os.path.exists(fn):
         print(f'{fn} missing (run fig_{name}.py first)')
@@ -82,6 +91,10 @@ for name in ('fiber', 'templates', 'binning', 'params'):
         for key, v in js.items():
             for f, t in zip((1, 2, 4), v['trace']):
                 put(f'bintrace/{key}/x{f}', t)
+    elif name == 'nz':
+        for key, v in js.items():
+            for sc, r in zip(v['scale'], v['ratio']):
+                put(f'nz/{key}/{sc:.0f}', r, '{:.2f}')
     elif name == 'params':
         for key, v in js.items():
             for km in ('0.200', '0.300'):

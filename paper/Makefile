@@ -9,7 +9,7 @@ T        = tex
 COMMON   = $(S)/common.py
 PRODUCTS = products/holi_LRG1.npz products/holi_QSO.npz products/abacus_LRG1.npz
 
-FIGS = budget anatomy diagonals_LRG1 diagonals_QSO corr chi2 eigen clouds binning fiber window params templates holes
+FIGS = budget anatomy diagonals_LRG1 diagonals_QSO corr chi2 eigen clouds binning fiber window params templates holes nz
 FIGPDF = $(addprefix $(F)/,$(addsuffix .pdf,$(FIGS)))
 
 all: paper
@@ -31,7 +31,7 @@ $(F)/%.pdf: $(S)/fig_%.py $(COMMON) $(PRODUCTS)
 	cd $(S) && $(PY) fig_$*.py
 
 numbers: $(T)/numbers.tex
-$(T)/numbers.tex: $(S)/make_numbers.py $(COMMON) $(PRODUCTS) $(F)/fiber.pdf $(F)/templates.pdf $(F)/binning.pdf $(F)/params.pdf
+$(T)/numbers.tex: $(S)/make_numbers.py $(COMMON) $(PRODUCTS) $(F)/fiber.pdf $(F)/templates.pdf $(F)/binning.pdf $(F)/params.pdf $(F)/nz.pdf
 	cd $(S) && $(PY) make_numbers.py
 
 paper: $(T)/main.pdf
