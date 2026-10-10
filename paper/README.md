@@ -43,6 +43,20 @@ make            # figures, numbers, tex/main.pdf
 Missing figures (e.g. the hole maps before `paper_export.sh` has run) appear as labelled placeholders; missing numbers
 appear as red `??`.
 
+## Working on figures in Jupyter
+
+```
+make notebook          # paper.ipynb: text (from tex/, numbers filled in) + each figure script as a cell, executed
+jupyter lab paper.ipynb
+make sync              # edited figure cells -> scripts/fig_*.py   (python scripts/notebook.py check: what differs)
+make paper             # rebuild the PDF
+```
+
+Running a figure cell writes `figures/<name>.pdf` exactly as the script does, and shows it inline. The scripts remain
+the source of truth: `sync` refuses to overwrite a script that also changed on disk since the notebook was built
+(`python scripts/notebook.py sync --force` overrides). Text edits go to `tex/`; rebuild the notebook to see them.
+`paper.ipynb` is not in git.
+
 ## Conventions for adding to the paper
 
 * A new figure: `scripts/fig_<name>.py` using `common.py` (`holi()`, `load()`, `save()`), added to `FIGS` in the

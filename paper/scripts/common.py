@@ -70,13 +70,27 @@ def git_commit():
         return 'unknown'
 
 
+def in_notebook():
+    try:
+        return get_ipython().__class__.__name__ == 'ZMQInteractiveShell'   # noqa: F821
+    except NameError:
+        return False
+
+
 def save(fig, name):
+    """figures/<name>.pdf with provenance metadata; in a notebook the figure is also shown inline"""
     os.makedirs(FIGS, exist_ok=True)
-    script = os.path.basename(sys.argv[0])
+    script = 'paper.ipynb' if in_notebook() else os.path.basename(sys.argv[0])
     meta = {'Title': name, 'Creator': f'paper/scripts/{script} @ {git_commit()}',
             'Subject': 'products: ' + ', '.join(f'{k}.npz:{h}' for k, (_, h) in sorted(_read.items()))}
     fn = os.path.join(FIGS, name + '.pdf')
     fig.savefig(fn, metadata=meta)
+    if in_notebook():
+        import io
+        from IPython.display import Image, display
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=150)
+        display(Image(data=buf.getvalue()))
     plt.close(fig)
     print(f'wrote {fn}')
 

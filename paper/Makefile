@@ -2,6 +2,8 @@
 #   make products RAW="dir1 dir2 ..."   reduce the unpacked NERSC bundles to products/ (once per new NERSC run)
 #   make                                 figures + numbers + paper (only what changed is rebuilt)
 #   make clean                           remove figures, numbers and LaTeX output (products are kept)
+#   make notebook                        paper.ipynb: the text as markdown + every figure script as an editable cell
+#   make sync                            write figure cells edited in paper.ipynb back to scripts/fig_*.py
 PY      ?= python
 S        = scripts
 F        = figures
@@ -43,4 +45,10 @@ $(T)/main.pdf: $(T)/main.tex $(wildcard $(T)/sections/*.tex) $(T)/refs.bib $(T)/
 clean:
 	rm -f $(F)/*.pdf $(T)/numbers.tex $(T)/main.{aux,bbl,blg,log,out,toc,pdf} $(T)/sections/*.aux
 
-.PHONY: all products figures numbers paper clean
+notebook: $(T)/numbers.tex
+	$(PY) $(S)/notebook.py build --execute
+
+sync:
+	$(PY) $(S)/notebook.py sync
+
+.PHONY: all products figures numbers paper clean notebook sync
