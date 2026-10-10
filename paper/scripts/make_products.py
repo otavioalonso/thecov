@@ -42,9 +42,22 @@ def sha256(fn):
     return h.hexdigest()
 
 
-def find(dirs, name):
-    hits = [p for d in dirs for p in glob.glob(os.path.join(d, '**', name), recursive=True)]
-    return max(hits, key=os.path.getmtime) if hits else None
+def find(dirs, name, require=()):
+    """newest copy of `name` under `dirs` that contains every key in `require` (older ssc_check versions did not save
+    e.g. the linear power spectrum); copies without them are reported and skipped"""
+    hits = sorted({os.path.realpath(p) for d in dirs for p in glob.glob(os.path.join(d, '**', name), recursive=True)},
+                  key=os.path.getmtime, reverse=True)
+    for p in hits:
+        if require:
+            files = set(np.load(p, allow_pickle=False).files)
+            missing = [k for k in require if k not in files]
+            if missing:
+                print(f'  skipping {p}: missing {missing} (written by an older version of the NERSC script)')
+                continue
+        if len(hits) > 1:
+            print(f'  {name}: using {p} (newest of {len(hits)} copies with the required keys)')
+        return p
+    return None
 
 
 def window_convolve(C_local, C_gauss):
@@ -56,10 +69,13 @@ def window_convolve(C_local, C_gauss):
 
 
 def holi(dirs, b, manifest):
-    rk, sk = find(dirs, f'report_data_holi-kcore2-{b}.npz'), find(dirs, f'ssc_holi-kcore2-{b}.npz')
+    rk = find(dirs, f'report_data_holi-kcore2-{b}.npz', require=(f'{b}/NGC/x1/V', f'{b}/NGC/x1/C/kernel'))
+    sk = find(dirs, f'ssc_holi-kcore2-{b}.npz', require=('NGC/C_ssc', 'NGC/C_disc', 'NGC/params', 'NGC/plin_k',
+                                                         'NGC/plin_P_damped_normalised'))
     rl = find(dirs, 'report_data_holi-altmtl.npz')
     if not (rk and sk):
-        print(f'holi {b}: kernel dump or ssc file not found, skipped')
+        print(f'holi {b}: no usable kernel dump / ssc file (see above): skipped. The ssc file must come from ssc_check.py '
+              'at or after commit 5fd84d4 (2026-10-06, the final model run)')
         return
     zk, zs = np.load(rk, allow_pickle=False), np.load(sk, allow_pickle=False)
     zl = np.load(rl, allow_pickle=False) if rl else None

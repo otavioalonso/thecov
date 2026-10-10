@@ -108,6 +108,10 @@ def holi(b, cap, f=1):
     """mock vectors, k grid and every covariance model for holi tracer b, cap, binning factor f (defective mocks removed;
     PAPER_KEEP_ALL_MOCKS=1 keeps them)"""
     z = load(f'holi_{b}')
+    if f'{cap}/x1/plin_k' not in z.files and cap != 'GCcomb':
+        raise RuntimeError(f'products/holi_{b}.npz was built from an ssc_holi-kcore2-{b}.npz written by an old ssc_check '
+                           '(no linear power spectrum, no final non-Gaussian terms). Rebuild: make products RAW=... '
+                           '(make_products.py now skips such files and reports which copy it uses).')
     p = f'{cap}/x{f}/'
     keep = ~np.isin(z[p + 'mock_ids'], excluded(b))
     d = dict(V=z[p + 'V'][keep], k=z[p + 'k'], edges=z[p + 'k_edges'], nmodes=z[p + 'nmodes'], norm=z[p + 'norm'][keep],
