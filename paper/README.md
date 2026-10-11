@@ -64,3 +64,11 @@ the source of truth: `sync` refuses to overwrite a script that also changed on d
 * A new number: computed in `make_numbers.py` (or written by a figure script with `write_numbers`) and used as
   `\val{key}`; never typed into the text.
 * Colours: one fixed colour per covariance model (`MODEL_COLOR`) and per multipole (`ELL_COLOR`), in every figure.
+
+## Editing the figures directly at NERSC: `paper_nersc.ipynb`
+
+A hand-editable notebook that reads the original NERSC files at their full paths (no products, no helper module):
+open it on jupyter.nersc.gov with the DESI kernel and run section 0 once. Each figure has a *compute* cell (plain,
+named arrays) and a *plot* cell (pure matplotlib); `savefig(fig, name)` writes `paper/figures/<name>.pdf`, which
+`make paper` uses. It is independent of `scripts/`: if you want a change to reach the reproducible build, port it to
+the corresponding `scripts/fig_<name>.py`. The notebook in git has no outputs (no DESI data in the repository).
