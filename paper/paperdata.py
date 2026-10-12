@@ -183,6 +183,39 @@ def load_abacus(variant, cap, dk=0.005):
     return s
 
 
+@dataclass
+class MockSpectra:
+    """the measured multipoles of every mock, as the DESI pipeline wrote them"""
+    name: str
+    k: np.ndarray                # bin centres [h/Mpc]
+    k_edges: np.ndarray
+    nmodes: np.ndarray
+    mocks: np.ndarray            # (n_mocks, 3 n_k): P0, P2, P4
+    mock_ids: np.ndarray
+    norm: np.ndarray             # each mock's estimator normalisation
+    num_shotnoise: np.ndarray    # each mock's shot-noise numerator (sum_d w^2 + alpha^2 sum_r w^2)
+
+
+def load_mock_spectra(sim, tracer, cap, dk=0.005, drop_defective=True):
+    """sim: 'holi', 'abacus_complete' or 'abacus_altmtl'. drop_defective removes the holi mocks with a broken n(z)."""
+    sp = _spectra(sim, tracer, cap)
+    keep = np.ones(len(sp['ids']), bool)
+    if drop_defective and sim == 'holi':
+        keep = ~np.isin(sp['ids'], excluded_mocks(tracer))
+    return MockSpectra(name=f'{sim} {tracer} {cap}', k=sp[f'k{dk}'], k_edges=sp[f'k_edges{dk}'], nmodes=sp[f'nmodes{dk}'],
+                       mocks=sp[f'V{dk}'][keep], mock_ids=sp['ids'][keep], norm=sp[f'norm{dk}'][keep],
+                       num_shotnoise=sp[f'num_shotnoise{dk}'][keep])
+
+
+def load_catalogs(tracer, cap, n_random_files=1, mock=RANDOMS_MOCK):
+    """data and randoms of one holi mock, cut to the tracer's redshift range (DESI reader, as the covariance runs):
+    an object with .data and .randoms (dicts of columns RA, DEC, Z, WEIGHT, WEIGHT_FKP, NX)"""
+    from desi_validation import desi_compare as dc
+    paths = dc.Paths(kind='holi_v3', mock=mock, catalog_dir=CATALOG_DIR)
+    paths.loader, paths.cs_version, paths.cs_parent_version = 'auto', 'holi-v3-altmtl', 'data-dr2-v2'
+    return dc.load_region(paths, tracer, cap, n_random_files=n_random_files)
+
+
 def load_nz(tracer, cap):
     """n(z) of every holi mock that has a spectrum"""
     z = _nz(tracer)
@@ -239,9 +272,11 @@ def _read_one_spectrum(fn):
         for dk, nfine in FINE_BINS_PER_DK.items():
             sel = s.select(k=slice(0, None, nfine)).select(k=(KMIN, KMAX))
             p0 = sel.get(0)
+            edges = np.asarray(p0.edges('k'))
             out[dk] = (np.concatenate([np.real(np.asarray(sel.get(ell).value())) for ell in (0, 2, 4)]),
                        np.asarray(p0.coords('k')), np.asarray(p0.values('nmodes')),
-                       float(np.ravel(p0.values('norm'))[0]))
+                       float(np.ravel(p0.values('norm'))[0]), float(np.ravel(p0.values('num_shotnoise'))[0]),
+                       np.concatenate([edges[:, 0], edges[-1:, 1]]))
         return out
     except Exception:
         import traceback
@@ -265,8 +300,10 @@ def _spectra(sim, tracer, cap):
             out[f'V{dk}'] = np.array([r[dk][0] for r in res])
             out[f'k{dk}'], out[f'nmodes{dk}'] = res[0][dk][1], res[0][dk][2]
             out[f'norm{dk}'] = np.array([r[dk][3] for r in res])
+            out[f'num_shotnoise{dk}'] = np.array([r[dk][4] for r in res])
+            out[f'k_edges{dk}'] = res[0][dk][5]
         return out
-    return _cached(f'pk_{sim}_{tracer}_{cap}', compute)
+    return _cached(f'pk2_{sim}_{tracer}_{cap}', compute)
 
 
 def _nongauss_file(sim, tracer):
@@ -292,6 +329,23 @@ def _kernel_cov_file(sim, tracer, cap):
                            f'set paperdata.KERNEL_COV_OVERRIDE[{(sim, tracer, cap)}]')
     print(f'xi-kernel covariance {sim} {tracer} {cap}: {match[-1]}')
     return match[-1]
+
+
+def kernel_tracer_name(sim, tracer, cap):
+    """thecov tracer name of the cached xi-kernel run (it records the kernel settings), or None"""
+    try:
+        fn = os.path.basename(_kernel_cov_file(sim, tracer, cap))
+    except (OSError, RuntimeError, KeyError):
+        return None
+    return fn[len(f'cov_{cap}_'):fn.index('_k0.02-')]
+
+
+def stored_gaussian(sim, tracer, cap, window, dk=0.005):
+    """the Gaussian covariance a pipeline run stored ('kernel', 'random-density' or 'none'), or None"""
+    try:
+        return _cov(sim, tracer, cap, window, dk)
+    except (OSError, RuntimeError, KeyError):
+        return None
 
 
 def _cov_file(sim, tracer, cap, window, dk):

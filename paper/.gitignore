@@ -12,3 +12,4 @@ tex/sections/*.aux
 scripts/__pycache__/
 paper.ipynb
 .ipynb_checkpoints/
+walkthrough/

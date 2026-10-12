@@ -85,3 +85,14 @@ jupyter.nersc.gov with the DESI kernel (an exclusive CPU node for the first run)
 kept in `$SCRATCH/paper_nersc_cache`, so later sessions start in seconds (delete a file there to re-read).
 `savefig(fig, name)` writes `paper/figures/<name>.pdf`; then `make pdf` compiles the paper with those figures
 (plain `make` would rebuild figures from `scripts/` when their inputs change). The notebook in git has no outputs.
+
+## Building the covariance step by step: `thecov_walkthrough.ipynb`
+
+For one tracer and cap, every piece of the covariance is built with explicit thecov calls and compared with the mocks:
+the window from the randoms (own weight vs local mean weight), `GaussianCovariance` with the local and the xi-kernel
+window (`WindowSmoothing`), the linear inputs, `SuperSampleCovariance` (long-mode variances, responses, local average,
+and a direct test against each mock's normalisation), `DiscretenessCovariance`, optionally the connected trispectrum,
+then the term budget, diagonals, chi2, whitened modes, parameter errors and fitted amplitudes. Only file reading is
+hidden (`paperdata.load_mock_spectra`, `paperdata.load_catalogs`). Pair counts are read from the earlier runs' caches
+in `~/thecov_desi/holi_v3_mock173` when present (the tracers are built exactly as the runs built them) and computed
+otherwise. Each run writes its matrices to `paper/walkthrough/<tracer>_<cap>.npz`.
