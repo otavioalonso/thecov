@@ -1,61 +1,66 @@
 # Handoff: state of the DESI validation of thecov and what to do next
 
-Start here. Written 2026-10-05 on branch `thecov2` by the cloud session that built `WindowSmoothing`
-and did the low-rank analysis. Everything below is reproducible from files in the repository and the
-`report_data_*.npz` dumps in `~/thecov_desi/holi_v3_mock173` at NERSC (copies of logs and small outputs
-go to `/global/cfs/cdirs/desicollab/users/oalves/thecov_validation`).
+Start here. Branch `thecov2`. First written 2026-10-05; sections 1-5 rewritten 2026-10-12 to the current state
+(the dated sections 6-9 are the history, with notes where a later result superseded them; section 9 is the newest).
+Everything is reproducible from files in the repository and the NERSC outputs in
+`/global/cfs/cdirs/desicollab/users/oalves/thecov_validation` (logs, ssc_*.npz, report_data_*.npz, bundles) and
+`~/thecov_desi/<sim>/` (pair counts, covariances, kernel caches).
 
-Reading order: this file; `report/proposal_lowrank.md` (the current physics conclusion);
-`report/kernel_validation_results.md` (the kernel runs); `report/report.tex` (the original report, whose
-Section 6 interpretation is now superseded); `report/window_kernel.typ` (the derivation of the
-pair-averaged window).
+Workflow from 2026-10-12: the data are being copied to the user's machine and the analysis continues with a local
+Claude Code session (section 10: what is needed locally). NERSC remains the place for pair counts of new windows.
 
-## 1. Conclusions, in order of confidence
+Reading order: this file (sections 1, 3, 9); `report/ssc_t0_review.md`; `report/ssc_formalism.pdf`;
+`report/window_kernel.typ` (the pair-averaged window); `paper/README.md` (the JCAP draft and its notebooks:
+`paper/paper_nersc.ipynb`, figures from the original files; `paper/thecov_walkthrough.ipynb`, every term computed with
+explicit thecov calls and compared with the mocks). Superseded: `report/report.tex` section 6, `report/proposal_lowrank.md`
+(the low-rank term is now the SSC term).
 
-1. **thecov's Gaussian covariance is right for the window it is given.** QSO validates to 1% in chi2/n,
-   per-element variances and parameter errors. The GRF test on the real LRG1 footprint
-   (`run_gaussian_footprint.py`) reproduces thecov to 0.3% with thecov's own window.
+## 1. Current conclusions (2026-10-12), in order of confidence
 
-2. **The local window W = m^2 underestimates the LRG1 Gaussian variance by ~4-5%**, because the
-   veto-hole fraction varies across the footprint (mostly on Galactic-latitude scales; `hole_fraction.py`
-   shows R_PP = <f^2>/<f>^2 flat from 7' to 1 deg and rising beyond). Three independent estimates agree:
-   GRF with a fill-resolved window (+5-7%, ~1% of it Poisson noise of the maps), thecov with the fill
-   window at nside 512 (+4.5%), the hole-fraction statistic (+3-4%). Any hole-averaged window recovers it.
+1. **thecov's Gaussian covariance is right for the window it is given**, and the **xi-kernel window
+   (`thecov.WindowSmoothing`) is the right window.** Random-field arbiter on the real LRG1 NGC footprint (400 Gaussian
+   realisations, healpix 512 x weighted n(z), 6 Mpc/h mesh, section 9.1): Var_GRF / Var_thecov of P0 = 1.004 / 1.025 /
+   1.019 (xi kernel) vs 1.084 / 1.070 / 1.039 (local window m^2) at k = 0.03-0.1 / 0.1-0.2 / 0.2-0.3. Own weight and local
+   mean weight agree to 0.5% once both are built as alpha rho_r w (the old own-weight variant double-counted completeness).
+   QSO validates to ~1% with any window. Open: the same test with CELL=4 and for SGC (convergence).
 
-3. **The principled window is the xi-kernel (`thecov.WindowSmoothing`)**: W_k = m (K_k * m) with
-   K_k = xi_0(r) j_0(kr)/P_0(k), per k-bin, two-stage basis (19-21 kernels -> 8-9 windows, errors < 2e-3),
-   no free scale. After removing the low-rank term (item 4) it leaves the flattest residual of all windows:
-   within +-3% of the mocks at k < 0.2 for all ell, both caps (`rank1_excess.py` on holi-kcore2-LRG1).
-   The fill window at nside 64-128 gets a lower chi2/n only by absorbing part of item 4; do not tune it.
-   The "I_k error" the earlier sessions chased (kernel 1-1.5% above the GRF's I_k at k > 0.1) is real but
-   second order: the kernel's small-r mass comes from an extrapolated P_0 without fingers of God; it costs
-   ~2% in variance at k > 0.15 and is within the Monte Carlo noise. Not worth more work now.
+2. **The super-sample term (SSC with the local average, thecov/ssc.py) has the right sign and shape.** Regressing each
+   mock's P_hat on its realised shell density (delta ln int n(z)^2 at fixed WEIGHT, 848 clean mocks, section 9.2):
+   dlnP/d delta_shell = P0 -0.06 to -0.11, P2 +0.8 to +2.5 (growing with k); tree-level prediction ~-0.25 (P0) and
+   +0.5 to +2 (P2). P2 agrees; the P0 net response (a near-cancellation of beat coupling and local average) is ~3x weaker in
+   the mocks. The mocks DO contain the long modes (shell-count scatter 0.8-1.1%); sections 8.2-8.3 were wrong on this.
 
-4. **Everything else in the LRG1 excess is one low-rank term**, read off the off-diagonal elements
-   (|dk| >= 0.03) where the windowed Gaussian covariance is ~0: mocks - thecov = A_ll' P0(k) P0(k') in
-   every (ell, ell') block, plus a constant in (0, 0). Fitted values (same for every window):
+3. **The files' normalisation is fully explained by per-mock FKP weights** (`norm_fkp.py`, section 9.3): holi randoms copy
+   each mock's redshifts and NX, so w_FKP = 1/(1 + NX P0) follows each mock's n(z). With own-FKP weights the recomputed norm
+   tracks the files' norm with corr 0.99-1.00, slope 1.00, residual 0.4-0.75%; with fixed FKP weights it does not.
+   Consequence: norm responds to the shell density only through w_FKP (corr(delta_norm, delta_shell) 0.41 NGC, 0.25 SGC for
+   LRG1; 0.98 QSO), so the delta_norm regression tests of sections 8-8.2 measured noise. thecov's
+   `local_average_statistics` still assumes fixed weights (sigma(delta_norm) predicted 2.5x too large for LRG1): to fix.
 
-   | LRG1 | sigma of coherent P0 mode | P2 mode, units of P0 | corr | const (0,0) |
-   |---|---|---|---|---|
-   | NGC | 0.51% | 0.94% | +0.18 | 85 |
-   | SGC | 0.66% | 1.22% | 0.00 | 120 |
-   | QSO NGC / SGC | 0.30 / 0.58% | 0.46 / 0.90% | -0.66 / -0.49 | 380 / 570 |
+4. **The Poisson non-Gaussian (discreteness, SN-NG) terms are too small for the mocks, and the window convolution was
+   hiding it** (section 9.4). `DiscretenessCovariance` = Wadekar & Scoccimarro (2020) SN-NG terms (their eqs. 89-92: same
+   B/n and P/n^2 terms, same window integrals I34/I22^2 = J_Smm, I24/I22^2 = J_SS, same true-shot-noise bookkeeping).
+   `covariance_tools.window_convolve` (K = corr(C_G)^1/2, rows of unit L2 norm) multiplies any k-smooth term by
+   (sum_j K_ij)^2 = 2.1-2.3 (LRG1, 0.005 bins) / 1.3-1.4 (QSO); with K row-normalised to unit sum it is ~the identity
+   (0.86-1.0). The earlier "disc amplitude 1.13-1.2, close to 1" was that inflation. Against the local terms the mocks want
+   B/n x 1.8-2.3 (LRG1) and P/n^2 x 2.2-4.1 (QSO); SSC fits to ~1 (LRG1). The mocks' residual (mocks - G - SSC) is flat
+   across neighbouring bins: no near-diagonal structure for a convolution to fix. Do not use `window_convolve` (or fix its
+   normalisation) and find the missing SN-NG variance: window integrals with per-mock weights, non-Poisson (one-halo)
+   pairs, local approximation of P(|k1 - k2|). `sn_diagnostics.py` gathers the inputs.
 
-   SGC/NGC = 1.30 for both modes vs sqrt(V_NGC/V_SGC) = 1.39: super-sample scaling. Two nearly
-   uncorrelated modes, both proportional to P0: isotropic delta_b (P0) and tidal / line-of-sight (P2), as
-   redshift-space SSC predicts. The constant is the discreteness term sum w^4 (1+alpha^3)/norm^2
-   (monopole only). Adding the 7 fitted numbers to the kernel covariance: chi2/n 1.06 -> 1.02 (NGC),
-   joint parameter variance ratios at kmax 0.2 become A 1.01/1.09, A2 0.96/1.05, alpha 0.90/1.08,
-   SN 0.86/1.10 (NGC/SGC). The quadrupole-amplitude problem of the report (A2 1.6-1.7x) is this term.
-   The QSO fit (7 free numbers) shows the method's floor: it absorbs 1-2% of noise.
+5. **Tree-level T0 is rejected by the mocks** (holi and Abacus complete N-body, sections 7.1-7.8, 9.4): best amplitude
+   0.26-0.5 (LRG1, row-normalised mixing), not PD at amplitude 1 in local form. It is not the missing LRG1 variance.
 
-5. **The bin-width (a + b dk) split of the report is contaminated.** thecov's adjacent 0.005 bins are
-   correlated at 0.4, so a fully correlated term appears ~2/3 as "a" (Gaussian-like). The report's
-   "a ~ 0.10 Gaussian-like excess" is ~0.05 window (item 2) + ~0.05 mislabelled low-rank term (item 4).
-   Section 6 of `report.tex` needs rewriting on this point; the data and figures stay.
+6. **12 defective LRG holi mocks** (n(z) spike at 0.46 < z < 0.47; section 8.4) are excluded everywhere (848 LRG1 mocks).
 
-6. What is left at kmax = 0.3 (10-20% on parameters) is the bin-width-proportional part: connected and
-   discreteness trispectrum. Expected; out of scope for kmax = 0.2.
+7. Residual of the recommended model (kernel Gaussian + SSC + window-convolved disc, LRG1 NGC, walkthrough): chi2/dof 1.02
+   (k_max 0.12) / 1.03 (0.3); after SSC + disc the worst whitened directions carry +25-40% (out of sample); A2 variance
+   still 1.10-1.17x at k_max 0.2-0.3, constant shot-noise parameter 5-15% too large around 0.2. Item 4 changes this
+   model: redo the budget with the local (or correctly normalised) SN-NG terms at their measured amplitude.
+
+8. Still valid from the 2026-10-05 analysis: the bin-width (a + b dk) split of `report/report.tex` is contaminated
+   (adjacent 0.005 bins correlate at 0.4, so a fully correlated term shows up ~2/3 as "a"); the low-rank off-diagonal
+   excess of `report/proposal_lowrank.md` (sigma_P0 0.51 / 0.66%, P2 mode 0.94 / 1.22%, LRG1 NGC / SGC) is the SSC term.
 
 ## 2. What was tried and should not be repeated
 
@@ -67,64 +72,74 @@ pair-averaged window).
 - The hole-fraction statistic predicting less than the fill window changes thecov: resolved, the effect
   is on the diagonal only to the extent the hole density varies on scales >~ 1/dk; it does (Galactic).
 - Weight resolution (7' maps vs 32-neighbour mean): the GRF showed no difference (0.2%).
+- Regressing P_hat or the coherent P0 mode on the files' delta_norm to test the local average: with per-mock FKP weights
+  norm barely follows the shell density (corr 0.25-0.41 for LRG1). Regress on the shell density itself (section 9.2).
+- `window_convolve` for smooth terms (disc, T0): it inflates them by (sum_j K_ij)^2; any agreement it produces is
+  that factor (section 9.4).
+- Tree-level T0 in any form (full, LL only, response split, collapsed): rejected on holi and Abacus (7.1-7.8, 9.4).
+- An "own weight" window built as NX x WEIGHT: NX already contains the completeness (double counting, +10%).
+- Comparing only the leading eigenvectors of the SSC term and of the mocks' excess (the walkthrough's old "shapes"
+  panel): SSC's first vector is P2-dominated, the mocks' worst Gaussian direction is a P0 amplitude; compare subspaces
+  or projections.
 
-## 3. Next steps, in order
+## 3. Next steps, in order (2026-10-12)
 
-A. **Make `kernel` the DESI default.** `desi_validation/pipeline.py`: `Config.nw_modes = ('kernel',)`
-   with `kernel_random_files=10`, `kernel_cell=4`, `kernel_r_split=8`, `kernel_rmax=200`,
-   `kernel_tol=2e-3`, production sampling (`target_near_pairs=1e10`, `n_randoms_max=8e6`). Cost: smoothing
-   2-16 min + pair counts 10-20 min per cap, fits the 30-min debug queue. Keep `random-density` as the
-   comparison. Re-run LRG1 + QSO once with the new defaults to refresh `report_data`.
+A. **The missing SN-NG variance (conclusion 4).** Run `desi_validation/sn_diagnostics.py` (one debug job per bin and cap,
+   command in section 9.5) or the equivalent locally. It saves: J_Smm, J_SS from the randoms (global <w^2>/<w>, as thecov)
+   and from the data (local <w^2>/<w>); weight moments; data 1 + xibar(<r) at 0.25-16 Mpc/h (non-Poisson pairs); every
+   mock's multipoles to k = 0.6 with thecov's local G, SSC, B/n, P/n^2 on those bins (the SN-NG terms grow with k: the
+   strongest amplitude test). Decide between (i) window integrals, (ii) non-Poisson sampling, (iii) the local
+   approximation of the P(|k1 - k2|) term; then fix `DiscretenessCovariance` and drop or renormalise `window_convolve`
+   (rows of K summing to 1).
 
-B. **Super-sample module in thecov core** -- IMPLEMENTED (`thecov/ssc.py`, see `ssc_dev/DESIGN.md` STATUS);
-   next: run `python -m desi_validation.ssc_check --bin LRG1 --label holi-kcore2-LRG1` (and QSO) at NERSC and
-   compare the predicted sigma_P0, sigma_P2/P0, r02 with the mocks' (no fitting). Original plan: Target numbers are item 4, not
-   chi2/n. Form: Cov_SSC[P_l(k), P_l'(k')] = sum_c R_l^c(k) R_l'^c(k') sigma_c^2 over long-mode
-   components c; redshift-space responses from Wadekar & Scoccimarro (2020) / Li, Schmittfull & Seljak
-   (2018) (growth, dilation, bias, Kaiser and tidal/LOS terms, minus the local-average term for
-   jaxpower's realised normalisation, which the report measured to nearly cancel for P0 at low k).
-   sigma_c^2 are window integrals of the linear power: sigma_b^2 = int d^3s xi_lin(s) Q_WW(s)/(int W)^2
-   from thecov's cached pair counts (`WindowLibrary`, `Window('W', A, B)`), and the tidal / LOS moments
-   from the Legendre-weighted Q_l(s) with the local line of sight that thecov already computes.
-   First check, no new code (NERSC, minutes): sigma_b for the LRG1 caps from Q_WW(s) and a linear P(k)
-   at z = 0.5; compare with sigma_0 / R_0 for R_0 ~ 1.5-2.5 and check the SGC/NGC ratio 1.30. If the
-   isotropic mode alone gives ~0.5%, the P0 part is understood and only the P2 (tidal / LOS) responses
-   need the full formalism; if it gives much less, the LOS velocity-gradient response is needed from the
-   start. Validation: the module must predict sigma_0, sigma_2/P0, their ratio and ~zero correlation
-   without fitting; then `rank1_excess.py` with the SSC term included should leave no off-diagonal excess
-   and A2 -> 1.
+B. **Local average with per-mock FKP weights** (conclusion 3): `SuperSampleCovariance.local_average_statistics` and the LA
+   term should use the response of norm with w_FKP = 1/(1 + n P0) recomputed per realisation (delta(n w_FKP) =
+   w_FKP^2 delta n). Check the predicted sigma(delta_norm) against the mocks (0.39-0.43% NGC / 0.75% SGC for LRG1).
 
-C. **Discreteness terms** (cheap, exact): the constant sum_d w^4 + alpha^3 sum_r w^4 over norm^2 in
-   the (0,0) block (targets 85 / 120 LRG1, 380 / 570 QSO; the catalogue sums are available in
-   `desi_compare.weight_diagnostics`), and the sum w^3 x P(k) + P(k') terms. Add to
-   `GaussianCovariance` as an optional non-Gaussian discreteness block.
+C. **The P0 SSC response** (conclusion 2): measured slope vs shell density ~3x weaker than tree level. Put the shell-density
+   regression in the walkthrough next to thecov's fixed-weight prediction (beat coupling and local average separately).
 
-D. **Report**: rewrite Section 6 (bin width) and the conclusions with items 4-5; add the off-diagonal
-   decomposition as the primary diagnostic; keep a/b as a figure with the correlation caveat.
+D. **Random-field convergence**: `bash desi_validation/run_grf_tasks.sh LRG1 NGC 3 80 4` (cell 4) and SGC, before the paper
+   claims the 2% agreement of the xi kernel.
 
-E. Later: all tracers (BGS, ELG, LRG+ELG: check names in `dc.TRACER_SPECS`); kmax = 0.3 (trispectrum).
+E. **Paper**: correct the text on long modes and normalisation (per-mock FKP), the SN-NG result, replace the walkthrough's
+   "shapes" panel by a subspace / projection comparison, then the budget with the corrected SN-NG term.
 
-## 4. Tools (all in `desi_validation/`)
+F. Later: `Config.nw_modes = ('kernel',)` as the pipeline default (the holi-kcore2 dumps already use it); all tracers.
 
-- `dump_report_data.py`: runs the pipeline, dumps mock vectors + covariances per window mode and binning
-  (`--modes`, `--regions`, `--cache-tag`, `--target-near-pairs`, `--n-randoms-max`, `--kernel-tol`).
-- `compare_kernel.py`: chi2/n per k range, variance ratios, a/b split, for any set of dumps.
-- `rank1_excess.py`: the off-diagonal low-rank fit, residual diagonal ratios, parameter ratios.
-- `hole_fraction.py`: R_PP = <f^2>/<f>^2 of the veto-hole fraction vs angular scale (no pair counts).
-- `run_gaussian_footprint.py`: exact Gaussian covariance on the real footprint from Gaussian fields.
-- `thecov/smoothing.py` + `tests/test_smoothing.py`: the kernel window (core).
+## 4. Tools
+
+`desi_validation/`:
+- `dump_report_data.py`: runs the pipeline, dumps mock vectors + covariances per window mode and binning.
+- `compare_kernel.py`, `rank1_excess.py`: chi2/n, variance ratios, the off-diagonal low-rank fit, parameter ratios.
+- `ssc_check.py`: SSC, discreteness and T0 for the holi / Abacus dumps (`ssc_<label>.npz`: every term, local and
+  window-convolved, with the parameters); `ssc_plots.py`; `ssc_dev/` (designs, local rebuilds, T0 diagnostics).
+- `norm_fkp.py`: the files' norm from the data catalogues per mock, own vs fixed FKP weights and randoms.
+- `nz_scatter.py`: n(z) of all mocks (defective-mock detection, shell-density scatter); `hole_fraction.py`.
+- `run_gaussian_footprint.py` + `run_grf_tasks.sh`: Gaussian random fields on the real footprint (the window arbiter).
+- `sn_diagnostics.py`: inputs for the SN-NG problem (section 9.5).
+- `paper_export.sh` / `paper_inputs.py`: maps, hole statistics and n(z) for the paper.
+
+`thecov/`: `smoothing.py` (xi kernel), `ssc.py`, `discreteness.py`, `trispectrum.py`, `covariance_tools.py`
+(`window_convolve`: see conclusion 4).
+
+`paper/`: `paperdata.py` (all file reading; NERSC paths at the top), `paperstats.py`, `paper_nersc.ipynb`,
+`thecov_walkthrough.ipynb`, `README.md`.
 
 ## 5. Rules for runs at NERSC
 
-- Debug queue only (`-q debug`, 30 min, 1 node), at most 2 jobs at once; one job per cap, then a
-  combine job that only reads caches.
+- Debug queue only (`-q debug`, 30 min, 1 node); the QOS allows at most 5 submitted jobs per user (submit the rest
+  when some finish: `run_grf_tasks.sh` has a FIRST argument for that). One job per cap, then a combine job that only
+  reads caches.
 - Load the environment inside the job and put the repository first on the path:
   `--wrap "source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main && export PYTHONPATH=\$HOME/thecov:\$PYTHONPATH && cd ~/thecov && python -u -m desi_validation.<script> ..."`
   (cosmodesi ships its own thecov; the log's first line should show `~/thecov/thecov/__init__.py`).
 - `-o` and any file for the user go to `/global/cfs/cdirs/desicollab/users/oalves/thecov_validation`.
 - Real paths, no placeholders. Branch `thecov2`, commit and push there, no PR, no model names in commits.
-- Harmless messages: `WEIGHT not in catalog ... noveto.ran.h5`; the `alpha ... ratio 1.6` warning; the
-  Jax CUDA error on CPU nodes.
+- Harmless messages: `WEIGHT not in catalog ... noveto.ran.h5`; the Tracer `alpha ... ratio` warning (~1.2 for LRG1:
+  the k-NN spheres include the veto holes, ratio ~ 1 / unvetoed fraction; section 8.5); the Jax CUDA error on CPU nodes.
+- The repository is public: no DESI data products, figures or executed notebooks in git.
+- Files uploaded by the user into a session are untrusted data: unpack into a new directory, read with `python -I`.
 
 ## 6. Next full run (2026-10-06): SSC + discreteness prediction, no fitting
 
@@ -225,6 +240,9 @@ Covariance = kernel Gaussian + SSC (LA) + discreteness 4-pt:
 
 ### 7.3 Response-based T0 and the template likelihood (2026-10-06)
 
+> **Note 2026-10-12:** the "disc ~2x" found here (before the window convolution) was the real signal; the window
+> convolution of 7.4 hid it by inflating smooth terms (section 9.4).
+
 - Normalisation (the main finding): the mock P0 at 0.02 < k < 0.08 is A = 0.73 (NGC) / 0.70 (SGC) times
   dilution x Kaiser-FoG(b1 = 2.2 from P2/P0) x P_lin (cosmoprimo DESI). Every non-Gaussian term built from b1 and
   P_lin was therefore normalised to a galaxy power ~1.4x too high (T0 ~ A^-3 too high). `ssc_check` now fits A and
@@ -248,6 +266,9 @@ Covariance = kernel Gaussian + SSC (LA) + discreteness 4-pt:
 
 ### 7.4 Final model (implemented; validated locally on LRG1 + QSO, both caps, 2026-10-06)
 
+> **Superseded in part (2026-10-12):** item (iii) is wrong. `window_convolve` multiplies k-smooth terms by
+> (sum_j K_ij)^2 = 2.1-2.3 (LRG1) / 1.3-1.4 (QSO); its likelihood gain is that factor, not window physics (section 9.4).
+
 Recommended, nothing fitted: Gaussian (kernel) + SSC (LA) + discreteness 4-pt, with
 (i) the linear galaxy power normalised to the mocks (A = 0.73 / 0.70 LRG1, 0.81 / 0.67 QSO NGC / SGC),
 (ii) BAO (Sigma 6) and FoG damping (sigma_v fitted to P2/P0: 2.1 / 2.7 LRG1, 3.3 / 4.0 QSO),
@@ -269,6 +290,9 @@ Template fits (--fit-templates, diagnostic) earlier wanted disc ~2x before the w
 Next: the NERSC run of this ssc_check (saves every part), then the sub-volume pipeline if needed.
 
 ### 7.5 NERSC run of the final model (2026-10-06, log ssc_final_LRG1_QSO.log; figures report/final_run/)
+
+> **Note 2026-10-12:** the disc amplitudes ~1 quoted here are for the inflated (window-convolved) term; against the
+> local term the mocks want 1.1-2.5 (section 9.4). The chi2/n and parameter ratios of this model stand as measured.
 
 Recommended C_nongauss = SSC (LA) + window-convolved discreteness, normalised + damped, nothing fitted. Reproduces
 the local rebuild exactly (LRG1 NGC -3321 vs -3320). chi2/n (Gaussian -> model), kmax 0.3 joint variance ratios
@@ -341,6 +365,10 @@ Whitened residuals of the mocks under C + C_nongauss (holi LRG1/QSO, 859 mocks; 
 
 ## 8. Review of the SSC and T0 implementations (2026-10-07): `report/ssc_t0_review.md`
 
+> **Superseded in part (2026-10-12):** the delta_norm-based tests of the local average in this section and in 8.2 are
+> not meaningful for holi: per-mock FKP weights decouple norm from the shell density (section 9.3). The convention
+> (8.1, data x randoms) stands.
+
 Read it before the next `ssc_check` run. In short: the algebra of `thecov/ssc.py`, `discreteness.py` and `trispectrum.py`
 is verified (independent kernel paths, IR limit, from-scratch T0 assembly; `ssc_dev/review_checks.py`), but the
 local-average term as implemented (norm = alpha sum D R, `norm_kind='data-randoms'`) predicts a NEGATIVE regression
@@ -398,6 +426,10 @@ model, and the responses should be measured from the mocks (review sec. 3.B) bef
 
 ### 8.2 Results of the normalisation checks (2026-10-07, bundle norm_checks_20261007.tgz)
 
+> **Superseded (2026-10-12):** the mocks do contain the long modes (8.4, 9.2). The small sigma(delta_norm) and the
+> ~0 slopes are the per-mock FKP weights (9.3), not missing modes; the model's "2.3x too large" sigma(delta_norm) is the
+> fixed-weight assumption of `local_average_statistics`.
+
 - **Convention settled**: the pipeline calls `compute_fkp2_normalization(fkp, cellsize=10)` (spectrum2_tools.py:474-501,
   `norm = {'cellsize': 10.}`, no split): norm = alpha sum_c D_c R_c / V_c. Recomputed DR tracks the files' norm mock by
   mock (corr 0.95 / 0.97 NGC / SGC over 6 mocks, residual 0.14-0.17 % from NGP vs CIC and one random file). The randoms
@@ -423,6 +455,8 @@ model, and the responses should be measured from the mocks (review sec. 3.B) bef
   slope test; the catalogue DR test is the one that settled the convention.
 
 ### 8.3 n(z) scatter of 8 mocks (nz_check_20261007_0351.tgz) and the 859-mock measurement to run
+
+> **Superseded** by 8.4 (8 mocks were noise).
 
 8 mocks, 10 z bins: the radial density scatter per 50-100 Mpc/h bin is 1.3-2.2 % (NGC), 1.3-3.4 % (SGC), well above Poisson
 (0.4-0.6 %) and 0.75-0.8 of the linear slab prediction; but the whole-shell (500 Mpc/h) count scatters by 0.19 % (NGC,
@@ -465,8 +499,119 @@ of the shell counts (shared parent-box modes), and saves C_nz(z, z').
   Regression of the files' delta_norm on delta int n(z)^2 (WEIGHT-weighted counts of all mocks): slope 0.19, corr 0.41
   (LRG1 NGC; nP0 ~ 5 -> 1/(1+nP0) ~ 0.17), 0.85 and 0.98 (QSO; nP0 ~ 0.2 -> 0.83). thecov's local_average_statistics
   assume fixed weights and randoms, hence its 2.5x too large sigma(delta_norm). `norm_fkp.py` tests the mechanism mock by
-  mock from the data catalogues (four models: own / fixed FKP x own / fixed randoms). Still open: the low correlation for
-  LRG1 (what else moves norm) and the P_hat-delta_norm slopes (~0 in the mocks).
+  mock from the data catalogues (four models: own / fixed FKP x own / fixed randoms); results in 9.3 (both questions
+  left open here are answered there).
 - **Window arbiter**: `run_gaussian_footprint.py --no-thecov --save-realisations --task i` (submit with
   `run_grf_tasks.sh <bin> <cap>`) saves the random-field realisations; `paper/thecov_walkthrough.ipynb` section 3d compares
   them with own-weight, mean-weight and xi-kernel thecov (isotropic model): variance per k and adjacent-bin correlations.
+  Results in 9.1.
+
+## 9. Results of 2026-10-12 (walkthrough runs, random fields, norm_fkp, SN-NG analysis)
+
+Inputs: `thecov_walkthrough.ipynb` executed at NERSC (LRG1 NGC; two runs), the GRF realisations, `norm_fkp_<bin>.log`, the
+Oct 6 bundle (`thecov_bundle_20261006_2145.tgz`: report_data_holi-kcore2-*, ssc_holi-kcore2-*), `paper_inputs`
+(nz_scatter). The local analysis scripts are not in the repository (they read DESI data); their logic is described here.
+
+### 9.1 Random-field window arbiter (LRG1 NGC, 400 realisations, cell 6 Mpc/h, healpix 512)
+
+Var_GRF / Var_thecov of P0 (isotropic model, both from the same footprint):
+
+| k range | xi kernel | local window, mean weight | local window, own weight |
+|---|---|---|---|
+| 0.03-0.1 | 1.004 | 1.084 | 1.083 |
+| 0.1-0.2 | 1.025 | 1.070 | 1.073 |
+| 0.2-0.3 | 1.019 | 1.039 | 1.031 |
+
+The xi kernel is right to ~2%; the weight construction does not matter. The mocks agree independently: with SSC + disc,
+mock / model ~ 1 at k < 0.1 in all multipoles with the kernel, while the local-window models are 5-13% low. To do:
+cell 4 and SGC.
+
+### 9.2 Long-mode response measured against the shell density (848 clean mocks)
+
+Regressor: delta_shell = delta ln int n(z)^2 with fixed WEIGHT (from nz_scatter), not delta_norm. dlnP_hat / d delta_shell:
+
+| | P0 0.02-0.1 | P0 0.1-0.2 | P0 0.2-0.3 | P2 0.02-0.1 | P2 0.1-0.2 | P2 0.2-0.3 |
+|---|---|---|---|---|---|---|
+| LRG1 NGC | +0.035 +- 0.027 | -0.064 +- 0.013 | -0.090 +- 0.011 | +0.80 +- 0.15 | +0.89 +- 0.085 | +1.03 +- 0.10 |
+| LRG1 SGC | +0.048 +- 0.029 | -0.069 +- 0.014 | -0.113 +- 0.012 | +0.93 +- 0.17 | +1.38 +- 0.12 | +2.46 +- 0.24 |
+
+QSO: consistent with 0 (shell scatter 0.3%, too small). thecov's fixed-weight prediction (walkthrough): P0 ~ -0.25 to
+-0.3, P2 +0.5 to +2.2. Signs and the P2 size agree; the P0 net response is ~3x weaker in the mocks. Shell-density scatter
+0.8-1.1% (LRG1): the long modes are present. Against delta_norm the slopes are ~0 (P0) and negative (P2): not meaningful.
+
+### 9.3 The files' norm: per-mock FKP weights (`norm_fkp.py`)
+
+Own-FKP models reproduce the files' norm mock by mock: LRG1 NGC corr 0.987, slope 0.99, residual 0.43%; LRG1 SGC 0.997,
+1.00, 0.75%; QSO corr 0.99, slope ~1. With fixed FKP weights the residual is 1.48% (NGC) / 1.62% (SGC) for LRG1.
+<w_FKP>_m^2 = 0.186 (LRG1) and 0.85 (QSO) sets how much norm responds to a density change. corr(delta_norm, delta_shell)
+= 0.41 / 0.25 (LRG1 NGC / SGC), 0.98 (QSO). The walkthrough's per-mock FKP prediction of sigma(delta_norm) (0.18%) is still
+half the mocks' 0.39% (LRG1 NGC): the rest of the scatter is not yet modelled (randoms per mock, Poisson of the data).
+
+### 9.4 SN-NG terms: Wadekar & Scoccimarro equivalence, the window convolution, amplitudes
+
+- `DiscretenessCovariance` is WS20's SN-NG: one shared galaxy (4 cases) -> tree-level B, weight int S m^2 / norm^2
+  (their I34 / I22^2, eq. 91); two shared galaxies (2 cases) -> P(|k1 +- k2|), weight int S^2 / norm^2 (I24 / I22^2,
+  eq. 92); no 1/n^3 or within-spectrum coincidences (true shot noise subtracted, eq. 79). WS20's local-average shot-noise
+  terms (their eqs. 44, 86) are in `SuperSampleCovariance(discreteness=True)`. WS20 evaluate SN-NG in the local
+  approximation; the window convolution is thecov's own addition.
+- `window_convolve(C_local, C_G)` = D^1/2 K (C_local / D) K^T D^1/2 with K = corr(C_G)^1/2. Rows of K have unit L2 norm
+  (right for white noise); a real window's rows sum to 1 (preserves a smooth function). Measured on the P0 diagonal at
+  k = 0.15-0.3, convolved / local = 2.14 / 2.26 (LRG1 NGC / SGC), 1.33 / 1.38 (QSO), equal to (sum_j K_ij)^2 to 2%; with
+  K / K.sum(1) it is 0.86-1.00.
+- Wishart ML amplitude a in G + SSC + a disc (848 mocks): local / convolved disc
+
+  | k_max | LRG1 NGC | LRG1 SGC | QSO NGC | QSO SGC |
+  |---|---|---|---|---|
+  | 0.12 | 2.10 / 1.25 | 1.40 / 1.00 | 1.53 / 1.10 | 1.40 / 1.00 |
+  | 0.2 | 1.93 / 1.20 | 1.15 / 0.90 | 1.83 / 1.35 | 1.70 / 1.23 |
+  | 0.3 | 1.98 / 1.23 | 1.10 / 0.90 | 2.48 / 1.83 | 1.85 / 1.33 |
+
+  Errors 0.05-0.25. At a = 1 the convolved term wins (-2 dlnL 76-712 LRG1, 2-95 QSO); with a free, QSO has no preference,
+  LRG1 still prefers the convolved shape. Residual (mocks - G - SSC) on the P0 block at k = 0.15-0.3, |i-j| = 0..3, units
+  sqrt(G_ii G_jj): LRG1 NGC 0.234 / 0.235 / 0.244 / 0.253 (+-0.01; local disc 0.097, convolved 0.206), QSO NGC
+  0.060 / 0.065 / 0.094 / 0.081 (local 0.025): flat, no near-diagonal structure.
+- Separate amplitudes at k_max 0.3, B / P / T0 window-mixed with the row-normalised K:
+
+  | | SSC | B/n | P/n^2 | T0 (tree) |
+  |---|---|---|---|---|
+  | LRG1 NGC | 1.21 +- 0.15 | 2.26 +- 0.24 | 6.4 +- 1.0 | 0.39 +- 0.06 |
+  | LRG1 SGC | 1.36 +- 0.16 | 1.76 +- 0.19 | 3.9 +- 0.7 | 0.36 +- 0.06 |
+  | QSO NGC | degenerate | degenerate | 4.15 +- 0.33 | degenerate |
+  | QSO SGC | degenerate | degenerate | 2.17 +- 0.24 | degenerate |
+
+  P0 diagonal / Gaussian at k 0.15-0.3: B/n 0.07-0.08, P/n^2 0.014-0.02, T0 0.03 (LRG1); P/n^2 0.02-0.03 (QSO); mocks - G
+  0.20-0.23 (LRG1), 0.06 (QSO). LRG1 P/n^2 is unstable at k_max 0.2. Local (unmixed) T0 is rejected outright (negative
+  amplitude); `C_T0_response` (P0 diagonal 34% of G) is not usable as a template.
+- Conclusion: the mocks contain 1.8-2.3x (LRG1, B/n) and 2.2-4.1x (QSO, P/n^2) the predicted Poisson non-Gaussian
+  covariance, smooth in k. Candidates: (i) J_Smm, J_SS with per-mock FKP weights or the global <w^2>/<w>
+  (`window_integrals` uses sum w^2 / sum w of the randoms everywhere); (ii) non-Poisson sampling (one-halo pairs raise the
+  effective 1/n; would hit QSO's P/n^2 most); (iii) the local approximation of P(|k1 - k2|) near k1 ~ k2.
+
+### 9.5 `sn_diagnostics.py` (written 2026-10-12, not yet run)
+
+    cd ~/thecov && git pull origin thecov2
+    OUT=/global/cfs/cdirs/desicollab/users/oalves/thecov_validation
+    ENV="source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main && export PYTHONPATH=\$HOME/thecov:\$PYTHONPATH && cd \$HOME/thecov"
+    for B in LRG1 QSO; do for C in NGC SGC; do
+      sbatch -N 1 -C cpu -q debug -t 00:30:00 -J sn$B$C -o $OUT/sn_diag_${B}_${C}.log \
+        --wrap "$ENV && python -u -m desi_validation.sn_diagnostics --bin $B --cap $C"
+    done; done
+
+Output `sn_diag_<bin>_<cap>.npz` (saved after each stage: spectra, integrals, pairs, disc, SSC, Gaussian). Only the
+pair-excess helper has been tested (uniform points -> 1).
+
+## 10. Working locally (from 2026-10-12)
+
+What a local session needs (keep it outside the repository or in a git-ignored directory; the repository is public):
+- Spectra: `/global/cfs/cdirs/desi/science/cai/desi-clustering/dr2/summary_statistics/full_shape/base/{holi-v3-altmtl,
+  abacus-2ndgen-dr2-complete,abacus-2ndgen-dr2-altmtl}/mock*/mesh2_spectrum_poles_*_weight-default-FKP.h5`
+  (read with `lsstypes`; `paperdata._read_one_spectrum`).
+- Catalogues: the holi random files are slim (TARGETID, WEIGHT, NX); RA, DEC, Z come from the parent data-dr2-v2 randoms
+  through `clustering_statistics` (NERSC only). Export completed catalogues at NERSC with `desi_compare.load_region`
+  (RA, DEC, Z, WEIGHT, WEIGHT_FKP, NX, cut to the bin) for mock 173 (data + the random files needed) and the data of a few
+  other mocks, rather than copying the raw files.
+- Products: `/global/cfs/cdirs/desicollab/users/oalves/thecov_validation/` and `~/thecov_desi/` (pair counts, covariances,
+  kernel caches, ssc windows: avoids recomputing the expensive windows).
+- Paths are hard-coded for NERSC in `paper/paperdata.py` (top of the file) and `desi_compare.Paths`: point them at the
+  local copies (a `DESI_DATA` root is the planned change).
+- Environment: this repository's `thecov`, numpy, scipy, `lsstypes`, `cosmoprimo`, optionally `jax`.
