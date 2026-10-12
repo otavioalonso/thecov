@@ -97,13 +97,15 @@ class Tracer:
         """alpha implied by NZ (or NW) and a k-nearest-neighbour density of the randoms: median over
         a subsample of nbar / n_ran, or of m / (n_ran <w>_k) with <w>_k the mean weight of the
         neighbours (excluding the random itself) when NW is given."""
-        sub = self.pos[: min(self.size, 20000)]
-        d, idx = self.tree.query(sub, k=k + 1)
+        # a random subsample: catalogues are often sorted (by z or sky position), and the first randoms then sit
+        # at an edge, where the k-NN density is underestimated
+        sub = np.sort(np.random.default_rng(0).choice(self.size, size=min(self.size, 20000), replace=False))
+        d, idx = self.tree.query(self.pos[sub], k=k + 1)
         n_ran = k / (4.0 / 3.0 * np.pi * d[:, -1] ** 3)
         if self.has_nw:
             wmean = self.w[idx[:, 1:]].mean(axis=1)
-            return float(np.median(self.mw[: len(sub)] / (n_ran * wmean)))
-        return float(np.median(self.nbar[: len(sub)] / n_ran))
+            return float(np.median(self.mw[sub] / (n_ran * wmean)))
+        return float(np.median(self.nbar[sub] / n_ran))
 
     # -- geometry helpers ------------------------------------------------------
     @property

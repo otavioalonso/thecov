@@ -93,6 +93,6 @@ the window from the randoms (own weight vs local mean weight), `GaussianCovarian
 window (`WindowSmoothing`), the linear inputs, `SuperSampleCovariance` (long-mode variances, responses, local average,
 and a direct test against each mock's normalisation), `DiscretenessCovariance`, optionally the connected trispectrum,
 then the term budget, diagonals, chi2, whitened modes, parameter errors and fitted amplitudes. Only file reading is
-hidden (`paperdata.load_mock_spectra`, `paperdata.load_catalogs`). Pair counts are read from the earlier runs' caches
-in `~/thecov_desi/holi_v3_mock173` when present (the tracers are built exactly as the runs built them) and computed
-otherwise. Each run writes its matrices to `paper/walkthrough/<tracer>_<cap>.npz`.
+hidden (`paperdata.load_mock_spectra`, `paperdata.load_catalogs`). Everything is computed by the notebook; its pair counts (the
+expensive part: minutes for the local window, about an hour for the xi kernel) are kept in
+`$SCRATCH/thecov_walkthrough` and read back on later runs. Each run writes its matrices to `paper/walkthrough/<tracer>_<cap>.npz`.
