@@ -4,6 +4,7 @@
 #   make clean                           remove figures, numbers and LaTeX output (products are kept)
 #   make notebook                        paper.ipynb: the text as markdown + every figure script as an editable cell
 #   make sync                            write figure cells edited in paper.ipynb back to scripts/fig_*.py
+#   make pdf                             only compile tex/main.pdf with the figures as they are (e.g. from paper_nersc.ipynb)
 PY      ?= python
 S        = scripts
 F        = figures
@@ -42,6 +43,11 @@ $(T)/main.pdf: $(T)/main.tex $(wildcard $(T)/sections/*.tex) $(T)/refs.bib $(T)/
 	  pdflatex -interaction=nonstopmode main.tex >/dev/null; pdflatex -interaction=nonstopmode -halt-on-error main.tex | grep -E 'Warning: (Reference|Citation)|undefined' || true
 	@echo "built $(T)/main.pdf"
 
+pdf:
+	cd $(T) && pdflatex -interaction=nonstopmode -halt-on-error main.tex >/dev/null && bibtex main >/dev/null; \
+	  pdflatex -interaction=nonstopmode main.tex >/dev/null; pdflatex -interaction=nonstopmode -halt-on-error main.tex | grep -E 'Warning: (Reference|Citation)|undefined' || true
+	@echo "built $(T)/main.pdf"
+
 clean:
 	rm -f $(F)/*.pdf $(T)/numbers.tex $(T)/main.{aux,bbl,blg,log,out,toc,pdf} $(T)/sections/*.aux
 
@@ -51,4 +57,4 @@ notebook: $(T)/numbers.tex
 sync:
 	$(PY) $(S)/notebook.py sync
 
-.PHONY: all products figures numbers paper clean notebook sync
+.PHONY: all products figures numbers paper pdf clean notebook sync

@@ -67,13 +67,21 @@ the source of truth: `sync` refuses to overwrite a script that also changed on d
 
 ## Editing the figures directly at NERSC: `paper_nersc.ipynb`
 
-A hand-editable notebook that computes every figure from the original files at their full NERSC paths: the DESI
-`mesh2_spectrum_poles_*.h5` of every mock (lsstypes), the LSS data catalogues of every mock (n(z), area), the randoms
-of holi mock 173 (veto holes), and thecov's own output files (Gaussian covariances `~/thecov_desi/<sim>/<bin>/cov_*.npz`,
-non-Gaussian terms `ssc_<label>.npz`). No bundle (`report_data_*`, `nz_scatter_*`, `paper_maps_*`, products) is read.
-Open it on jupyter.nersc.gov with the DESI kernel (an exclusive CPU node for the first run) and run section 0: what it
-reads is kept in `$SCRATCH/paper_nersc_cache` so later sessions start in seconds (delete a file there to re-read).
-Each figure has a *compute* cell (plain, named arrays) and a *plot* cell (pure matplotlib); `savefig(fig, name)`
-writes `paper/figures/<name>.pdf`, which `make paper` uses. It is independent of `scripts/`: if you want a change to
-reach the reproducible build, port it to the corresponding `scripts/fig_<name>.py`. The notebook in git has no
-outputs (no DESI data in the repository).
+The notebook makes every figure from the original NERSC files (DESI spectrum h5 files, LSS catalogues and randoms,
+thecov's covariance files). One cell per figure, read top to bottom. The data come as plain objects:
+
+```python
+s = load_holi('LRG1', 'NGC')
+s.k, s.mocks                     # k bins; every mock's (P0, P2, P4)
+s.cov_mocks                      # covariance of the mocks
+s.cov_gauss_local, s.cov_gauss   # Gaussian: local window, xi-kernel window
+s.cov_ssc, s.cov_disc            # non-Gaussian terms
+s.cov_final                      # gauss + ssc + disc (recommended)
+s.P0(np.diag(s.cov_final))       # the monopole part of any 168-vector
+```
+
+File reading is in `paperdata.py` (paths at its top), the statistics in `paperstats.py`. Open the notebook on
+jupyter.nersc.gov with the DESI kernel (an exclusive CPU node for the first run) and run section 0; what it reads is
+kept in `$SCRATCH/paper_nersc_cache`, so later sessions start in seconds (delete a file there to re-read).
+`savefig(fig, name)` writes `paper/figures/<name>.pdf`; then `make pdf` compiles the paper with those figures
+(plain `make` would rebuild figures from `scripts/` when their inputs change). The notebook in git has no outputs.

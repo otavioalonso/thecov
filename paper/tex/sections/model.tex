@@ -14,13 +14,13 @@ with $W=m^2$ and $S=(1+\alpha)\bar n\langle w^2\rangle$. Here $m=\bar n\langle w
 
 Two details of the window turn out to matter at the percent level for LRG1, both because the window has structure on scales comparable to the correlation length:
 \begin{itemize}
-\item \emph{Weights.} DESI weights vary from object to object, and the randoms inherit them from random data objects. The clustering window needs $\langle w\rangle^2$, not $\langle w^2\rangle$. Evaluating $W$ with each random's own weight puts a self-pair into the clustering window and overestimates it by $1+{\rm var}(w)/\langle w\rangle^2$. We use the mean weight of the 32 nearest \emph{other} randoms. The size of this effect, measured as the Gaussian variance with own weights over that with mean weights, is $+\val{ownweight/LRG1/NGC}$\% for LRG1 and $+\val{ownweight/QSO/NGC}$\% for QSO (NGC; \cref{fig:window}c).
-\item \emph{Pair averaging.} \Cref{eq:local} replaces $m(\bx)m(\bx+\br)$ by $m^2(\bx)$, which fails where the window varies within a correlation length: veto holes around bright stars, footprint edges, completeness boundaries. Keeping the partner inside the separation integral gives $W_k(\bx)=m(\bx)\,(K_k*m)(\bx)$ with the kernel $K_k(r)=\xi_0(r)\,j_0(kr)/P_0(k)$ (\cref{fig:window}a). The kernel is fixed by the correlation function itself, so there is no free smoothing scale. It is evaluated on a compressed basis of kernels and windows. For LRG1 it raises the Gaussian variance by $\val{kernelgain/LRG1/NGC}$\% (NGC) and $\val{kernelgain/LRG1/SGC}$\% (SGC); for the much sparser QSO sample it changes nothing ($\val{kernelgain/QSO/NGC}$\%), as expected, since shot noise dominates.
+\item \emph{Weights.} DESI weights vary from object to object, and the randoms inherit them from random data objects. The clustering window needs $\langle w\rangle^2$, not $\langle w^2\rangle$. Evaluating $W$ with each random's own weight puts a self-pair into the clustering window and overestimates it by $1+{\rm var}(w)/\langle w\rangle^2$. We use the mean weight of the 32 nearest \emph{other} randoms. The size of this effect, measured as the Gaussian variance with own weights over that with mean weights, is $+\val{ownweight/LRG1/NGC}$\% for LRG1 and $+\val{ownweight/QSO/NGC}$\% for QSO (NGC; \cref{fig:window}, right).
+\item \emph{Pair averaging.} \Cref{eq:local} replaces $m(\bx)m(\bx+\br)$ by $m^2(\bx)$, which fails where the window varies within a correlation length: veto holes around bright stars, footprint edges, completeness boundaries. Keeping the partner inside the separation integral gives $W_k(\bx)=m(\bx)\,(K_k*m)(\bx)$ with the kernel $K_k(r)=\xi_0(r)\,j_0(kr)/P_0(k)$. The kernel is fixed by the correlation function itself, so there is no free smoothing scale. It is evaluated on a compressed basis of kernels and windows. For LRG1 it raises the Gaussian variance by $\val{kernelgain/LRG1/NGC}$\% (NGC) and $\val{kernelgain/LRG1/SGC}$\% (SGC); for the much sparser QSO sample it changes nothing ($\val{kernelgain/QSO/NGC}$\%), as expected, since shot noise dominates.
 \end{itemize}
 
 \begin{figure}
   \centering\paperfig{window}
-  \caption{The window of the Gaussian term. (a) The $\xi$-kernel $K_k(r)$ that pair-averages the window: it extends over a correlation length, $\sim20$--$50\,\Mpch$. (b) The resulting change of the Gaussian variance relative to the local window $m^2$, per multipole. (c) The change when the window is evaluated with each random's own weight instead of the local mean weight. LRG1 thick, QSO thin; NGC solid, SGC dashed.}
+  \caption{The window of the Gaussian term (LRG1 NGC). Left: Gaussian variance with the $\xi$-kernel (pair-averaged) window over that with the local window $m^2$. Right: Gaussian variance with each random's own weight over that with the local mean weight. Solid, dashed, dotted: $P_0$, $P_2$, $P_4$.}
   \label{fig:window}
 \end{figure}
 
@@ -34,7 +34,7 @@ a matrix of rank at most the number of long-mode components (\cref{fig:anatomy})
 
 \subsection{Discreteness}
 
-The Poisson sampling of the galaxy field adds connected four-point terms in which two or three of the four galaxies coincide. The two leading ones are the bispectrum term $\propto B/\bar n$ (window $\int S m^2$) and the power-spectrum term $\propto P/\bar n^2$ (window $\int S^2$). We compute them in the local approximation with the tree-level bispectrum \cite{SCF1999}. We then apply the window's mode mixing with the kernel $K=\mathrm{corr}(C_{\rm G})^{1/2}$, which is exact for the Gaussian term and removes spurious bin-to-bin oscillations of the local terms. The discreteness terms are broad in $k$ and smooth (\cref{fig:anatomy}c). They reach $\sim20$\% of the Gaussian diagonal for the LRG monopole at $k\simeq0.25\,\hMpc$ and a few percent for QSO (\cref{fig:budget}).
+The Poisson sampling of the galaxy field adds connected four-point terms in which two or three of the four galaxies coincide. The two leading ones are the bispectrum term $\propto B/\bar n$ (window $\int S m^2$) and the power-spectrum term $\propto P/\bar n^2$ (window $\int S^2$). We compute them in the local approximation with the tree-level bispectrum \cite{SCF1999}. We then apply the window's mode mixing with the kernel $K=\mathrm{corr}(C_{\rm G})^{1/2}$, which is exact for the Gaussian term and removes spurious bin-to-bin oscillations of the local terms. The discreteness terms are broad in $k$ and smooth (\cref{fig:anatomy}). They reach $\sim20$\% of the Gaussian diagonal for the LRG monopole at $k\simeq0.25\,\hMpc$ and a few percent for QSO (\cref{fig:budget}).
 
 \subsection{Connected trispectrum}
 
@@ -55,13 +55,13 @@ We also compute the connected trispectrum term $T_0$ in two ways:
 
 \begin{figure}
   \centering\paperfig{budget}
-  \caption{Diagonal of each non-Gaussian term relative to the Gaussian term, per multipole, for LRG1 and QSO (NGC). Thick translucent segments mark negative values (absolute value shown): with the local-average effect, the SSC monopole diagonal changes sign. Dotted: SSC without the local average. Dashed and dotted coloured: the two connected-trispectrum models, which the mocks reject (\cref{sec:t0}).}
+  \caption{Extra variance of $P_0$ from each non-Gaussian term, in percent of the Gaussian variance (LRG1 and QSO, NGC). With the local average, the SSC term nearly cancels on the monopole diagonal (solid) against the version without it (dotted). The connected trispectrum (dash-dotted) is rejected by the mocks (\cref{sec:t0}).}
   \label{fig:budget}
 \end{figure}
 
 \begin{figure}
   \centering\paperfig{anatomy}
-  \caption{Structure of the non-Gaussian terms (LRG1 NGC). (a) Eigenvalues of $C_{\rm G}^{-1/2}C_XC_{\rm G}^{-1/2}$: SSC has rank $\le4$; the discreteness and trispectrum terms act on many directions. (b, c) The two leading directions of SSC and of the discreteness term, as patterns in the data vector in units of the Gaussian error of each bin.}
+  \caption{Structure of the non-Gaussian terms (LRG1 NGC). Left: eigenvalues of $C_{\rm G}^{-1/2}C_XC_{\rm G}^{-1/2}$: SSC has rank $\le4$; the discreteness and trispectrum terms act on many directions. Right: the leading SSC direction in the data vector, in units of the Gaussian error of each bin.}
   \label{fig:anatomy}
 \end{figure}
 
