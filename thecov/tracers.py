@@ -85,13 +85,22 @@ class Tracer:
         # consistency of alpha with NZ: the randoms must sample nbar/alpha. The pair counts use alpha
         # and the randoms, the s = 0 anchor and cross windows use NZ; an inconsistent pair of
         # (alpha, NZ) would mis-normalise them relative to each other.
+        # The k-NN density averages over a sphere of ~(k / n_ran)^(1/3) (~20 Mpc/h for DESI randoms), so it includes the
+        # veto holes inside it while m is the density between them: for a footprint with fine veto masks the ratio is
+        # ~1 / (unvetoed fraction at that scale), e.g. 1.2 for DESI LRG, without anything being wrong.
         ratio = self._implied_alpha(knn) / self.alpha
         if abs(ratio - 1) > 0.15:
             what = 'NW' if self.has_nw else 'NZ'
             warnings.warn(f"Tracer {self.name}: alpha={self.alpha:.4g} but the random density and {what} imply "
-                          f"alpha~{self.alpha * ratio:.4g} (ratio {ratio:.2f}); "
+                          f"alpha~{self.alpha * ratio:.4g} (ratio {ratio:.2f}). Expected if the footprint has veto holes "
+                          f"(ratio ~ 1 / unvetoed fraction on ~{self._knn_scale(knn):.0f} Mpc/h scales); otherwise "
                           + ("NW must equal alpha x (random density) x (local mean random weight)."
                              if self.has_nw else "nbar/alpha must equal the density of the randoms."))
+
+    def _knn_scale(self, k: int) -> float:
+        """median radius of the k-NN spheres of the alpha check [Mpc/h]"""
+        sub = np.random.default_rng(0).choice(self.size, size=min(self.size, 2000), replace=False)
+        return float(np.median(self.tree.query(self.pos[sub], k=k + 1)[0][:, -1]))
 
     def _implied_alpha(self, k: int) -> float:
         """alpha implied by NZ (or NW) and a k-nearest-neighbour density of the randoms: median over

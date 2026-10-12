@@ -452,3 +452,21 @@ of the shell counts (shared parent-box modes), and saves C_nz(z, z').
   own n(z)). The local-average term should be re-derived for that normalisation before the next SSC run.
 - The caps share long modes: NGC-SGC correlation of the total counts 0.34 (LRG1, clean) and 0.45 (QSO), although the
   P(k) bins are uncorrelated. A GCcomb SSC that assumes independent caps underestimates the mocks' shell-mean mode.
+
+### 8.5 Walkthrough results (LRG1 NGC, 2026-10-12): the alpha warning, the normalisation, the window arbiter
+
+- **thecov's alpha warning is the veto holes, not an error in m.** The check compares m with a 64-NN density over
+  ~20 Mpc/h spheres (~0.9 deg), which include the holes; m is the density between them. Expected ratio 1/<f> at 0.92 deg
+  = 1/0.816 = 1.22 (hole_fraction_LRG1.json); measured 1.21 (mean weight) and 1.20 (kernel tracer). The warning now says so.
+- **The old "own weight" variant multiplied NX (already completeness-weighted) by WEIGHT** (m_own / m_mean bimodal, +10% in
+  amplitude). The walkthrough now builds it as alpha rho_r w_own, the same density as the mean-weight window.
+- **Per-mock FKP weights suppress the response of norm to the long modes.** The holi randoms copy each mock's redshifts and
+  NX, so w_FKP = 1 / (1 + NX P0) follows each mock's n(z) and n w_FKP responds to a density change by w_FKP only.
+  Regression of the files' delta_norm on delta int n(z)^2 (WEIGHT-weighted counts of all mocks): slope 0.19, corr 0.41
+  (LRG1 NGC; nP0 ~ 5 -> 1/(1+nP0) ~ 0.17), 0.85 and 0.98 (QSO; nP0 ~ 0.2 -> 0.83). thecov's local_average_statistics
+  assume fixed weights and randoms, hence its 2.5x too large sigma(delta_norm). `norm_fkp.py` tests the mechanism mock by
+  mock from the data catalogues (four models: own / fixed FKP x own / fixed randoms). Still open: the low correlation for
+  LRG1 (what else moves norm) and the P_hat-delta_norm slopes (~0 in the mocks).
+- **Window arbiter**: `run_gaussian_footprint.py --no-thecov --save-realisations --task i` (submit with
+  `run_grf_tasks.sh <bin> <cap>`) saves the random-field realisations; `paper/thecov_walkthrough.ipynb` section 3d compares
+  them with own-weight, mean-weight and xi-kernel thecov (isotropic model): variance per k and adjacent-bin correlations.

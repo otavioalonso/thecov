@@ -252,13 +252,15 @@ def run_region(paths, cfg, OUT, b, r, args):
 
     # thecov, isotropic model (P2 = P4 = 0), with the cached windows of the validation runs
     rc1 = dc.load_region(paths, b, r, n_random_files=cfg.n_random_files)
+    if args.no_thecov:
+        args.maps_only = True
     tr, _ = dc.build_tracer(f'{b}_{r}', [rc1], nw='random-density', n_randoms_max=cfg.n_randoms_max // 2,
                             surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=num_sn)
     wfile = pl.windows_path(OUT, b, tr.name)
-    if not os.path.exists(wfile):
+    if not os.path.exists(wfile) and not args.no_thecov:
         log(f'  no cached windows {wfile}: computing them (pair counts)')
-    var_thecov, I_thecov = {}, None
-    for f, s in specs.items():
+    var_thecov, I_thecov = {}, tr.alpha * float(np.sum(tr.w * tr.mw))
+    for f, s in (() if args.no_thecov else specs.items()):
         nb = len(s['k'])
         s_iso = copy.deepcopy(s)
         s_iso['vectors'][:, nb:] = 0.0
@@ -269,7 +271,7 @@ def run_region(paths, cfg, OUT, b, r, args):
         I_thecov = cov.I_randoms
     pos_tr = tr.pos
     del rc1
-    log(f'  thecov (isotropic model) done; int m^2 (thecov) / norm = {I_thecov / norm:.4f}')
+    log(f'  thecov (isotropic model) ' + ('skipped' if args.no_thecov else 'done') + f'; int m^2 (thecov) / norm = {I_thecov / norm:.4f}')
 
     # window maps from many random files
     rcK = dc.load_region(paths, b, r, n_random_files=args.random_files)
@@ -345,7 +347,15 @@ def run_region(paths, cfg, OUT, b, r, args):
     # pilot: calibrate each window's input power so that <P_hat> matches the mocks' mean (the variance
     # is only comparable at the same mean power); the factor c(k) is smoothed with a cubic in k
     calib = {}
-    if args.pilot:
+    calib_fn = os.path.join(args.out_dir, f'gaussian_footprint_calibration_{b}_{r}_c{args.cell:g}_n{args.nside}.npz')
+    if args.pilot and os.path.exists(calib_fn):           # computed by an earlier task: all tasks share it
+        with np.load(calib_fn) as z:
+            amps = {w: amp * np.sqrt(np.maximum(np.interp(np.clip(grid.kmag, z['k'][z['use']][0], z['k'][-1]), z['k'],
+                                                          z[f'c_fit_{w}']), 0)).astype(np.float32) for w in windows}
+            calib = {w: dict(k=z['k'].tolist(), c=z[f'c_{w}'].tolist(), c_fit=z[f'c_fit_{w}'].tolist()) for w in windows}
+        _G['amp'] = amps
+        log(f'  calibration read from {calib_fn}')
+    elif args.pilot:
         Pp = run(list(range(10 ** 6, 10 ** 6 + args.pilot)), 'pilot')
         k1m, mean1 = s1['k'], s1['vectors'][:, :len(s1['k'])].mean(0)
         use = k1m >= 0.03
@@ -362,9 +372,22 @@ def run_region(paths, cfg, OUT, b, r, args):
                 if np.any((k1m >= lo) & (k1m < hi))))
         _G['amp'] = amps
         del Pp
-    P_hat = run(list(range(args.nreal)), 'realisations')
+        np.savez(calib_fn + '.tmp.npz', k=k1m, use=use, **{f'c_{w}': np.asarray(calib[w]['c']) for w in windows},
+                 **{f'c_fit_{w}': np.asarray(calib[w]['c_fit']) for w in windows})
+        os.replace(calib_fn + '.tmp.npz', calib_fn)
+        log(f'  calibration saved to {calib_fn}')
+    first = args.task * args.nreal
+    P_hat = run(list(range(first, first + args.nreal)), f'realisations (task {args.task})')
     _G.clear()
 
+    if args.save_realisations:
+        fn = os.path.join(args.out_dir, f'gaussian_footprint_{b}_{r}_c{args.cell:g}_n{args.nside}_task{args.task}.npz')
+        np.savez(fn, norm=norm, num_shotnoise=num_sn, cell=args.cell, nside=args.nside, task=args.task,
+                 indices=np.arange(first, first + args.nreal),
+                 **{f'k_x{f}': specs[f]['k'] for f in specs}, **{f'k_edges_x{f}': np.asarray(specs[f]['k_edges']) for f in specs},
+                 **{f'mean_mocks_x{f}': specs[f]['vectors'][:, :len(specs[f]['k'])].mean(0) for f in specs},
+                 **{f'P0_{w}_x{f}': P_hat[w][f] for w in windows for f in specs})
+        log(f'  realisations saved to {fn}')
     static = dict(norm=norm, num_sn=num_sn, I_thecov_over_norm=I_thecov / norm, windows=wstats,
                   cell=args.cell, nside=args.nside, pilot=args.pilot, calibration=calib, binnings={})
     for f, s in specs.items():
@@ -372,7 +395,7 @@ def run_region(paths, cfg, OUT, b, r, args):
         Vm = s['vectors'][:, :nb]
         static['binnings'][f'x{f}'] = dict(
             k=s['k'].tolist(), mean_mocks=Vm.mean(0).tolist(), var_mocks=Vm.var(0, ddof=1).tolist(),
-            var_thecov=var_thecov[f].tolist(), nmodes_grid=nmodes[f].tolist(),
+            var_thecov=var_thecov[f].tolist() if f in var_thecov else None, nmodes_grid=nmodes[f].tolist(),
             nmodes_files=None if s.get('nmodes') is None else np.asarray(s['nmodes']).tolist())
     return static, {f'{w}|x{f}': P_hat[w][f] for w in windows for f in specs}
 
@@ -411,7 +434,8 @@ def summary(r, res):
     print(head + '   [' + ' | '.join(names) + ']   (+-: grf var)')
     for key, d in res['binnings'].items():
         k = np.asarray(d['k'])
-        mo, t, mm = (np.asarray(d[x]) for x in ('var_mocks', 'var_thecov', 'mean_mocks'))
+        mo, mm = np.asarray(d['var_mocks']), np.asarray(d['mean_mocks'])
+        t = np.asarray(d['var_thecov']) if d.get('var_thecov') is not None else np.full(len(mo), np.nan)
         for lo, hi in KRANGES:
             sel = (k >= lo) & (k < hi)
             if not sel.any():
@@ -445,16 +469,24 @@ def main():
     ap.add_argument('--cs-version', default=None)
     ap.add_argument('--spectra-dir', default=None)
     ap.add_argument('--mock', type=int, default=None)
+    ap.add_argument('--no-thecov', action='store_true',
+                    help='skip thecov here (compare in paper/thecov_walkthrough.ipynb instead); implies --maps-only')
+    ap.add_argument('--save-realisations', action='store_true', help='save every realisation\'s P0 (npz, per task)')
+    ap.add_argument('--task', type=int, default=0,
+                    help='realisations task x nreal ... (task + 1) x nreal; tasks share the pilot calibration (run task 0 first)')
+    ap.add_argument('--out-dir', default=None, help='where the realisations and the calibration go (default OUT/<bin>)')
     ap.add_argument('--synthetic', default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     paths, cfg, OUT = setup(args)
+    args.out_dir = args.out_dir or os.path.join(OUT, 'TEST' if args.synthetic else args.bin)
+    os.makedirs(args.out_dir, exist_ok=True)
     if args.synthetic:
         args.bin = 'TEST'
     args.regions_all = list(args.regions)
     for r in args.regions:
         static, P = run_region(paths, cfg, OUT, args.bin, r, args)
         res = finalize(static, P)
-        fn = os.path.join(OUT, args.bin, f'gaussian_footprint_{r}.json')
+        fn = os.path.join(args.out_dir, f'gaussian_footprint_{r}' + (f'_task{args.task}' if args.task else '') + '.json')
         os.makedirs(os.path.dirname(fn), exist_ok=True)
         json.dump(res, open(fn, 'w'))
         summary(r, res)
