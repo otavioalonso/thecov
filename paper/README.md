@@ -67,8 +67,13 @@ the source of truth: `sync` refuses to overwrite a script that also changed on d
 
 ## Editing the figures directly at NERSC: `paper_nersc.ipynb`
 
-A hand-editable notebook that reads the original NERSC files at their full paths (no products, no helper module):
-open it on jupyter.nersc.gov with the DESI kernel and run section 0 once. Each figure has a *compute* cell (plain,
-named arrays) and a *plot* cell (pure matplotlib); `savefig(fig, name)` writes `paper/figures/<name>.pdf`, which
-`make paper` uses. It is independent of `scripts/`: if you want a change to reach the reproducible build, port it to
-the corresponding `scripts/fig_<name>.py`. The notebook in git has no outputs (no DESI data in the repository).
+A hand-editable notebook that computes every figure from the original files at their full NERSC paths: the DESI
+`mesh2_spectrum_poles_*.h5` of every mock (lsstypes), the LSS data catalogues of every mock (n(z), area), the randoms
+of holi mock 173 (veto holes), and thecov's own output files (Gaussian covariances `~/thecov_desi/<sim>/<bin>/cov_*.npz`,
+non-Gaussian terms `ssc_<label>.npz`). No bundle (`report_data_*`, `nz_scatter_*`, `paper_maps_*`, products) is read.
+Open it on jupyter.nersc.gov with the DESI kernel (an exclusive CPU node for the first run) and run section 0: what it
+reads is kept in `$SCRATCH/paper_nersc_cache` so later sessions start in seconds (delete a file there to re-read).
+Each figure has a *compute* cell (plain, named arrays) and a *plot* cell (pure matplotlib); `savefig(fig, name)`
+writes `paper/figures/<name>.pdf`, which `make paper` uses. It is independent of `scripts/`: if you want a change to
+reach the reproducible build, port it to the corresponding `scripts/fig_<name>.py`. The notebook in git has no
+outputs (no DESI data in the repository).
