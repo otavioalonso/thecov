@@ -20,8 +20,8 @@ export PYTHONPATH="$HOME/thecov:$HOME/thecov/.pylib:${PYTHONPATH}"
 cd $HOME/thecov
 F="grep -v -e 'WEIGHT not in catalog' -e CUDA -e 'Jax plugin' -e xla_bridge -e _check_cuda -e 'for d in range' -e '\^\^\^' -e plugin_module"
 case $1 in
-  fields) python -u -m desi_validation.grf_randoms fields --bin $2 --region $3 --task $4 --nreal 200 --max-time 1400 ${@:5} 2>&1 | eval $F > $L/grfr_$2_$3_task$4.log ;;
-  thecov) python -u -m desi_validation.grf_randoms thecov --bin $2 --region $3 --mode $4 --target-near-pairs 5e9 ${@:5} 2>&1 | eval $F > $L/grfr_$2_$3_thecov_$4.log ;;
+  fields) python -u -m desi_validation.grf_randoms fields --bin $2 --region $3 --task $4 --nreal 200 --max-time 1400 ${@:5} 2>&1 | eval $F > $L/grfr_$2_$3$(echo " ${@:5}" | grep -oE -- '--tag [^ ]+' | cut -d' ' -f2)_task$4.log ;;
+  thecov) python -u -m desi_validation.grf_randoms thecov --bin $2 --region $3 --mode $4 --target-near-pairs 5e9 ${@:5} 2>&1 | eval $F > $L/grfr_$2_$3$(echo " ${@:5}" | grep -oE -- '--tag [^ ]+' | cut -d' ' -f2)_thecov_$4.log ;;
   run)    python -u -m desi_validation.${@:2} 2>&1 | eval $F > $L/run_$(echo ${@:2} | tr ' /' '__' | cut -c1-120).log ;;
   plot)   D=${3:-$OUT/$2/grf_randoms}; T=${4:-}; [ "$T" = "-" ] && T=""; NEED=${5:-4}
           if [ $(ls $D/thecov_$2_*$T_*.npz 2>/dev/null | wc -l) -ge $NEED ]; then

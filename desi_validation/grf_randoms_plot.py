@@ -65,6 +65,12 @@ def analyse(g, th, n_boot=300, seed=1):
     for mode, t in th.items():
         for which in ('true', 'masked'):
             ref = t[f'var_{which}']
+            if f'C_{which}' in t:
+                C = t[f'C_{which}']
+                Lc = np.linalg.cholesky(C)
+                z = np.linalg.solve(Lc, (V - V.mean(0)).T)
+                c2 = (z ** 2).sum(0) / (V.shape[1] * (1 - 1 / N))
+                out[(mode, which, 'chi2')] = (float(c2.mean()), float(c2.std() / np.sqrt(N)))
             for ei, ell in enumerate(ells):
                 sl = slice(ei * nb, (ei + 1) * nb)
                 v = V[:, sl].var(0, ddof=1)
@@ -122,7 +128,9 @@ def main():
         print(f'{cap}: N = {res["N"]}; box check Var(P_box)/exact (0.02-wide groups):',
               ' '.join(f'{x:.3f}' for x in res['box_check']))
         for key, d in res.items():
-            if isinstance(key, tuple):
+            if isinstance(key, tuple) and key[2] == 'chi2':
+                print(f'  {key[0]:15s} {key[1]:6s} full-vector chi2/n {d[0]:.3f} +- {d[1]:.3f}')
+            elif isinstance(key, tuple):
                 print(f'  {key[0]:15s} {key[1]:6s} ell={key[2]}', ' '.join(f'{x:.3f}' for x in d['plain']),
                       '| err', ' '.join(f'{x:.3f}' for x in d['plain_err']),
                       f'| mean {np.mean(d["plain"]):.3f} +- {np.sqrt(np.sum(d["plain_err"] ** 2)) / len(d["plain"]):.3f}')
