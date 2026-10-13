@@ -91,6 +91,8 @@ class BispectrumShellKernels:
         self.norm = (hi ** 3 - lo ** 3) / 3.0                                            # int_i k^2 dk
         self.n_mu = int(n_mu)
         self._bessel = {}
+        self._bessel_fine = {}
+        self._p3 = {}
         self._vertex = {}
 
     def bessel(self, lam: int) -> np.ndarray:
@@ -102,6 +104,67 @@ class BispectrumShellKernels:
     def jbar(self, ell: int) -> np.ndarray:
         """Bin-averaged jbar^{(i)}_ell(r): (nbins, nr)."""
         return np.einsum('iq,iqr->ir', self.wq, self.bessel(ell)) / self.norm[:, None]
+
+    # ------------------------------------------------------------------------------------------ class 2
+    def p3_nodes(self, ip: int, jp: int, n3: int = 10):
+        """Composite Gauss-Legendre nodes in p3 = |p1 + p2| for every p1 node of shell ip, with p2 in shell jp:
+        p3 in [max(klo - p1, p1 - khi, 0), p1 + khi], split at the kinks |klo -+ p1|, khi -+ p1 where the opening-angle
+        range of the indicator changes AND at every shell edge (the radial integral over r2 selects the shell j of p3
+        with a kernel that is a step on the scale of the window, which a piece must not straddle).
+        Returns (p3, w3) of shape (nq, n_nodes) with w3 including p3^2 (zero padding)."""
+        key = (ip, jp, n3)
+        if key not in self._p3:
+            klo, khi = self.k_edges[jp], self.k_edges[jp + 1]
+            x, w = np.polynomial.legendre.leggauss(n3)
+            P3, W3 = [], []
+            for p1 in self.kq[ip]:
+                lo, hi = max(klo - p1, p1 - khi, 0.0), p1 + khi
+                kinks = sorted({lo, hi} | {k for k in (abs(klo - p1), abs(khi - p1), klo + p1, khi + p1, *self.k_edges)
+                                          if lo < k < hi})
+                nodes, wts = [], []
+                for a, b in zip(kinks[:-1], kinks[1:]):
+                    nodes.append(0.5 * (b - a) * x + 0.5 * (b + a))
+                    wts.append(0.5 * (b - a) * w)
+                nodes, wts = np.concatenate(nodes), np.concatenate(wts)
+                P3.append(nodes)
+                W3.append(wts * nodes ** 2)
+            nmax = max(len(v) for v in P3)
+            p3 = np.zeros((self.nq, nmax))
+            w3 = np.zeros((self.nq, nmax))
+            for q, (v, u) in enumerate(zip(P3, W3)):
+                p3[q, :len(v)] = v
+                w3[q, :len(u)] = u
+            self._p3[key] = (p3, w3)
+        return self._p3[key]
+
+    def bessel_at(self, lam: int, p: np.ndarray) -> np.ndarray:
+        """j_lam(p r) for arbitrary p (any shape) by linear interpolation of a fine table in p (step 1e-4 h/Mpc,
+        error <~ (dp r)^2 / 8 ~ 1e-3 at r = 1000): shape p.shape + (nr,)."""
+        if lam not in self._bessel_fine:
+            g = np.arange(0.0, 2.0 * self.k_edges[-1] + 2e-3, 1e-4)
+            self._bessel_fine[lam] = (g, spherical_jn(lam, g[:, None] * self.r[None, :]))
+        g, J = self._bessel_fine[lam]
+        p = np.asarray(p, dtype=float)
+        u = np.clip(p / 1e-4, 0, len(g) - 1.000001)
+        i0 = u.astype(int)
+        t = (u - i0)[..., None]
+        return (1 - t) * J[i0] + t * J[i0 + 1]
+
+    def vertex2(self, lpp: int, a: int, b: int, pfunc, ip: int, jp: int, tag=None, n3: int = 10) -> np.ndarray:
+        """Class-2 vertex d^{l''}_{ab}(p1, p3) = (-1)^a c^{l''}_{ab}(p1, p3)[h] with h(p2) = 1(p2 in shell jp) P_L2(p2),
+        on the p3 nodes of (ip, jp): shape (nq, n_nodes).  pfunc None -> shot-noise anchor (h = indicator)."""
+        key = (tag, lpp, a, b, ip, jp, n3)
+        if tag is not None and key in self._vertex:
+            return self._vertex[key]
+        p3, w3 = self.p3_nodes(ip, jp, n3)
+        P1 = np.broadcast_to(self.kq[ip][:, None], p3.shape)
+        h = (lambda k: np.ones_like(np.asarray(k, dtype=float))) if pfunc is None else pfunc
+        out = (-1) ** a * vertex_coefficients(lpp, a, b, P1.ravel(), p3.ravel(), h, self.n_mu,
+                                              k_range=(self.k_edges[jp], self.k_edges[jp + 1])).reshape(p3.shape)
+        out = np.where(w3 > 0, out, 0.0)
+        if tag is not None:
+            self._vertex[key] = out
+        return out
 
     def leg(self, pfunc, L: int, lam: int) -> np.ndarray:
         """w_q P_L(k_q) j_lam(k_q r) / norm_i for a leg carrying the spectrum: (nbins, nq, nr).  pfunc None -> 1."""
@@ -126,8 +189,13 @@ class BispectrumShellKernels:
         return out
 
 
-def vertex_coefficients(L3: int, a: int, b: int, p1, p2, P_L3, n_quad: int = 64, chunk: int = 4000) -> np.ndarray:
-    """Vectorised c^{L3}_{ab}(p1, p2) for flat arrays p1, p2 (same formula as bispectrum_algebra.bipolar_coefficients)."""
+def vertex_coefficients(L3: int, a: int, b: int, p1, p2, P_L3, n_quad: int = 64, chunk: int = 4000,
+                        k_range=None) -> np.ndarray:
+    """Vectorised c^{L3}_{ab}(p1, p2) for flat arrays p1, p2 (same formula as bispectrum_algebra.bipolar_coefficients).
+
+    k_range = (lo, hi): the third side |p1 + p2| is restricted to that shell (the indicator of the class-2 vertex);
+    the opening-angle integral then runs over the intersection of [|p1 - p2|, p1 + p2] with the shell (zero if empty).
+    """
     from .bispectrum_algebra import cg_tensor
     p1 = np.asarray(p1, dtype=float).ravel()
     p2 = np.asarray(p2, dtype=float).ravel()
@@ -141,6 +209,9 @@ def vertex_coefficients(L3: int, a: int, b: int, p1, p2, P_L3, n_quad: int = 64,
     for c0 in range(0, len(p1), chunk):
         q1, q2 = p1[c0:c0 + chunk, None], p2[c0:c0 + chunk, None]
         lo, hi = np.abs(q1 - q2), q1 + q2
+        if k_range is not None:
+            lo, hi = np.maximum(lo, k_range[0]), np.minimum(hi, k_range[1])
+            hi = np.maximum(hi, lo)                                   # empty intersection -> zero-length interval
         p3 = 0.5 * (hi - lo) * x + 0.5 * (hi + lo)
         wmu = 0.5 * (hi - lo) * w * p3 / (q1 * q2)
         mu = np.clip((p3 ** 2 - q1 ** 2 - q2 ** 2) / (2 * q1 * q2), -1.0, 1.0)
@@ -243,6 +314,87 @@ class Class1Assembler:
                 log(f"    label {nlab + 1}/{len(labels)} ({time.time() - t0:.1f}s)")
         return C
 
+    # ------------------------------------------------------------------------------------------ class 2
+    def radial_labels2(self, ell, ellp, Ls1, Ls2, Ls3):
+        """Class-2 pairing (1 1')(2 3')(3 2'): distinct (L1, L2, L3, l'', a, b, Lam, Lam', Ly) with their n list.
+        L1: P(p1; y1^) (leg 1), L2: P(p2; x^) (anchor, inside the vertex), L3: P(p3; y2^) (leg 2)."""
+        from .bispectrum_algebra import all_tri
+        l1, l2, L = ell
+        lp1, lp2, Lp = ellp
+        out = {}
+        for L1 in Ls1:
+            for L2 in Ls2:
+                for L3 in Ls3:
+                    for lpp in tri(lp2, L2):
+                        amax = self.lam_w + l1 + lp1 + L1
+                        bmax = self.lam_w + l2 + L3
+                        for a in range(0, amax + 1):
+                            for b in range(abs(a - lpp), min(a + lpp, bmax) + 1):
+                                if (a + b + lpp) % 2:
+                                    continue
+                                for Lam in tri_multi((lp1, L1, a)):
+                                    for Lamp in tri(L3, b):
+                                        for Ly in tri(L3, Lp):
+                                            ns = []
+                                            for lam1 in tri(l1, Lam):
+                                                if lam1 > self.lam_w:
+                                                    continue
+                                                for lam2 in tri(l2, Lamp):
+                                                    if lam2 > self.lam_w:
+                                                        continue
+                                                    for (K1, K2, Lam3), T in self.coup.t2_all(ell, ellp, L1, L2, L3, lpp, a, b,
+                                                                                             Lam, Lamp, Ly, lam1, lam2).items():
+                                                        if abs(T) > 1e-15:
+                                                            ns.append(((lam1, L1, K1, lam2, Ly, K2, Lam3), T))
+                                            if ns:
+                                                out[(L1, L2, L3, lpp, a, b, Lam, Lamp, Ly)] = ns
+        return out
+
+    def needed_windows2(self, ell, ellp, Ls1, Ls2, Ls3):
+        return sorted({n for ns in self.radial_labels2(ell, ellp, Ls1, Ls2, Ls3).values() for (n, _) in ns})
+
+    def assemble2(self, ell, ellp, leg1, anchor, leg2, windows, log=None, n3: int = 10) -> np.ndarray:
+        """Class-2 pairing (1 1')(2 3')(3 2'): C[i, j, i', j'] (no prefactor).  leg1 = (tag, {L: pfunc}) is the
+        spectrum P(p1; y1^) (shell i'), anchor the spectrum P(p2; x^) inside the vertex (p2 in shell j'), leg2 the
+        spectrum P(p3; y2^) of the unbinned third side carried by leg 2 (shell j of the unprimed estimator)."""
+        from .bispectrum_algebra import phase2
+        K = self.K
+        tag1, p1f = leg1
+        tag2, p2f = anchor
+        tag3, p3f = leg2
+        Ls1, Ls2, Ls3 = tuple(sorted(p1f)), tuple(sorted(p2f)), tuple(sorted(p3f))
+        labels = self.radial_labels2(ell, ellp, Ls1, Ls2, Ls3)
+        nb, nq, nr = K.nbins, K.nq, K.nr
+        C = np.zeros((nb, nb, nb, nb))
+        jb1 = K.jbar(ell[0]) * K.r_weights[None, :]
+        jb2 = K.jbar(ell[1]) * K.r_weights[None, :]
+        t0 = time.time()
+        for nlab, ((L1, L2, L3, lpp, a, b, Lam, Lamp, Ly), ns) in enumerate(labels.items()):
+            Qt = None
+            for (n, T) in ns:
+                Q = windows(n)
+                if Q is None:
+                    continue
+                Qt = T * Q if Qt is None else Qt + T * Q
+            if Qt is None:
+                continue
+            pref = FOUR_PI ** 3 / ((2 * L1 + 1) * (2 * L2 + 1) * (2 * L3 + 1)) * phase2(ell, Lam, Lamp)
+            A = K.leg(p1f[L1], L1, Lam).reshape(nb * nq, nr)                      # [(i', q1), r1]
+            X = (np.einsum('ir,Qr->iQr', jb1, A).reshape(nb * nb * nq, nr) @ Qt).reshape(nb, nb, nq, nr)
+            for I in range(nb):                                                     # shell i' of p1
+                for J in range(nb):                                                 # shell j' of p2 (the indicator)
+                    D = K.vertex2(lpp, a, b, p2f[L2], I, J, tag=tag2, n3=n3)        # [q1, q3]
+                    if not np.any(D):
+                        continue
+                    p3, w3 = K.p3_nodes(I, J, n3)
+                    P3 = np.ones_like(p3) if p3f[L3] is None else np.asarray(p3f[L3](p3), dtype=float)
+                    B3 = (w3 * P3 / K.norm[J])[:, :, None] * K.bessel_at(Lamp, p3)   # [q1, q3, r2]
+                    Z = np.einsum('qt,iqr,qtr->ir', D, X[:, I], B3)                  # [i, r2]
+                    C[:, :, I, J] += pref * (Z @ jb2.T)
+            if log is not None and (nlab % 50 == 0):
+                log(f"    class-2 label {nlab + 1}/{len(labels)} ({time.time() - t0:.1f}s)")
+        return C
+
     def box_windows(self, V: float):
         """windows(n) for a periodic box of volume V (bispectrum_algebra.box_window_value, constant in r1, r2)."""
         nr = self.K.nr
@@ -278,16 +430,19 @@ class BispectrumGaussianCovariance:
         cov.set_model(model)                           # PowerSpectrumModel with P_0, P_2, P_4 of the tracer
         C, labels = cov.covariance()                   # labels: (l1, l2, L, i, j)
 
-    Scope: the two class-1 pairings (1 1')(2 2')(3 3') and (1 2')(2 1')(3 3'), which carry the diagonal to O(dk/k).
-    Class 2 (`class2_block`) and the k3 ~ 0 term (`k3_zero_block`) are not implemented (see their docstrings);
-    the non-Gaussian P B, B B, P T terms are outside this class.
+    Scope: the two class-1 pairings (1 1')(2 2')(3 3') and (1 2')(2 1')(3 3') (the diagonal to O(dk/k)) and, with
+    class2=True, the four class-2 pairings in which a leg of one triangle is the third side of the other (~dk/k on the
+    diagonal, the whole Gaussian off-diagonal structure).  The k3 ~ 0 term (`k3_zero_block`) is not implemented; the
+    non-Gaussian P B, B B, P T terms are outside this class.  `block4(..., terms=)` returns the classes separately.
     """
 
     def __init__(self, tracer, k_edges, multipoles=((0, 0, 0), (2, 0, 2)), L_max=4, lam_w=4, r_max=None, dr=4.0,
                  dr_pair=20.0, shot_noise=True, n_anchor=2000, n_sub=5000, n_near=200000, s_split=80.0, seed=0,
-                 n_mu=64, n_quad=None):
+                 n_mu=64, n_quad=None, class2=True, n3=10):
         from .bispectrum_windows import ThreePointWindowLibrary
         self.tracer = tracer
+        self.class2 = bool(class2)
+        self.n3 = int(n3)
         self.k_edges = np.asarray(k_edges, dtype=float)
         self.nbins = len(self.k_edges) - 1
         self.multipoles = tuple(tuple(int(x) for x in m) for m in multipoles)
@@ -341,17 +496,30 @@ class BispectrumGaussianCovariance:
         sw = (ellp[1], ellp[0], ellp[2])
         return [(ellp, False), (sw, True)]
 
+    @staticmethod
+    def _class2_pairings(ell, ellp):
+        """The four class-2 pairings as relabellings of (1 1')(2 3')(3 2'): (ell_eff, ell'_eff, swap unprimed shells,
+        swap primed shells).  Swapping the primed labels (p1, l'1, i') <-> (p2, l'2, j') gives (1 2')(2 3')(3 1'); swapping
+        the unprimed ones (q1, l1, i, r1) <-> (q2, l2, j, r2) gives (1 3')(2 1')(3 2'); both give (1 3')(2 2')(3 1')."""
+        ell_sw = (ell[1], ell[0], ell[2])
+        ellp_sw = (ellp[1], ellp[0], ellp[2])
+        return [(ell, ellp, False, False), (ell, ellp_sw, False, True), (ell_sw, ellp, True, False), (ell_sw, ellp_sw, True, True)]
+
     # ------------------------------------------------------------------------------------------ geometry
     def request_windows(self):
+        Ls = lambda k: (0,) if k == 'S' else tuple(self._spec('W')[1])  # noqa: E731
         for ell in self.multipoles:
             for ellp in self.multipoles:
-                for ellp_eff, _ in self._ellp_pairings(ellp):
-                    for ka in self._kinds():
-                        for k1 in self._kinds():
-                            for k2 in self._kinds():
-                                Ls = lambda k: (0,) if k == 'S' else tuple(self._spec('W')[1])  # noqa: E731
-                                ns = self.assembler.needed_windows(ell, ellp_eff, Ls(k1), Ls(k2), Ls(ka))
-                                self.windows.request(self.tracer, (ka, k1, k2), ns)
+                for ka in self._kinds():
+                    for k1 in self._kinds():
+                        for k2 in self._kinds():
+                            ns = set()
+                            for ellp_eff, _ in self._ellp_pairings(ellp):
+                                ns |= set(self.assembler.needed_windows(ell, ellp_eff, Ls(k1), Ls(k2), Ls(ka)))
+                            if self.class2:
+                                for ell_e, ellp_e, _, _ in self._class2_pairings(ell, ellp):
+                                    ns |= set(self.assembler.needed_windows2(ell_e, ellp_e, Ls(k1), Ls(ka), Ls(k2)))
+                            self.windows.request(self.tracer, (ka, k1, k2), ns)
         return self
 
     def compute_windows(self, verbose=False):
@@ -386,12 +554,16 @@ class BispectrumGaussianCovariance:
         name, r = self.tracer.name, self.r
         return lambda n: self.windows.get(name, kinds, n, r)
 
-    def block4(self, ell, ellp, verbose=False) -> np.ndarray:
-        """Cov[B_ell(k_i, k_j), B_ell'(k_i', k_j')] as the (nbins,)*4 array C[i, j, i', j'] (class 1, both pairings,
-        all window combinations).  The power spectra are evaluated at the primed momenta; see `block` for the
+    def block4(self, ell, ellp, verbose=False, terms=None) -> np.ndarray:
+        """Cov[B_ell(k_i, k_j), B_ell'(k_i', k_j')] as the (nbins,)*4 array C[i, j, i', j'] summed over the requested
+        Gaussian terms (default: class 1 and, if enabled, class 2; terms=('class1',) or ('class2',) for one of them),
+        all window combinations.  The power spectra are evaluated at the primed momenta; see `block` for the
         symmetrised combination."""
         ell, ellp = tuple(ell), tuple(ellp)
-        key = (ell, ellp)
+        if terms is None:
+            terms = ('class1', 'class2') if self.class2 else ('class1',)
+        terms = tuple(terms)
+        key = (ell, ellp, terms)
         if key in self._blocks:
             return self._blocks[key]
         if self.model is None:
@@ -402,16 +574,29 @@ class BispectrumGaussianCovariance:
         log = print if verbose else None
         nb = self.nbins
         C = np.zeros((nb, nb, nb, nb))
-        for ellp_eff, swap in self._ellp_pairings(ellp):
-            pref = FOUR_PI ** 3 * H(*ell) * H(*ellp_eff) * math.sqrt(N(*ell) * N(*ellp_eff))
-            for ka in self._kinds():
-                for k1 in self._kinds():
-                    for k2 in self._kinds():
-                        if verbose:
-                            print(f"  {ell} x {ellp_eff}{' (swapped)' if swap else ''}: anchor {ka}, legs {k1} {k2}")
-                        part = self.assembler.assemble(ell, ellp_eff, self._spec(k1), self._spec(k2), self._spec(ka),
-                                                       self._windows_for((ka, k1, k2)), log=log)
-                        C += pref * (part.transpose(0, 1, 3, 2) if swap else part)
+        kinds = [(ka, k1, k2) for ka in self._kinds() for k1 in self._kinds() for k2 in self._kinds()]
+        if 'class1' in terms:
+            for ellp_eff, swap in self._ellp_pairings(ellp):
+                pref = FOUR_PI ** 3 * H(*ell) * H(*ellp_eff) * math.sqrt(N(*ell) * N(*ellp_eff))
+                for (ka, k1, k2) in kinds:
+                    if verbose:
+                        print(f"  class 1 {ell} x {ellp_eff}{' (swapped)' if swap else ''}: anchor {ka}, legs {k1} {k2}")
+                    part = self.assembler.assemble(ell, ellp_eff, self._spec(k1), self._spec(k2), self._spec(ka),
+                                                   self._windows_for((ka, k1, k2)), log=log)
+                    C += pref * (part.transpose(0, 1, 3, 2) if swap else part)
+        if 'class2' in terms:
+            for ell_e, ellp_e, swap_u, swap_p in self._class2_pairings(ell, ellp):
+                pref = FOUR_PI ** 3 * H(*ell_e) * H(*ellp_e) * math.sqrt(N(*ell_e) * N(*ellp_e))
+                for (ka, k1, k2) in kinds:
+                    if verbose:
+                        print(f"  class 2 {ell_e} x {ellp_e} (swaps u={swap_u} p={swap_p}): anchor {ka}, legs {k1} {k2}")
+                    part = self.assembler.assemble2(ell_e, ellp_e, self._spec(k1), self._spec(ka), self._spec(k2),
+                                                    self._windows_for((ka, k1, k2)), log=log, n3=self.n3)
+                    if swap_p:
+                        part = part.transpose(0, 1, 3, 2)
+                    if swap_u:
+                        part = part.transpose(1, 0, 2, 3)
+                    C += pref * part
         C /= self.I3() ** 2
         self._blocks[key] = C
         return C
@@ -423,7 +608,7 @@ class BispectrumGaussianCovariance:
             return [(i, j) for i in range(nbins) for j in range(i, nbins)]
         return [(i, j) for i in range(nbins) for j in range(nbins)]
 
-    def block(self, ell, ellp, elements=None, elements_p=None, symmetrize=True) -> np.ndarray:
+    def block(self, ell, ellp, elements=None, elements_p=None, symmetrize=True, terms=None) -> np.ndarray:
         """Covariance block between the elements (i, j) of B_ell and (i', j') of B_ell'.
 
         The derivation evaluates the power spectra at the momenta of the primed estimator; the other choice differs
@@ -437,15 +622,15 @@ class BispectrumGaussianCovariance:
         if elements_p is None:
             elements_p = self.default_elements(ellp, self.nbins)
         if symmetrize:
-            direct = self.block(ell, ellp, elements, elements_p, symmetrize=False)
-            mirror = self.block(ellp, ell, elements_p, elements, symmetrize=False)
+            direct = self.block(ell, ellp, elements, elements_p, symmetrize=False, terms=terms)
+            mirror = self.block(ellp, ell, elements_p, elements, symmetrize=False, terms=terms)
             return 0.5 * (direct + mirror.T)
-        C4 = self.block4(ell, ellp)
+        C4 = self.block4(ell, ellp, terms=terms)
         ii, jj = np.array([e[0] for e in elements]), np.array([e[1] for e in elements])
         Ii, Jj = np.array([e[0] for e in elements_p]), np.array([e[1] for e in elements_p])
         return C4[ii[:, None], jj[:, None], Ii[None, :], Jj[None, :]]
 
-    def covariance(self, multipoles=None, elements=None, symmetrize=True, verbose=False):
+    def covariance(self, multipoles=None, elements=None, symmetrize=True, verbose=False, terms=None):
         """Full matrix for the data vector [B_ell(k_i, k_j)] ordered by multipole then element; returns (C, labels)
         with labels (l1, l2, L, i, j).  `elements` maps ell -> list of (i, j) (default: default_elements)."""
         if multipoles is None:
@@ -459,7 +644,7 @@ class BispectrumGaussianCovariance:
         t0 = time.time()
         for a, ma in enumerate(multipoles):
             for b, mb in enumerate(multipoles):
-                C[offs[a]:offs[a + 1], offs[b]:offs[b + 1]] = self.block(ma, mb, els[ma], els[mb], symmetrize=False)
+                C[offs[a]:offs[a + 1], offs[b]:offs[b + 1]] = self.block(ma, mb, els[ma], els[mb], symmetrize=False, terms=terms)
                 if verbose:
                     print(f"block {ma} x {mb} done ({time.time() - t0:.1f}s)")
         if symmetrize:
@@ -468,13 +653,6 @@ class BispectrumGaussianCovariance:
         return C, labels
 
     # ------------------------------------------------------------------------------------------ not implemented
-    def class2_block(self, ell, ellp):
-        """Class-2 pairings (a line of sight pairs with a shell galaxy): guide sec. 'Class 2'.  In the (p1, p3)
-        variables they share the invariants Q_n with class 1; the vertex is the indicator 1[|p3 - p1| in j'] Y_{l'2}(p2^)
-        P(p2; x^) expanded in bipolar harmonics of (p1^, p3^), and the leg-2 kernel integrates j_Lam'(p3 r2) over all p3.
-        O(dk/k) of class 1 on the diagonal; the only Gaussian contribution off the diagonal."""
-        raise NotImplementedError("class 2 is not implemented yet; see bispectrum_covariance_guide.typ sec. 'Class 2'")
-
     def k3_zero_block(self, ell, ellp):
         """The pairing (1 2)(1' 2')(3 3') on the (i i; i' i') elements: the long-mode variance of the W-weighted field
         (guide sec. 'The k3 ~ 0 term'); zero for uniform omega, tens of per cent of the (i, i) variance for a radially

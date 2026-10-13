@@ -121,6 +121,35 @@ def anchor_tensor(Lam3: int, L: int, Lp: int, L3: int) -> np.ndarray:
     return _negate(G, (0, 1), (Lam3, L))
 
 
+# class 2 (pairing (1 1')(2 3')(3 2') in the variables p1, p3 = p1 + p2; guide sec. 'Class 2')
+@lru_cache(maxsize=None)
+def vertex2_tensor(ellp2: int, L2: int, lpp: int) -> np.ndarray:
+    """g2[m'2 + ell'2, M2 + L2, m'' + l''] = int dOmega Y_{ell'2 m'2} conj(Y_{L2 M2}) conj(Y_{l'' m''}): the estimator
+    harmonic and the anchor-spectrum harmonic of p2^ merged into Y_{l'' m''}(p2^)."""
+    return _negate(gaunt_tensor((ellp2, L2, lpp)), (1, 2), (L2, lpp))
+
+
+@lru_cache(maxsize=None)
+def leg3_tensor(L3: int, b: int, Lamp: int) -> np.ndarray:
+    """g3[M3 + L3, beta + b, nu + Lam'] = int dOmega conj(Y_{L3 M3}) conj(Y_{b beta}) conj(Y_{Lam' nu}): the harmonics of
+    p3^ (leg-2 spectrum at y2^, vertex) re-expanded in Y_{Lam' nu}(p3^)."""
+    return _negate(gaunt_tensor((L3, b, Lamp)), (0, 1, 2), (L3, b, Lamp))
+
+
+@lru_cache(maxsize=None)
+def y2_tensor(Ly: int, L3: int, Lp: int) -> np.ndarray:
+    """Py[mu_y + Ly, M3 + L3, M' + L'] = int dOmega conj(Y_{Ly mu_y}) Y_{L3 M3} Y_{L' M'} (at y2^: leg-2 spectrum and the
+    primed line of sight)."""
+    return _negate(gaunt_tensor((Ly, L3, Lp)), (0,), (Ly,))
+
+
+@lru_cache(maxsize=None)
+def anchor2_tensor(Lam3: int, L: int, L2: int) -> np.ndarray:
+    """X2[mu3 + Lam3, M + L, M2 + L2] = int dOmega conj(Y_{Lam3 mu3}) conj(Y_{L M}) Y_{L2 M2} (at x^: unprimed line of
+    sight and the anchor spectrum P(p2; x^))."""
+    return _negate(gaunt_tensor((Lam3, L, L2)), (0, 1), (Lam3, L))
+
+
 # ----------------------------------------------------------------------------------------------- bipolar vertex
 def _p3_nodes(p1, p2, n_quad):
     """Gauss-Legendre nodes in p3 on [|p1 - p2|, p1 + p2] (the opening angle through p3^2 = p1^2 + p2^2 + 2 p1 p2 mu;
@@ -264,6 +293,51 @@ class BispectrumCoupling:
         self._cache[key] = out
         return out
 
+    def t2_all(self, ell, ellp, L1, L2, L3, lpp, a, b, Lam, Lamp, Ly, lam1, lam2) -> dict:
+        """Class-2 coupling numbers {(K1, K2, Lam3): T} for the pairing (1 1')(2 3')(3 2') in the (p1, p3) variables.
+
+        Labels: L1 = rank of P(p1; y1^) (leg 1), L2 = rank of P(p2; x^) (the anchor spectrum, inside the vertex),
+        L3 = rank of P(p3; y2^) (leg 2), l'' = rank of Y_{ell'2}(p2^) conj(Y_{L2})(p2^) merged, (a, b) = bipolar ranks
+        of the vertex on (p1^, p3^), Lam / Lam' = ranks on p1^ / p3^ after merging, Ly = rank at y2^ (L3 with the
+        primed line of sight L').  The Phi_n basis label at y2^ is Ly (in place of class 1's L2).
+        """
+        from .wigner import tri_multi
+        key = ('c2', tuple(ell), tuple(ellp), L1, L2, L3, lpp, a, b, Lam, Lamp, Ly, lam1, lam2)
+        if key in self._cache:
+            return self._cache[key]
+        l1, l2, L = ell
+        lp1, lp2, Lp = ellp
+        B1 = self._leg(lam1, l1, lp1, L1, a, Lam)                       # r A m p a   (rho1, M1, m1, m'1, alpha)
+        R2 = leg_projection_tensor(lam2, l2, Lamp)                      # s n v       (rho2, m2, nu2)
+        g3 = leg3_tensor(L3, b, Lamp)                                   # C b v       (M3, beta, nu2)
+        B2 = np.einsum('snv,Cbv->sCnb', R2, g3)                         # s C n b
+        g2 = vertex2_tensor(lp2, L2, lpp)                               # q B e       (m'2, M2, m'')
+        V2 = _negate(cg_tensor(a, b, lpp), (2,), (lpp,))                # a b e : (-1)^{m''} <a alpha b beta | l'', -m''>
+        W = w3j_tensor(l1, l2, L)                                       # m n M
+        Wp = w3j_tensor(lp1, lp2, Lp)                                   # p q N
+        Py = y2_tensor(Ly, L3, Lp)                                      # y C N       (mu_y, M3, M')
+        out = {}
+        # chain: contract the estimator 3j symbols and the vertex first, then the two legs
+        D = np.einsum('rAmpa,mnM->rApanM', B1, W)                        # rho1 M1 m'1 alpha m2 M
+        D = np.einsum('rApanM,pqN->rAaNnMq', D, Wp)                      # rho1 M1 alpha M' m2 M m'2
+        D = np.einsum('rAaNnMq,qBe->rAaNnMBe', D, g2)                     # ... M2 m''
+        D = np.einsum('rAaNnMBe,abe->rANnMBb', D, V2)                     # rho1 M1 M' m2 M M2 beta
+        D = np.einsum('rANnMBb,sCnb->rANMBsC', D, B2)                     # rho1 M1 M' M M2 rho2 M3
+        D = np.einsum('rANMBsC,yCN->rAMBsy', D, Py)                       # rho1 M1 M M2 rho2 mu_y
+        for Lam3 in tri_multi((L, L2)):
+            X2 = anchor2_tensor(Lam3, L, L2)                              # u M B
+            F = np.einsum('rAMBsy,uMB->rAsyu', D, X2)                      # rho1 M1 rho2 mu_y mu3
+            for K1 in all_tri(lam1, L1):
+                CG1 = cg_tensor(lam1, L1, K1)
+                for K2 in all_tri(lam2, Ly):
+                    if Lam3 not in all_tri(K1, K2):
+                        continue
+                    CG2 = cg_tensor(lam2, Ly, K2)
+                    W3 = w3j_tensor(K1, K2, Lam3)
+                    out[(K1, K2, Lam3)] = float(np.einsum('rAk,syl,klu,rAsyu->', CG1, CG2, W3, F, optimize=True))
+        self._cache[key] = out
+        return out
+
     def t(self, ell, ellp, L1, L2, L3, a, b, Lam, Lamp, n) -> float:
         lam1, nL1, K1, lam2, nL2, K2, Lam3 = n
         if nL1 != L1 or nL2 != L2:
@@ -309,6 +383,13 @@ class BispectrumCoupling:
 def phase(ell, Lam: int, Lamp: int) -> float:
     """(-i)^{ell1 + ell2} i^{Lam + Lam'}, real by parity."""
     e = Lam + Lamp - ell[0] - ell[1]
+    assert e % 2 == 0, (ell, Lam, Lamp)
+    return (-1.0) ** (e // 2)
+
+
+def phase2(ell, Lam: int, Lamp: int) -> float:
+    """Class 2: (-i)^{ell1 + ell2} i^{Lam} (-i)^{Lam'}, real by parity (Lam + Lam' even)."""
+    e = Lam - Lamp - ell[0] - ell[1]
     assert e % 2 == 0, (ell, Lam, Lamp)
     return (-1.0) ** (e // 2)
 

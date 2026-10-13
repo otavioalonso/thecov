@@ -167,3 +167,37 @@ def test_box_identity(ell, ellp):
     s = _box_series(ell, ellp, PL_POLY, P1, P2)
     assert abs(d.imag) < 1e-12 * abs(d)
     assert abs(s - d.real) < 1e-8 * abs(d)
+
+
+# --------------------------------------------------------------------------------------------- class 2
+from angular_check import direct_V2, series_F2  # noqa: E402
+
+P3 = 0.13
+ANCHOR_ISO = {0: lambda k: (k / K0) ** 6}                      # Y_{l''}(p2^) p2^6 is a polynomial for l'' <= 6
+ANCHOR = {0: lambda k: (k / K0) ** 6, 2: lambda k: 0.5 * (k / K0) ** 6, 4: lambda k: 0.3 * (k / K0) ** 6}
+
+
+def _check_five_directions_class2(ell, ellp, PL1, PLa, PL3, a_max):
+    rng = np.random.default_rng(7)
+    r1h, y1, r2h, y2, x = (unit(1, rng)[0] for _ in range(5))
+    V = direct_V2(ellp, PL1, PLa, PL3, P1, P3, R1 * r1h, R2 * r2h, y1, y2, x)
+    Fd = (-1j) ** (ell[0] + ell[1]) * np.conj(sugiyama_S_tilde(ell, r1h, r2h, x)) * V
+    Fs, nterms = series_F2(ell, ellp, PL1, PLa, PL3, P1, P3, R1, R2, (r1h, y1, r2h, y2, x), lam_w=40, a_max=a_max, coup=COUP)
+    assert nterms > 0
+    assert abs(Fs - Fd) < 1e-8 * abs(Fd), (ell, ellp, Fs, Fd)
+
+
+@pytest.mark.parametrize('ell,ellp', [((0, 0, 0), (0, 0, 0)), ((2, 0, 2), (0, 0, 0)), ((0, 0, 0), (2, 0, 2))])
+def test_class2_coupling_isotropic(ell, ellp):
+    _check_five_directions_class2(ell, ellp, PL_ISO, ANCHOR_ISO, PL_ISO, a_max=6)
+
+
+@pytest.mark.parametrize('ell,ellp,PL1,PLa,PL3', [((0, 0, 0), (2, 0, 2), PL_ISO, PL_ISO and {0: ANCHOR[0]}, PL_POLY),
+                                                  ((2, 0, 2), (0, 0, 0), PL_POLY, {0: ANCHOR[0]}, PL_ISO)])
+def test_class2_coupling_anisotropic(ell, ellp, PL1, PLa, PL3):
+    _check_five_directions_class2(ell, ellp, PL1, PLa, PL3, a_max=6)
+
+
+@pytest.mark.slow
+def test_class2_coupling_anisotropic_slow():
+    _check_five_directions_class2((0, 0, 0), (0, 0, 0), PL_POLY, ANCHOR, PL_POLY, a_max=6)

@@ -136,3 +136,31 @@ def test_class_tapered_box_isotropic():
 @pytest.mark.slow
 def test_class_tapered_box_anisotropic():
     _class_check(((0, 0, 0), (2, 0, 2)), PL, nth=16, nph=32, tol=1e-9)
+
+
+# --------------------------------------------------------------------------------------------- class 2
+from radial_check import box_class2_direct  # noqa: E402
+
+
+def _class2_box_check(ell, ellp, PLuse, tol):
+    """assemble2 with (un-tapered) box windows at r_max = 3000 against the Monte-Carlo class-2 box term: the radial
+    truncation error is ~1/r_max, 1-2 % here."""
+    k_edges = np.array([0.05, 0.1, 0.15, 0.2])
+    Vi = (k_edges[1:] ** 3 - k_edges[:-1] ** 3) / 3 / (2 * np.pi ** 2)
+    K = BispectrumShellKernels(k_edges, np.arange(2.0, 3000.0, 4.0))
+    asm = Class1Assembler(K, BispectrumCoupling(), lam_w=0)
+    spec = ('P', PLuse)
+    C2 = asm.assemble2(ell, ellp, spec, spec, spec, asm.box_windows(1.0))
+    ref = box_class2_direct(ell, ellp, PLuse, k_edges, 1.0, Vi)
+    nz = np.abs(ref) > 0.02 * np.abs(ref).max()
+    assert np.all(np.abs(C2[nz] / ref[nz] - 1) < tol), (C2[nz] / ref[nz])
+    assert np.max(np.abs(C2[~nz])) < 0.01 * np.abs(ref).max()
+
+
+def test_class2_box_isotropic():
+    _class2_box_check((0, 0, 0), (0, 0, 0), {0: PL[0]}, tol=0.025)
+
+
+@pytest.mark.slow
+def test_class2_box_202():
+    _class2_box_check((2, 0, 2), (2, 0, 2), {0: PL[0]}, tol=0.025)
