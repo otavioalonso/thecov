@@ -54,7 +54,7 @@ def direct_box_average(ell, ellp, PL, p1, p2, nhat, nth=28, nph=56):
         D1 = d[i0:i0 + 128]
         p3v = p1 * D1[:, None, :] + p2 * d[None, :, :]
         p3 = np.linalg.norm(p3v, axis=-1)
-        p3h = p3v / p3[..., None]
+        p3h = np.where(p3[..., None] > 0, p3v / np.where(p3 > 0, p3, 1.0)[..., None], nhat)   # p3 = 0 at antipodal nodes
         P3 = sum(PL[L](p3) * eval_legendre(L, p3h @ nhat) for L in PL)
         A = np.broadcast_to(D1[:, None, :], p3v.shape)
         B = np.broadcast_to(d[None, :, :], p3v.shape)
