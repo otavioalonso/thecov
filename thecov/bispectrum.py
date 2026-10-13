@@ -251,3 +251,233 @@ class Class1Assembler:
             h = box_window_value(n, V)
             return None if h == 0.0 else np.full((nr, nr), h)
         return windows
+
+
+# ---------------------------------------------------------------------------------------------------- user-facing class
+class BispectrumGaussianCovariance:
+    """Gaussian (class-1) covariance of the bispectrum multipoles B_{l1 l2 L}(k_i, k_j) of one tracer with survey window.
+
+    Parameters
+    ----------
+    tracer     : Tracer (randoms, weights, nbar); single tracer, as in the derivation
+    k_edges    : edges of the k shells (h/Mpc); B(k_i, k_j) is averaged over shells i and j
+    multipoles : Sugiyama multipoles (l1, l2, L), e.g. ((0, 0, 0), (2, 0, 2))
+    L_max      : highest power-spectrum multipole of the model (even)
+    lam_w      : highest rank of the window invariants kept at the two legs (guide, sec. 'Truncation'); 0 is the
+                 box-like (isotropic-window) approximation
+    r_max, dr  : separation grid of the radial integrals (default r_max: bounding box of the randoms)
+    dr_pair    : radial bin width of the anchored pair moments (Q_n is smooth; coarse is fine)
+    shot_noise : include the shot-noise window S at the anchor and the legs (eight (W, S) combinations)
+    n_anchor, n_sub, n_near, s_split, seed : sampling of the pair sums (bispectrum_windows.AnchoredMoments)
+    n_mu, n_quad : quadrature of the vertex coefficients and of the shells
+
+    Usage
+    -----
+        cov = BispectrumGaussianCovariance(tracer, k_edges, multipoles=((0,0,0), (2,0,2)))
+        cov.compute_windows(verbose=True)              # pair sums (geometry), once per survey
+        cov.set_model(model)                           # PowerSpectrumModel with P_0, P_2, P_4 of the tracer
+        C, labels = cov.covariance()                   # labels: (l1, l2, L, i, j)
+
+    Scope: the two class-1 pairings (1 1')(2 2')(3 3') and (1 2')(2 1')(3 3'), which carry the diagonal to O(dk/k).
+    Class 2 (`class2_block`) and the k3 ~ 0 term (`k3_zero_block`) are not implemented (see their docstrings);
+    the non-Gaussian P B, B B, P T terms are outside this class.
+    """
+
+    def __init__(self, tracer, k_edges, multipoles=((0, 0, 0), (2, 0, 2)), L_max=4, lam_w=4, r_max=None, dr=4.0,
+                 dr_pair=20.0, shot_noise=True, n_anchor=2000, n_sub=5000, n_near=200000, s_split=80.0, seed=0,
+                 n_mu=64, n_quad=None):
+        from .bispectrum_windows import ThreePointWindowLibrary
+        self.tracer = tracer
+        self.k_edges = np.asarray(k_edges, dtype=float)
+        self.nbins = len(self.k_edges) - 1
+        self.multipoles = tuple(tuple(int(x) for x in m) for m in multipoles)
+        self.Ls = tuple(range(0, int(L_max) + 1, 2))
+        self.lam_w = int(lam_w)
+        self.shot_noise = bool(shot_noise)
+        if r_max is None:
+            r_max = tracer.s_max()
+        self.r_max = float(r_max)
+        self.r = np.arange(0.5 * dr, self.r_max, dr)
+        r_edges = np.arange(0.0, self.r_max + dr_pair, dr_pair)
+        self.kernels = BispectrumShellKernels(self.k_edges, self.r, n_quad=n_quad, n_mu=n_mu)
+        self.coupling = BispectrumCoupling()
+        self.assembler = Class1Assembler(self.kernels, self.coupling, lam_w=self.lam_w)
+        self.windows = ThreePointWindowLibrary(r_edges, n_anchor=n_anchor, n_sub=n_sub, n_near=n_near,
+                                               s_split=s_split, seed=seed)
+        self.model = None
+        self._I3 = None
+        self._blocks = {}
+
+    # ------------------------------------------------------------------------------------------ normalisation
+    def I3(self) -> float:
+        """I_3 = int omega^3 = alpha sum_r w_r m_r^2 from the randoms, unless set_normalization was used."""
+        if self._I3 is None:
+            T = self.tracer
+            self._I3 = T.alpha * float(np.sum(T.w * T.mw ** 2))
+        return self._I3
+
+    def set_normalization(self, I3: float):
+        """Use the normalisation the bispectrum estimator actually divided by (the covariance scales as 1 / I_3^2)."""
+        self._I3 = float(I3)
+        self._blocks = {}
+        return self
+
+    # ------------------------------------------------------------------------------------------ correlator specs
+    def _kinds(self):
+        return ('W', 'S') if self.shot_noise else ('W',)
+
+    def _spec(self, kind):
+        """(tag, {L: pfunc}) of a correlator with window kind 'W' (model multipoles) or 'S' (shot noise, P -> 1)."""
+        if kind == 'S':
+            return ('S', {0: None})
+        if self.model is None:
+            return ('P', {L: None for L in self.Ls})
+        A = self.tracer.name
+        avail = self.model.multipoles(A, A)
+        return ('P', {L: extrapolated_power(self.model, A, A, L) for L in self.Ls if L in avail})
+
+    def _ellp_pairings(self, ellp):
+        """The primed multipole as seen by the two class-1 pairings: (ell', transpose primed shells?)."""
+        sw = (ellp[1], ellp[0], ellp[2])
+        return [(ellp, False), (sw, True)]
+
+    # ------------------------------------------------------------------------------------------ geometry
+    def request_windows(self):
+        for ell in self.multipoles:
+            for ellp in self.multipoles:
+                for ellp_eff, _ in self._ellp_pairings(ellp):
+                    for ka in self._kinds():
+                        for k1 in self._kinds():
+                            for k2 in self._kinds():
+                                Ls = lambda k: (0,) if k == 'S' else tuple(self._spec('W')[1])  # noqa: E731
+                                ns = self.assembler.needed_windows(ell, ellp_eff, Ls(k1), Ls(k2), Ls(ka))
+                                self.windows.request(self.tracer, (ka, k1, k2), ns)
+        return self
+
+    def compute_windows(self, verbose=False):
+        """Anchored pair sums for every invariant the requested multipoles need."""
+        self.request_windows()
+        t0 = time.time()
+        self.windows.compute_all(verbose=verbose)
+        if verbose:
+            print(f"three-point window functions done in {time.time() - t0:.1f}s")
+        self._blocks = {}
+        return self
+
+    def save_windows(self, path):
+        self.windows.save(path)
+
+    def load_windows(self, path):
+        self.windows.load(path)
+        self._blocks = {}
+        return self
+
+    # ------------------------------------------------------------------------------------------ model
+    def set_model(self, model: PowerSpectrumModel):
+        """Model multipoles P_L(k) of the tracer (unmasked; tabulated over the whole range the shells reach, the third
+        side |p1 + p2| being extrapolated below k_min as a power law)."""
+        self.model = model
+        self.kernels._vertex.clear()
+        self._blocks = {}
+        return self
+
+    # ------------------------------------------------------------------------------------------ results
+    def _windows_for(self, kinds):
+        name, r = self.tracer.name, self.r
+        return lambda n: self.windows.get(name, kinds, n, r)
+
+    def block4(self, ell, ellp, verbose=False) -> np.ndarray:
+        """Cov[B_ell(k_i, k_j), B_ell'(k_i', k_j')] as the (nbins,)*4 array C[i, j, i', j'] (class 1, both pairings,
+        all window combinations).  The power spectra are evaluated at the primed momenta; see `block` for the
+        symmetrised combination."""
+        ell, ellp = tuple(ell), tuple(ellp)
+        key = (ell, ellp)
+        if key in self._blocks:
+            return self._blocks[key]
+        if self.model is None:
+            raise RuntimeError("set_model() first")
+        self.request_windows()
+        if self.windows.missing():
+            self.windows.compute_all(verbose=verbose)
+        log = print if verbose else None
+        nb = self.nbins
+        C = np.zeros((nb, nb, nb, nb))
+        for ellp_eff, swap in self._ellp_pairings(ellp):
+            pref = FOUR_PI ** 3 * H(*ell) * H(*ellp_eff) * math.sqrt(N(*ell) * N(*ellp_eff))
+            for ka in self._kinds():
+                for k1 in self._kinds():
+                    for k2 in self._kinds():
+                        if verbose:
+                            print(f"  {ell} x {ellp_eff}{' (swapped)' if swap else ''}: anchor {ka}, legs {k1} {k2}")
+                        part = self.assembler.assemble(ell, ellp_eff, self._spec(k1), self._spec(k2), self._spec(ka),
+                                                       self._windows_for((ka, k1, k2)), log=log)
+                        C += pref * (part.transpose(0, 1, 3, 2) if swap else part)
+        C /= self.I3() ** 2
+        self._blocks[key] = C
+        return C
+
+    @staticmethod
+    def default_elements(ell, nbins):
+        """(i, j) pairs of B_ell(k_i, k_j): i <= j when l1 = l2 (the estimator is then symmetric), all pairs otherwise."""
+        if ell[0] == ell[1]:
+            return [(i, j) for i in range(nbins) for j in range(i, nbins)]
+        return [(i, j) for i in range(nbins) for j in range(nbins)]
+
+    def block(self, ell, ellp, elements=None, elements_p=None, symmetrize=True) -> np.ndarray:
+        """Covariance block between the elements (i, j) of B_ell and (i', j') of B_ell'.
+
+        The derivation evaluates the power spectra at the momenta of the primed estimator; the other choice differs
+        at O(dk/k) and symmetrize=True returns the average of the two (the direct block and the transposed mirror),
+        as GaussianCovariance.block does.  For l1 = l2 the (i, j) and (j, i) elements are the same measurement and the
+        class-1 pairings make C symmetric under i <-> j by construction.
+        """
+        ell, ellp = tuple(ell), tuple(ellp)
+        if elements is None:
+            elements = self.default_elements(ell, self.nbins)
+        if elements_p is None:
+            elements_p = self.default_elements(ellp, self.nbins)
+        if symmetrize:
+            direct = self.block(ell, ellp, elements, elements_p, symmetrize=False)
+            mirror = self.block(ellp, ell, elements_p, elements, symmetrize=False)
+            return 0.5 * (direct + mirror.T)
+        C4 = self.block4(ell, ellp)
+        ii, jj = np.array([e[0] for e in elements]), np.array([e[1] for e in elements])
+        Ii, Jj = np.array([e[0] for e in elements_p]), np.array([e[1] for e in elements_p])
+        return C4[ii[:, None], jj[:, None], Ii[None, :], Jj[None, :]]
+
+    def covariance(self, multipoles=None, elements=None, symmetrize=True, verbose=False):
+        """Full matrix for the data vector [B_ell(k_i, k_j)] ordered by multipole then element; returns (C, labels)
+        with labels (l1, l2, L, i, j).  `elements` maps ell -> list of (i, j) (default: default_elements)."""
+        if multipoles is None:
+            multipoles = self.multipoles
+        multipoles = [tuple(m) for m in multipoles]
+        elements = elements or {}
+        els = {m: elements.get(m, self.default_elements(m, self.nbins)) for m in multipoles}
+        sizes = [len(els[m]) for m in multipoles]
+        offs = np.concatenate([[0], np.cumsum(sizes)])
+        C = np.zeros((offs[-1], offs[-1]))
+        t0 = time.time()
+        for a, ma in enumerate(multipoles):
+            for b, mb in enumerate(multipoles):
+                C[offs[a]:offs[a + 1], offs[b]:offs[b + 1]] = self.block(ma, mb, els[ma], els[mb], symmetrize=False)
+                if verbose:
+                    print(f"block {ma} x {mb} done ({time.time() - t0:.1f}s)")
+        if symmetrize:
+            C = 0.5 * (C + C.T)
+        labels = [m + e for m in multipoles for e in els[m]]
+        return C, labels
+
+    # ------------------------------------------------------------------------------------------ not implemented
+    def class2_block(self, ell, ellp):
+        """Class-2 pairings (a line of sight pairs with a shell galaxy): guide sec. 'Class 2'.  In the (p1, p3)
+        variables they share the invariants Q_n with class 1; the vertex is the indicator 1[|p3 - p1| in j'] Y_{l'2}(p2^)
+        P(p2; x^) expanded in bipolar harmonics of (p1^, p3^), and the leg-2 kernel integrates j_Lam'(p3 r2) over all p3.
+        O(dk/k) of class 1 on the diagonal; the only Gaussian contribution off the diagonal."""
+        raise NotImplementedError("class 2 is not implemented yet; see bispectrum_covariance_guide.typ sec. 'Class 2'")
+
+    def k3_zero_block(self, ell, ellp):
+        """The pairing (1 2)(1' 2')(3 3') on the (i i; i' i') elements: the long-mode variance of the W-weighted field
+        (guide sec. 'The k3 ~ 0 term'); zero for uniform omega, tens of per cent of the (i, i) variance for a radially
+        varying omega.  Needs <F(x) F(x')>_IC, i.e. the integral-constraint-corrected long-mode correlation, which the
+        super-sample machinery (thecov.ssc) can provide."""
+        raise NotImplementedError("the k3 ~ 0 term is not implemented yet; see the guide sec. 'The k3 ~ 0 term'")

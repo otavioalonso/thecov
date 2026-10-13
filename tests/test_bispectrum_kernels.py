@@ -64,3 +64,75 @@ def test_radial_assembly_isotropic():
 @pytest.mark.slow
 def test_radial_assembly_anisotropic():
     _check((2, 0, 2), (2, 0, 2), PL, nq_ref=12, nth=16, nph=32, tol=1e-9)
+
+
+# --------------------------------------------------------------------------------------------- the full class
+class _TaperedBoxLibrary:
+    """Stand-in for ThreePointWindowLibrary: Q_n^box of a periodic box with W = nbar^2, S = (1 + alpha) nbar, tapered."""
+
+    def __init__(self, r, nbar, alpha, sigma, V=1.0):
+        self.taper = np.exp(-(r[:, None] ** 2 + r[None, :] ** 2) / (2 * sigma ** 2))
+        self.nbar, self.alpha, self.V = nbar, alpha, V
+
+    def request(self, *a):
+        pass
+
+    def missing(self):
+        return []
+
+    def compute_all(self, verbose=False):
+        pass
+
+    def get(self, name, kinds, n, r):
+        h = box_window_value(n, self.V)
+        if h == 0.0:
+            return None
+        return h * self.nbar ** 6 * ((1 + self.alpha) / self.nbar) ** sum(k == 'S' for k in kinds) * self.taper
+
+
+class _FakeTracer:
+    name = 'T'
+
+    def s_max(self):
+        return 700.0
+
+
+def _class_check(ells, PL_model, nth, nph, tol):
+    """BispectrumGaussianCovariance in a tapered box = prefactor x both pairings x reference with P_0 -> P_0 + (1+alpha)/nbar."""
+    from thecov import PowerSpectrumModel
+    from thecov.bispectrum import BispectrumGaussianCovariance
+    from thecov.bispectrum_algebra import H, N
+    from thecov.wigner import FOUR_PI
+    nbar, alpha, sigma, V = 3e-4, 0.1, 100.0, 1.0
+    kk = np.linspace(1e-4, 1.0, 4000)
+    model = PowerSpectrumModel()
+    model.add(('T', 'T'), {L: (kk, 1e4 * f(kk)) for L, f in PL_model.items()})
+    cov = BispectrumGaussianCovariance(_FakeTracer(), np.array([0.05, 0.1, 0.15, 0.2]), multipoles=ells,
+                                       L_max=max(PL_model), lam_w=0, dr=2.0, shot_noise=True)
+    cov.windows = _TaperedBoxLibrary(cov.r, nbar, alpha, sigma, V)
+    cov.set_normalization(nbar ** 3 * V).set_model(model)
+    PLtot = {L: (lambda k, f=f: 1e4 * f(k)) for L, f in PL_model.items()}
+    PLtot[0] = lambda k: 1e4 * PL_model[0](k) + (1 + alpha) / nbar
+    nhat = unit(1, np.random.default_rng(1))[0]
+    for ell in ells:
+        for ellp in ells:
+            C4 = cov.block4(ell, ellp)
+            sw = (ellp[1], ellp[0], ellp[2])
+            ref = np.zeros_like(C4)
+            for e, swap in ((ellp, False), (sw, True)):
+                pref = FOUR_PI ** 3 * H(*ell) * H(*e) * np.sqrt(N(*ell) * N(*e)) / (nbar ** 3 * V) ** 2
+                part = tapered_reference(cov.kernels, ell, e, PLtot, sigma, nhat, V=nbar ** 6 * V, nq_ref=12, nth=nth, nph=nph)
+                ref += pref * (part.transpose(0, 1, 3, 2) if swap else part)
+            assert np.max(np.abs(C4 - ref)) < tol * np.max(np.abs(ref)), (ell, ellp)
+    C, labels = cov.covariance()
+    assert C.shape == (len(labels), len(labels)) and np.allclose(C, C.T)
+    assert np.all(np.linalg.eigvalsh(C) > 0)
+
+
+def test_class_tapered_box_isotropic():
+    _class_check(((0, 0, 0),), {0: lambda k: 1.0 + (k / K0) ** 2}, nth=12, nph=24, tol=1e-9)
+
+
+@pytest.mark.slow
+def test_class_tapered_box_anisotropic():
+    _class_check(((0, 0, 0), (2, 0, 2)), PL, nth=16, nph=32, tol=1e-9)
