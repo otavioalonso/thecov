@@ -107,9 +107,11 @@ class Mesh:
 _MESH = None
 
 
-def _init():
+def _init(L=L_BOX, N=N_MESH):
     global _MESH
-    _MESH = Mesh()
+    import os
+    os.environ['OMP_NUM_THREADS'] = '1'
+    _MESH = Mesh(L=L, N=N)
 
 
 def _one(args):
@@ -130,9 +132,9 @@ def _one(args):
     return np.concatenate([res[e] for e in ELLS])
 
 
-def run(kind, n_real, nbar, R, eps=0.0, seed0=0, workers=None):
-    workers = workers or max(1, (os.cpu_count() or 2) - 2)
-    with Pool(workers, initializer=_init) as pool:
+def run(kind, n_real, nbar, R, eps=0.0, seed0=0, workers=None, L=L_BOX, N=N_MESH):
+    workers = workers or max(1, (os.cpu_count() or 2) - 1)
+    with Pool(workers, initializer=_init, initargs=(L, N)) as pool:
         rows = pool.map(_one, [(seed0 + s, kind, nbar, R, eps) for s in range(n_real)], chunksize=4)
     return np.array(rows)
 
@@ -145,17 +147,22 @@ def labels():
 
 
 if __name__ == '__main__':
+    # usage: grf_sphere.py n_real [L N R tag]   (default: L = 1300, N = 128, R = 500 -> grf_sphere_measurements.npz)
     n_real = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
+    L = float(sys.argv[2]) if len(sys.argv) > 2 else L_BOX
+    N = int(sys.argv[3]) if len(sys.argv) > 3 else N_MESH
     from sphere_check import sphere_tracer, R_SPHERE
-    T, nbar, V = sphere_tracer()
+    R = float(sys.argv[4]) if len(sys.argv) > 4 else R_SPHERE
+    tag = sys.argv[5] if len(sys.argv) > 5 else ''
+    T, nbar, V = sphere_tracer(R=R)
     t0 = time.time()
-    box = run('box', n_real, nbar, R_SPHERE)
+    box = run('box', n_real, nbar, R, L=L, N=N)
     print(f'box: {n_real} realisations in {time.time() - t0:.0f}s', flush=True)
     t0 = time.time()
-    sph = run('sphere', n_real, nbar, R_SPHERE)
+    sph = run('sphere', n_real, nbar, R, L=L, N=N)
     print(f'sphere: {n_real} realisations in {time.time() - t0:.0f}s', flush=True)
     t0 = time.time()
-    quad = run('box', 200, nbar, R_SPHERE, eps=0.3, seed0=10 ** 6)
-    print(f'quadratic box: 200 realisations in {time.time() - t0:.0f}s', flush=True)
-    np.savez(HERE / 'grf_sphere_measurements.npz', box=box, sphere=sph, quad=quad, labels=np.array(labels()),
-             k_edges=K_EDGES, nbar=nbar, R=R_SPHERE, L=L_BOX, N=N_MESH, nmodes=Mesh().nmodes)
+    quad = run('box', 100, nbar, R, eps=0.3, seed0=10 ** 6, L=L, N=N)
+    print(f'quadratic box: 100 realisations in {time.time() - t0:.0f}s', flush=True)
+    np.savez(HERE / f'grf_sphere_measurements{tag}.npz', box=box, sphere=sph, quad=quad, labels=np.array(labels()),
+             k_edges=K_EDGES, nbar=nbar, R=R, L=L, N=N, nmodes=Mesh(L=L, N=N).nmodes)

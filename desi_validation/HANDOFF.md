@@ -623,7 +623,11 @@ exported from `thecov`. Derivation `report/bispectrum_covariance_guide.typ`; imp
 validation and the remaining terms in `report/bispectrum_implementation.md`. Tests `tests/test_bispectrum_*.py`
 (fast: 26 tests, ~4 min; slow ones deselected with -m "not slow"). Development scripts and the GRF validation in
 `desi_validation/bispectrum_dev/` (grf_sphere.py -> grf_theory.py -> grf_compare.py; windows cached in
-grf_sphere_windows.npz). Status: coupling numbers, vertex, radial assembly exact against independent quadrature; window
-invariants on a sphere agree with Monte Carlo to 3 %; the Gaussian-field test agrees on the (i, i) elements and leaves
-an 8 +- 3 % (B000) / 15 % (B202, element dependent) excess that needs class 2 (next step, reuses Q_n) before it is
-decisive. Corrections to the notes found on the way: none to the physics; Q_n^box = V sqrt(N/4pi) H as the guide says.
+grf_sphere_windows.npz). Status (2026-10-14): classes 1 AND 2 implemented (`class2=True`, `terms=` separates them). Coupling numbers,
+vertices, radial assembly exact against independent quadrature; window invariants on a sphere agree with Monte Carlo to
+3 %; periodic-box Gaussian fields reproduce class 1 + class 2 to 1.00 +- 0.02 including the off-diagonal (pure class-2)
+structure. On a sphere centred on the observer (R = 500 and 1000, dk = 0.04) class 2 fixes the off-diagonal
+correlations and most of the diagonal, but a +8-10 % B000 offset that does not scale with R remains (numerics and
+pair-sum noise excluded), and a B202 excess on the low-k quadrupole elements that halves from R = 500 to 1000 (the local
+line-of-sight approximation). See report/bispectrum_implementation.md section 4 for the candidates and the next test.
+Corrections to the notes found on the way: none to the physics; Q_n^box = V sqrt(N/4pi) H as the guide says.

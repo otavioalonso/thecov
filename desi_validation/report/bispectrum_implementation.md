@@ -1,14 +1,14 @@
-# Bispectrum covariance in thecov: implementation of the Gaussian class-1 term
+# Bispectrum covariance in thecov: implementation of the Gaussian term (classes 1 and 2)
 
-Branch `thecov2`, 2026-10-13. Derivation: `report/bispectrum_covariance_guide.typ` (and `bispectrum_covariance.typ`).
+Branch `thecov2`, 2026-10-13/14. Derivation: `report/bispectrum_covariance_guide.typ` (and `bispectrum_covariance.typ`).
 This note records what is implemented, the conventions the code actually uses, the validation, the costs and what remains.
 
 ## 1. Module map
 
 | module | content |
 |---|---|
-| `thecov/bispectrum_algebra.py` | Sugiyama basis (`H`, `N`, `sugiyama_S_tilde`, `sugiyama_S`); `cg_tensor`; the bipolar vertex coefficients `bipolar_coefficients` (and `legendre_coefficients_opening`); the leg/anchor Gaunt tensors; `BispectrumCoupling` (coupling numbers `T_n`, batched over `(K1, K2, Lam3)`, cached; `index_set`); `invariant_basis` (Φ_n, for tests); `box_window_value`; `phase`. |
-| `thecov/bispectrum.py` | `extrapolated_power`; `BispectrumShellKernels` (shell nodes, `jbar`, node-wise Bessel tables, vectorised vertex matrices `vertex_coefficients`); `Class1Assembler` (radial labels and the double radial integral for all `(i j; i' j')`); `BispectrumGaussianCovariance` (user class). |
+| `thecov/bispectrum_algebra.py` | Sugiyama basis (`H`, `N`, `sugiyama_S_tilde`, `sugiyama_S`); `cg_tensor`; the bipolar vertex coefficients `bipolar_coefficients` (and `legendre_coefficients_opening`); the leg/anchor Gaunt tensors of both classes; `BispectrumCoupling` (coupling numbers `t_all` for class 1 and `t2_all` for class 2, batched over `(K1, K2, Lam3)`, cached; `index_set`); `invariant_basis` (Φ_n, for tests); `box_window_value`; `phase`, `phase2`. |
+| `thecov/bispectrum.py` | `extrapolated_power`; `BispectrumShellKernels` (shell nodes, `jbar`, node-wise Bessel tables, vectorised vertex matrices `vertex_coefficients` with an optional shell restriction of the third side, the class-2 `p3_nodes` / `vertex2` / `bessel_at`); `Class1Assembler` (radial labels and the double radial integral for all `(i j; i' j')`: `assemble` for class 1, `assemble2` for class 2); `BispectrumGaussianCovariance` (user class; `class2=True`, `terms=` to separate the classes). |
 | `thecov/bispectrum_windows.py` | `rotation_to_z`; `MomentLabels` (bipolar harmonics of the pair geometry); `AnchoredMoments` (pair sums → `Q_n(r1, r2)`); `ThreePointWindowLibrary` (request / compute / interpolate / save / load). |
 | `tests/test_bispectrum_algebra.py` | basis, bipolar coefficients, five-direction identity for `T_n`, box identity. |
 | `tests/test_bispectrum_kernels.py` | vectorised vertex, tapered-box radial assembly, the full class in a tapered box (shot noise, second pairing). |
@@ -35,6 +35,7 @@ C, labels = cov.covariance()            # labels (l1, l2, L, i, j); elements i <
 * **Box value.** `Q_n^box = V √(N_{L1 L2 Λ3}/4π) H_{L1 L2 Λ3} δ_{λ1 0} δ_{λ2 0}` — the guide's value (a first derivation that gave `(4π)^{3/2}` was wrong by `4π`; the box identity test settles it).
 * **Phase.** `(-i)^{ℓ1+ℓ2} i^{Λ+Λ'} = (-1)^{(Λ+Λ'−ℓ1−ℓ2)/2}`, real by parity.
 * **Second class-1 pairing.** `(1 2')(2 1')(3 3')` = the first with `ℓ' → (ℓ'2, ℓ'1, L')` and the primed shells transposed, `C^{(1b)}[i,j,i',j'] = C^{(1a)}_{ℓ,ℓ'_sw}[i,j,j',i']` (`S~` is symmetric under the swap for even `ℓ'1 + ℓ'2 + L'`).
+* **Class 2** (pairing `(1 1')(2 3')(3 2')`, guide sec. 'Class 2', status item iv). Variables `(p1, p3 = p1 + p2)`: leg 1 carries `e^{i p1·r1}` with `P(p1; ŷ1)` (rank `L1`) exactly as in class 1; leg 2 carries `e^{−i p3·r2}` with `P(p3; ŷ2)` (rank `L3`), the primed line of sight `Y_{L'}(ŷ2)` now sits at `ŷ2` (rank at `ŷ2`: `Ly ∈ tri(L3, L')`); the anchor carries `P(p2; x̂)` (rank `L2`, with `conj(Y_L)(x̂)` of the unprimed estimator: `Λ3 ∈ tri(L, L2)`). The vertex is `1[|p3 − p1| ∈ j'] Y_{ℓ'2}(p̂2) conj(Y_{L2})(p̂2) P_{L2}(p2)`, merged to `Y_{ℓ''}(p̂2)` (`ℓ'' ∈ tri(ℓ'2, L2)`, `vertex2_tensor`) and expanded in bipolar harmonics of `(p̂1, p̂3)`: `d^{ℓ''}_{ab}(p1, p3) = (−1)^a c^{ℓ''}_{ab}(p1, p3)[h]` with `h(p2) = 1[p2 ∈ j'] P_{L2}(p2)` (the sign from `p̂1 → −p̂1`; the indicator restricts the opening-angle quadrature to the intersection with the shell). Ranks on `p̂3`: `Λ' ∈ tri(L3, b)` (`leg3_tensor`); phase `(−i)^{ℓ1+ℓ2} i^Λ (−i)^{Λ'}`. The radial kernel integrates `p3` over `[max(klo − p1, p1 − khi, 0), p1 + khi]` with composite Gauss–Legendre pieces split at the indicator kinks `|klo ∓ p1|, khi ∓ p1` **and at every shell edge** (the `r2` integral selects the unprimed shell `j` of `p3` with a kernel that is a step on the scale of the window — a piece must not straddle it; forgetting this gave 20–30 % errors on specific elements), `j_Λ'(p3 r2)` from a fine table (`bessel_at`). The other three class-2 pairings are relabellings: primed swap `ℓ' → ℓ'_sw` with the primed shells transposed, unprimed swap `ℓ → ℓ_sw` with the unprimed shells transposed, and both. Same `Q_n` library (the `n` labels differ through `Ly`).
 * **Shot noise.** `W P_L + S δ_{L0}` at each of the three points: an `S` leg has `L = 0` and `P → 1`; an `S` anchor has `L3 = 0` and `c → √(4π) δ_a0 δ_b0`; eight `(anchor, leg1, leg2) ∈ {W, S}^3` combinations with the invariants `Q_n^{XYZ}` of the corresponding weights (`W = m²`, `S = (1+α) n̄ w²` as in `tracers.Window`).
 * **Normalisation.** `I_3 = ∫ ω³ = α Σ_r w_r m_r²` from the randoms (`set_normalization` overrides it).
 * **Model range.** `extrapolated_power` continues `P_L` below the tabulated `k_min` as a power law (the third side reaches `p3 → 0` on the `i' = j'` shells) and as `k^{-3}` above `k_max`.
@@ -48,66 +49,70 @@ C, labels = cov.covariance()            # labels (l1, l2, L, i, j); elements i <
 3. **Bipolar coefficients**: exact reconstruction of `conj(Y_{L3})(p̂3) P_{L3}(p3)` for polynomial `P` (1e-10), 1e-4 at `a_max = 30` for a BAO-like `P`; the `L3 = 0` Legendre reduction to 1e-10; the vectorised node-pair version equals the scalar one to 1e-16.
 4. **Radial assembly in a tapered box** (`test_radial_assembly_*`, `test_class_tapered_box_*`): with `Q_n = Q_n^box exp(−(r1²+r2²)/2σ²)` the leg integrals become smoothed shell indicators (1D, fast convergence) and `Class1Assembler` / `BispectrumGaussianCovariance` (with shot noise and both pairings) agree with the independent reference to 1e-12. The un-tapered box identity converges only as `1/r_max` (3 % at 1000 Mpc/h, 0.8 % at 4000: adjacent top-hat shells' bin-averaged Bessel functions overlap logarithmically) — in a survey the window supplies the taper.
 5. **Window invariants on a uniform sphere** (`test_sphere_invariants*`): against Monte-Carlo quadrature of `∫ d³x dΩ1 dΩ2 W W W Φ_n` (observer at the centre, `R = 500`), isotropic and anisotropic `n` including `λ > 0`, `L > 0`, `K ≠ λ`: within 3 % with 5000 anchors / 10000 far neighbours, within 8 % with 1500 / 4000. The estimator is unbiased; the scatter comes from the anchors (a 2000-anchor subsample has ~1.5 % radial-distribution fluctuations, which on this small sphere move the edge fraction by 2 %) and from the far neighbour catalogue shared by all anchors (its density fluctuations do not average over anchors). The `r1 = r2` bins follow the off-diagonal trend to 1 % (self-pair subtraction correct); the shot-noise kinds scale exactly by `(1+α)/n̄`; `Q_n` is real to 1e-16.
-6. **Gaussian fields on the sphere** (`grf_sphere.py`, `grf_theory.py`, `grf_compare.py`): see section 4.
+6. **Class 2** (`test_class2_*`): the five-direction identity with the class-2 chain (`direct_V2` / `series_F2`) is exact (1e-8) for isotropic and anisotropic `P_L` at the legs and the anchor and the `(000, 202)` pairs; `assemble2` with box windows at `r_max = 3000` agrees with a Monte-Carlo evaluation of the class-2 box term (exact indicator, `box_class2_direct`) to 0.5 % (mean) / 1.5 % (scatter, the `1/r_max` truncation).
+7. **Gaussian fields** (`grf_sphere.py`, `grf_theory.py` / `grf_theory2.py`, `grf_compare.py` / `grf_compare2.py`): see section 4.
 
-Fast tests (`-m "not slow"`): 26 tests in ~4 min. Slow ones: anisotropic five-direction checks, the converged sphere, the anisotropic tapered-box class check.
+Fast tests (`-m "not slow"`): 32 tests in ~5 min. Slow ones: anisotropic five-direction checks (both classes), the converged sphere, the anisotropic tapered-box class check, the 202 class-2 box check, the GRF smoke test.
 
 ## 4. Gaussian-field test
 
-Setup (`grf_sphere.py`): isotropic P(k) = 2e4 (k/0.02)/(1 + (k/0.02)^2.6) on a 128^3 mesh in a periodic box of
-L = 1300 Mpc/h (cell 10.2, k_Nyq = 0.31), observer at the box centre, footprint a sphere of R = 500 (the `sphere_check`
-tracer: n̄ = 3.8e-5, α = 0.1, 200k randoms), F = n̄ 1_sphere (δ − mean_sphere δ), shells 0.04–0.20 in steps of 0.04,
-estimators B_000(i ≤ j) and B_202(i, j) (Sugiyama FFT estimator with the local line of sight), 800 realisations; the
-same estimator on the unmasked periodic box (800 realisations); and a quadratic field δ + 0.3 (δ² − σ²) in the box
-(200 realisations) whose mean B_000 = 2ε[PP + 2 perms] checks the estimator normalisation (ratio 1.00 ± 0.01 on the
-k ≥ 0.1 elements; 0.90–0.97 at low k where the bin-centre evaluation of the third side is crude).
-Theory (`grf_theory.py`): `BispectrumGaussianCovariance` on the sphere with λ_w = 0, 2, 4 (3000 anchors, 6000 far
-neighbours, dr_pair = 20, dr = 4, r_max = 1000), and the analytic class-1 box covariance (first term of eq. 49, both
-pairings, lattice mode counts; `box_class1`). Comparison: `grf_compare.py`; figure `bispectrum_grf_sphere.png`,
-numbers `grf_sphere_results.npz`.
+Setup (`grf_sphere.py`): isotropic P(k) = 2e4 (k/0.02)/(1 + (k/0.02)^2.6) on a mesh in a periodic box, observer at the
+box centre, footprint a sphere centred on the observer (`sphere_check` tracer, n̄ = 3.8e-5, α = 0.1, 200k randoms),
+F = n̄ 1_sphere (δ − mean_sphere δ) (the α step: ∫F = 0, which with uniform ω kills the k3 ≈ 0 term), shells 0.04–0.20
+in steps of 0.04, estimators B_000(i ≤ j) and B_202(i, j) (Sugiyama FFT estimator, local line of sight), and the same
+estimator on the unmasked periodic box; a quadratic field δ + 0.3(δ² − σ²) with mean B_000 = 2ε[PP + 2 perms] fixes
+the estimator normalisation (1.00 ± 0.01 on the k ≥ 0.1 elements). Two configurations: R = 500 in L = 1300, N = 128
+(cell 10.2, k_Nyq = 0.31; 800 realisations) and R = 1000 in L = 2600, N = 192 (cell 13.5, k_Nyq = 0.23; 300
+realisations). Theory: `grf_theory.py` (class 1, λ_w = 0, 2, 4), `grf_theory2.py` (class 1 + 2, λ_w = 2 and 4, pair
+sums with 3000 anchors / 6000 far neighbours), the analytic box terms; comparison `grf_compare.py`, `grf_compare2.py`;
+figures `bispectrum_grf_sphere.png` (class 1 only), `bispectrum_grf_c12.png` (class 1 + 2, both spheres).
 
-Results.
+**Periodic box (the arbiter for the formalism without a window).** var(GRF)/(class 1 + class 2) = 1.004 ± 0.016 (B_000)
+and 1.017 ± 0.013 (B_202) on the 128³ mesh, element scatter consistent with the 5 % errors; the off-diagonal elements
+(pure class 2) agree at 1.01 ± 0.04. On the 192³ mesh (k_Nyq = 0.23, so the third side of the k = 0.18 shell reaches
+beyond Nyquist) 1.036 ± 0.016, dominated by the (3,3) element. Class 1 alone is low by the class-2 share: 1.2–2.0 at
+Δk = 0.04 (C2/C1 = 0.84 on B_000(0,0), 0.2–0.7 elsewhere).
 
-* The three truncations λ_w = 0, 2, 4 agree to 3 % on every element: the rank expansion of the window is converged
-  at λ_w = 2 for this (smooth) footprint; the whole line-of-sight structure of B_202 is carried by the Λ3 ranks.
-* Periodic box, var(GRF)/class 1 = 2.0 for B_000(0,0) and 1.2–1.6 elsewhere (B_202: 1.0–1.5). This is the omitted
-  class-2 term, ≈ Δk/k with four pairings against two on i = j — as large as anticipated for Δk = 0.04 — plus a few
-  per cent of lattice effects (the third side reaches beyond Nyquist on the k = 0.18 shell).
-* Sphere, the leakage factor var_sphere/var_box × V_sphere/V_box (model independent) against the theory's
-  C_sphere/C_box: theory 0.78–0.80 for every element (two legs each retaining ≈ 0.88 at R Δk = 20); GRF 0.76–0.92 on
-  most elements, but 0.97, 1.07, 0.99 on B_000 (0,1), (0,3), (1,3) and 1.15, 1.32 on B_202 (0,2), (0,3). Class 2 has
-  one leg coincidence instead of two and should retain ≈ √0.78 = 0.88; with the box-measured class-2 fraction f the
-  prediction (0.78 + 0.88 f)/(1 + f) is 0.80–0.84, and GRF/prediction averages 1.085 ± 0.03 over the B_000 elements
-  (element scatter 0.92–1.33 with ±0.09–0.12 errors, χ² ≈ 15 for 9 dof) and 1.15 ± 0.02 over B_202, with the
-  B_202 elements that have the quadrupole leg in the lowest shell (k = 0.06, k R ≈ 30) and the other leg far away at
-  1.47 and 1.69.
-* Off-diagonal correlations: the theory's 5–7 % neighbour correlations (class 1 leakage) are present in the GRF
-  (right panel), with the GRF showing additional 0.2–0.5 correlations between elements that share a shell — these are
-  class-2 off-diagonal elements (the only Gaussian contribution off the diagonal), absent from class 1 by construction.
+**Sphere, class 1 only** (`bispectrum_grf_sphere.png`): the rank expansion is converged (λ_w = 0/2/4 within 3 %); the
+GRF/theory excess is the omitted class 2 plus a residual.
 
-Reading. Class 1 under the window is right where it can be isolated (the (i, i) elements, where the class-1 share
-is largest, agree to ≤ 6 %; the λ_w convergence and the exact algebraic tests exclude the window invariants and the
-assembly as the source of the excess). The residual 8 ± 3 % (B_000) and the strongly element-dependent B_202 excess
-are consistent with the class-2 term under the window differing from its box value: on the sphere the primed line of
-sight of class 2 sits at ŷ2 instead of x̂ (the box ratio with a global line of sight cannot represent that for
-B_202), and for the lowest shell k_w/k ≈ 0.1 so the local approximation is marginal. The test is therefore not yet
-decisive at the 10 % level; it becomes so once class 2 is implemented (it reuses the same Q_n). Recommended rerun then:
-thinner shells at higher k (Δk = 0.02, k ≥ 0.1) in a larger box (L = 2000, N = 192) to shrink both Δk/k and k_w/k,
-≥ 2000 realisations, with OMP/BLAS threads set to 1 per worker (the pool here was oversubscribed: 1.9 s per
-realisation effective on 8 cores against 0.3 s of FFT work).
+**Sphere, class 1 + 2** (`bispectrum_grf_c12.png`):
 
-![GRF test](bispectrum_dev/bispectrum_grf_sphere.png)
+| | B_000 var/(C1+C2) | χ²/n | B_202 | χ²/n | off-diagonal corr (GRF vs theory, |corr| > 0.1) |
+|---|---|---|---|---|---|
+| R = 500 (800 real.) | 1.079 ± 0.017 (0.96–1.22) | 32/10 | 1.182 ± 0.015 (1.01–1.77) | 199/16 | 0.221 vs 0.205, rms diff 0.056 |
+| R = 1000 (300 real.) | 1.103 ± 0.029 (0.92–1.24) | 22/10 | 1.129 ± 0.023 (0.97–1.40) | 46/16 | 0.211 vs 0.187, rms diff 0.062 |
+
+* Class 2 reproduces the off-diagonal (shell-sharing) correlations, 0.2–0.5, which class 1 does not have at all.
+* The B_202 excess is concentrated on the elements with the quadrupole leg in the lowest shell (k = 0.06) and the
+  other leg far away — (0,1), (0,2), (0,3): 1.35, 1.55, 1.77 at R = 500 — and shrinks to 1.16, 1.15, 1.40 at
+  R = 1000: the behaviour of the local line-of-sight approximation (A2: nearby points share the line of sight), whose
+  error for the quadrupole weight at separation r and distance x is O((r/x)²) — the configurations of the bispectrum
+  reach r ~ 1/Δk = 25–100 Mpc/h on a footprint where x ~ R.
+* The B_000 offset, +8 ± 2 % (R = 500) and +10 ± 3 % (R = 1000), does **not** shrink with R and has element scatter
+  above the noise (the B̂ samples are Gaussian to within kurtosis ±0.3, so the quoted errors are right). It is not the
+  numerics: λ_w = 2 → 4 changes the theory by < 1.5 %, dr = 4 → 2 and n3 = 10 → 16 by < 0.2 %, and the pair-sum noise
+  (two more anchor/neighbour seeds, up to 6000/12000) is a uniform 1–2 %. It is not the lattice (the box on the same
+  mesh is exact). Candidates that remain, in order: the local approximation A1 at the level of the *three-point*
+  structure (the window varies over the triangle; the pair-averaged windows of `smoothing.py` were needed for the same
+  reason for P(k) in DESI, where the dilution I_k/norm was 0.80–0.85), and the pairings dropped as "beat modes". The
+  next discriminating test is a GRF run with thinner shells at higher k (Δk = 0.02, k ≥ 0.1, L = 2600, N = 256), where
+  both Δk/k and k_w/k are small and the class-2 share is ≈ 10 %.
+
+![GRF test, class 1 + 2](bispectrum_dev/bispectrum_grf_c12.png)
 
 ## 5. Costs (8 cores of this sandbox, numpy)
 
 * Coupling numbers: `lam_w = 4`, `L ≤ 4`, `202 × 202`: 2046 radial labels, 33708 `(label, n)` terms, 2093 distinct invariants, 73 s (cached in memory; `000 × 000`: 926 labels, 1.6 s).
 * Vertex matrices: 360k node pairs in 2.8 s per `(L3, a, b)`; ~120 labels for `L ≤ 4` → a few minutes per model.
 * Radial assembly: per radial label one `(nb² nq × nr) @ (nr × nr)` product plus `nb` einsums; `nb = 9, nq = 63, nr = 375`: ~1 s per label → minutes per block at `lam_w = 4`.
+* Class 2: `assemble2` costs per radial label `nb²` × (one `(nq × n3) × nr` einsum); the sphere test (nb = 4, nr = 250, isotropic P) took 22 s at λ_w = 2 and 450 s at λ_w = 4 for the two multipoles; the box check with anisotropic P (202 × 202, nr = 750) 140 s. The class-2 `n` labels (with `Ly`) add ~3× to the window invariants (69 vs 24 at λ_w = 4 in the isotropic sphere test).
 * Pair sums: ~20 µs per anchor–neighbour pair (the self-pair products dominate: `n_groups × n_pairs × (2K+1)` complex multiplies), i.e. 2000 anchors × 5000 far neighbours ≈ 3–4 min plus the near pairs; the products over anchors are negligible. A jax/GPU backend for `_accumulate` (as `windows.py` has for the pair counts) would remove most of this.
 
 ## 6. What remains, in order
 
-1. **Class 2** (`BispectrumGaussianCovariance.class2_block`): in the `(p1, p3)` variables it reuses `Q_n`; new pieces are the class-2 vertex (indicator × `Y_{ℓ'2}(p̂2) P(p2; x̂)` in bipolar harmonics of `(p̂1, p̂3)`), the leg-2 kernel integrating `j_Λ'(p3 r2)` over all `p3`, and the rank assignment (primed line of sight at `ŷ2`). It is `≈ dk/k` of class 1 on the diagonal — 20–40 % for `dk = 0.04`, 5 % for `dk = 0.005` at `k = 0.1` — and the only Gaussian term off the diagonal. The GRF test below measures it empirically.
+1. **Understand the sphere residual** (section 4): thinner-shell GRF run; test the A1/A2 approximations by a GRF with
+   a uniform-weight footprint far from the observer (global line of sight) to separate the two.
 2. **The k3 ≈ 0 term** (`k3_zero_block`): zero for uniform `ω`, up to tens of per cent of the `(i, i)` variance for a radially varying `ω`; needs the long-mode variance of the `W`-weighted field with the integral constraint (the SSC machinery has the ingredients).
 3. **Non-Gaussian terms** `P B`, `B B`, `P T`: each reduces to the power-spectrum master formula with two-point windows of weights `(ω³, W)`, `(ω³, ω³)`, `(ω⁴, W)` and effective spectra `β`, `β^u β^p`, `τ` (guide sec. 'Non-Gaussian terms'); `WindowLibrary` can count the new weight pairs, the kernels need `B_{ℓ''}` on two-magnitude grids and `T` on general quadrilaterals.
 4. **Pair-averaged (smoothed) windows** and `masked=True` models, as for the power spectrum.

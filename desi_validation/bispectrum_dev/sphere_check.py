@@ -8,11 +8,11 @@ from thecov.bispectrum_windows import AnchoredMoments
 R_SPHERE, ALPHA = 500.0, 0.1
 
 
-def sphere_tracer(n_ran=200000, seed=0):
+def sphere_tracer(n_ran=200000, seed=0, R=R_SPHERE):
     rng = np.random.default_rng(seed)
-    x = rng.uniform(-R_SPHERE, R_SPHERE, size=(3 * n_ran, 3))
-    x = x[np.sum(x * x, 1) < R_SPHERE ** 2][:n_ran]
-    V = 4 / 3 * np.pi * R_SPHERE ** 3
+    x = rng.uniform(-R, R, size=(3 * n_ran, 3))
+    x = x[np.sum(x * x, 1) < R ** 2][:n_ran]
+    V = 4 / 3 * np.pi * R ** 3
     nbar = ALPHA * len(x) / V
     T = Tracer('S', {'POSITION': x, 'WEIGHT': np.ones(len(x)), 'NZ': np.full(len(x), nbar)}, alpha=ALPHA)
     return T, nbar, V
