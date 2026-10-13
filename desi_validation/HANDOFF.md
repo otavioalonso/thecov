@@ -615,3 +615,15 @@ What a local session needs (keep it outside the repository or in a git-ignored d
 - Paths are hard-coded for NERSC in `paper/paperdata.py` (top of the file) and `desi_compare.Paths`: point them at the
   local copies (a `DESI_DATA` root is the planned change).
 - Environment: this repository's `thecov`, numpy, scipy, `lsstypes`, `cosmoprimo`, optionally `jax`.
+
+## 11. Bispectrum covariance: class-1 Gaussian term implemented (2026-10-13)
+
+`thecov/bispectrum_algebra.py`, `thecov/bispectrum.py`, `thecov/bispectrum_windows.py`; `BispectrumGaussianCovariance`
+exported from `thecov`. Derivation `report/bispectrum_covariance_guide.typ`; implementation notes, conventions,
+validation and the remaining terms in `report/bispectrum_implementation.md`. Tests `tests/test_bispectrum_*.py`
+(fast: 26 tests, ~4 min; slow ones deselected with -m "not slow"). Development scripts and the GRF validation in
+`desi_validation/bispectrum_dev/` (grf_sphere.py -> grf_theory.py -> grf_compare.py; windows cached in
+grf_sphere_windows.npz). Status: coupling numbers, vertex, radial assembly exact against independent quadrature; window
+invariants on a sphere agree with Monte Carlo to 3 %; the Gaussian-field test agrees on the (i, i) elements and leaves
+an 8 +- 3 % (B000) / 15 % (B202, element dependent) excess that needs class 2 (next step, reuses Q_n) before it is
+decisive. Corrections to the notes found on the way: none to the physics; Q_n^box = V sqrt(N/4pi) H as the guide says.
