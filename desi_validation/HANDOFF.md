@@ -62,6 +62,15 @@ explicit thecov calls and compared with the mocks). Superseded: `report/report.t
    (adjacent 0.005 bins correlate at 0.4, so a fully correlated term shows up ~2/3 as "a"); the low-rank off-diagonal
    excess of `report/proposal_lowrank.md` (sigma_P0 0.51 / 0.66%, P2 mode 0.94 / 1.22%, LRG1 NGC / SGC) is the SSC term.
 
+> **Update 2026-10-14 (`report/grf_randoms_results.md`, `report/full_budget_plan.md`):** the window question is closed
+> with the holes resolved exactly: Gaussian fields evaluated at the DESI randoms themselves (no painting) give
+> Var_GRF / Var_thecov = 0.97-1.01 for the xi-kernel window and 0.65-0.78 (true P) / 1.077 (fields' mean) for m^2,
+> LRG1 both caps, and the same for LRG2, ELG2 NGC, QSO NGC. PS/SS terms at the files' shot noise, P2/P4 and linear
+> RSD at the true line of sight agree within the 5-8 % the field counts allow; thecov's SS term is checked to a few %
+> at S/P up to 5. Item 2's "converging the kernel basis: chi2/n does not move" is confounded by pair-count sampling:
+> at matched sampling convergence raised chi2/n by 0.02 (the unconverged kernel over-diluted by accident). Queued:
+> the dilution-by-thinning decomposition of the discreteness terms (`thinning_cov.py`) and the clean P/n^2 field test.
+
 ## 2. What was tried and should not be repeated
 
 - Tuning the fill scale (nside 512 -> 64): chi2/n improves for the wrong reason (item 4).
