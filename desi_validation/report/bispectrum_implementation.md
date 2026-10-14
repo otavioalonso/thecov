@@ -89,6 +89,10 @@ GRF/theory excess is the omitted class 2 plus a residual.
   R = 1000: the behaviour of the local line-of-sight approximation (A2: nearby points share the line of sight), whose
   error for the quadrupole weight at separation r and distance x is O((r/x)²) — the configurations of the bispectrum
   reach r ~ 1/Δk = 25–100 Mpc/h on a footprint where x ~ R.
+* **Power-spectrum control** (`grf_pk_check.py`, 2000 realisations): on the same sphere, the same fields and the same
+  randoms, var(P̂₀)/`GaussianCovariance` = 1.016 ± 0.016 per shell (1.04, 1.01, 1.02, 1.00) with the neighbour
+  correlations matching (0.05 vs 0.05). The local approximation A1 is therefore fine for the two-point function at
+  RΔk = 20; the bispectrum offset is specific to the three-point estimator.
 * The B_000 offset, +8 ± 2 % (R = 500) and +10 ± 3 % (R = 1000), does **not** shrink with R and has element scatter
   above the noise (the B̂ samples are Gaussian to within kurtosis ±0.3, so the quoted errors are right). It is not the
   numerics: λ_w = 2 → 4 changes the theory by < 1.5 %, dr = 4 → 2 and n3 = 10 → 16 by < 0.2 %, and the pair-sum noise

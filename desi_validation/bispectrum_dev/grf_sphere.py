@@ -32,6 +32,8 @@ sys.path.insert(0, str(HERE.parents[1]))
 
 L_BOX, N_MESH = 1300.0, 128
 K_EDGES = np.arange(0.04, 0.2001, 0.04)
+if os.environ.get('BISPEC_K_EDGES'):
+    K_EDGES = np.array([float(v) for v in os.environ['BISPEC_K_EDGES'].split(',')])
 ELLS = ((0, 0, 0), (2, 0, 2))
 
 
