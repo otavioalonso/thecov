@@ -284,7 +284,8 @@ def load_fields(od, b, r, tag=''):
     zs = [dict(np.load(f)) for f in fns]
     out = dict(zs[0])
     for key in [k_ for k_ in zs[0] if k_.startswith('P_mask')] + ['P_box', 'SN', 'SIG', 'NG', 'indices']:
-        out[key] = np.concatenate([z[key] for z in zs])
+        if key in zs[0]:
+            out[key] = np.concatenate([z[key] for z in zs])
     assert len(np.unique(out['indices'])) == len(out['indices']), 'duplicate realisations across tasks'
     return out
 
@@ -334,7 +335,7 @@ def run_thecov(args):
         if label == 'true' and g.get('poisson', 0) and float(g['poisson']) > 0:
             try:                                                      # discreteness (SN-NG) terms for the Poisson variant
                 from thecov.discreteness import DiscretenessCovariance
-                kk = np.concatenate([[0.0], g['k'], [g['k_edges'][-1]]])
+                kk = np.concatenate([[g['k_edges'][0] / 4], g['k'], [g['k_edges'][-1]]])
                 pl_ = kk, np.concatenate([[g['box_mean'][0]], g['box_mean'], [g['box_mean'][-1]]]) * rho ** 2
                 D = DiscretenessCovariance(cov, pl_, b1=1.0, f=0.0)
                 comps, index = D.components(sp, ells=ells, return_index=True)

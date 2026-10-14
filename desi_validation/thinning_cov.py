@@ -28,7 +28,7 @@ import numpy as np
 
 sys.path.insert(0, os.environ.get('THECOV_DIR', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from desi_validation import desi_compare as dc, pipeline as pl  # noqa: E402
-from desi_validation.grf_randoms import NTH, log, tensor_index  # noqa: E402
+from desi_validation.grf_randoms import NTH, T0, log, tensor_index  # noqa: E402
 
 KR = ((0.02, 0.05), (0.05, 0.1), (0.1, 0.2), (0.2, 0.3))
 
@@ -50,7 +50,7 @@ def thin(args):
     b, r = args.bin, args.region
     tracer, zr = dc.TRACER_SPECS[b]
     s1 = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=cfg.rebin, ells=cfg.ells)
-    k, edges, nb, ells = s1['k'], np.asarray(s1['k_edges']), len(s1['k']), tuple(cfg.ells)
+    k, edges, nb = s1['k'], np.asarray(s1['k_edges']), len(s1['k'])
     norm = float(s1['norm'].mean())
     rc = dc.load_region(paths, b, r, n_random_files=args.random_files)
     wd, wr = dc.total_weight(rc.data), dc.total_weight(rc.randoms)
@@ -75,7 +75,12 @@ def thin(args):
         khat = [np.where(kom > 0, K_ / kom, 0.0).ravel() for K_ in KO]
     del KO, kom
     opts = dict(eps=args.eps, nthreads=NTH, modeord=1)
-    orders = {0: ([()], np.array([1.0])), 2: tensor_index(2), 4: tensor_index(4)}
+    ells = tuple(args.ells)
+    orders = {0: ([()], np.array([1.0]))}
+    if max(ells) >= 2:
+        orders[2] = tensor_index(2)
+    if max(ells) >= 4:
+        orders[4] = tensor_index(4)
     tens = [t for o in sorted(orders) for t in orders[o][0]]
 
     def moments(x, w):
@@ -91,15 +96,19 @@ def thin(args):
 
     def multipoles(Fm, sn):
         F0 = Fm[0]
-        pos, Q2 = 1, np.zeros(F0.shape, complex)
-        for (i, j), mu in zip(*orders[2]):
-            Q2 += mu * khat[i] * khat[j] * Fm[pos]; pos += 1
-        Q4 = np.zeros(F0.shape, complex)
-        for (i, j, k_, l), mu in zip(*orders[4]):
-            Q4 += mu * khat[i] * khat[j] * khat[k_] * khat[l] * Fm[pos]; pos += 1
-        F2, F4 = 1.5 * Q2 - 0.5 * F0, 35 / 8 * Q4 - 15 / 4 * Q2 + 3 / 8 * F0
+        pos, Fl_ = 1, {0: F0}
+        if 2 in orders:
+            Q2 = np.zeros(F0.shape, complex)
+            for (i, j), mu in zip(*orders[2]):
+                Q2 += mu * khat[i] * khat[j] * Fm[pos]; pos += 1
+            Fl_[2] = 1.5 * Q2 - 0.5 * F0
+        if 4 in orders:
+            Q4 = np.zeros(F0.shape, complex)
+            for (i, j, k_, l), mu in zip(*orders[4]):
+                Q4 += mu * khat[i] * khat[j] * khat[k_] * khat[l] * Fm[pos]; pos += 1
+            Fl_[4] = 35 / 8 * Q4 - 15 / 4 * Q2 + 3 / 8 * F0
         out = []
-        for ell, Fl in zip((0, 2, 4), (F0, F2, F4)):
+        for ell, Fl in Fl_.items():
             pm = (F0 * Fl.conj()).real
             p = (2 * ell + 1) * np.bincount(io, pm, nb + 1)[:nb] / nsh / norm
             out.append(p - (sn / norm if ell == 0 else 0.0))
@@ -113,18 +122,23 @@ def thin(args):
     P1 = multipoles(Fd - Fr, float(np.sum(wd ** 2)) + snr)
     log(f'  full catalogue: P0 (first, middle, last) {P1[0]:.1f} {P1[nb // 2]:.1f} {P1[nb - 1]:.1f}; '
         f'files mean {s1["vectors"][:, 0].mean():.1f} {s1["vectors"][:, nb // 2].mean():.1f} {s1["vectors"][:, nb - 1].mean():.1f}')
-    out = dict(k=k, k_edges=edges, ells=np.array(ells), norm=norm, alpha=alpha, n_gal=len(wd), sum_w2=float(np.sum(wd ** 2)),
+    out = dict(k=k, k_edges=edges, ells=np.array(ells), chunk_note='P0 only unless --ells', norm=norm, alpha=alpha, n_gal=len(wd), sum_w2=float(np.sum(wd ** 2)),
                sn_randoms=snr, P1=P1, mean_files=s1['vectors'].mean(0), fracs=np.array(args.fracs), random_files=args.random_files)
     rng = np.random.default_rng(args.seed)
     for p in args.fracs:
-        Pp, SNp = np.zeros((args.nthin, 3 * nb)), np.zeros(args.nthin)
+        Pp, SNp = np.zeros((args.nthin, len(ells) * nb)), np.zeros(args.nthin)
         t0 = time.time()
         for j in range(args.nthin):
             keep = rng.random(len(wd)) < p
             SNp[j] = float(np.sum((wd[keep] / p) ** 2)) + snr
             Pp[j] = multipoles(moments(xd[keep], wd[keep] / p) - Fr, SNp[j])
-            if j == 0 or (j + 1) % 50 == 0:
+            if j == 0 or (j + 1) % 20 == 0:
                 log(f'  p = {p}: thinning {j + 1}/{args.nthin} ({time.time() - t0:.0f} s)')
+                out[f'P_p{p:g}'], out[f'SN_p{p:g}'] = Pp[:j + 1], SNp[:j + 1]
+                np.savez(os.path.join(od, 'thinning.npz'), **out)             # incremental: survives the time limit
+            if time.time() - T0 > args.max_time:
+                log(f'  time limit: p = {p} stopped after {j + 1} thinnings'); Pp, SNp = Pp[:j + 1], SNp[:j + 1]
+                break
         out[f'P_p{p:g}'], out[f'SN_p{p:g}'] = Pp, SNp
         d = Pp.mean(0) - P1
         log(f'  p = {p}: mean(P_p) - P_1 over sigma_thin: max |{np.max(np.abs(d) / Pp.std(0)) * np.sqrt(args.nthin):.2f}| '
@@ -139,7 +153,9 @@ def thecov_stage(args):
     b, r, p = args.bin, args.region, args.frac
     g = dict(np.load(os.path.join(od, 'thinning.npz')))
     tracer, zr = dc.TRACER_SPECS[b]
-    spec = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=cfg.rebin, ells=cfg.ells)
+    ells = tuple(int(e) for e in g['ells'])
+    cfg = dataclasses.replace(cfg, ells=ells)
+    spec = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=cfg.rebin, ells=ells)
     sn = float(g['sum_w2'] / p + g['sn_randoms']) if p == 1 else float(g[f'SN_p{p:g}'].mean())
     spec = dict(spec, num_shotnoise=np.full(len(spec['norm']), sn))          # the files' norm; the thinned shot noise
     cfg = dataclasses.replace(cfg, n_randoms_max=int(args.n_randoms_max), target_near_pairs=args.target_near_pairs)
@@ -160,7 +176,7 @@ def thecov_stage(args):
         from thecov.discreteness import DiscretenessCovariance
         nb = len(spec['k'])
         P0 = spec['vectors'][:, :nb].mean(0) * g['norm'] / cov.I_randoms
-        kk = np.concatenate([[0.0], spec['k'], [spec['k_edges'][-1]]])
+        kk = np.concatenate([[spec['k_edges'][0] / 4], spec['k'], [spec['k_edges'][-1]]])
         D = DiscretenessCovariance(cov, (kk, np.concatenate([[P0[0]], P0, [P0[-1]]])), b1=1.0, f=0.0)
         comps, index = D.components(spec, ells=spec['ells'], return_index=True)
         res['disc_components'], res['disc_index'] = np.asarray(comps), np.asarray(index, dtype=object)
@@ -188,7 +204,7 @@ def report(args):
         N = len(Pp)
         Ct = np.cov(Pp.T)
         dG = Gp - G1
-        for ei, ell in enumerate((0, 2, 4)):
+        for ei, ell in enumerate(int(e) for e in g['ells']):
             sl = slice(ei * nb, (ei + 1) * nb)
             d1, dt, dg = np.diag(G1)[sl], np.diag(Ct)[sl], np.diag(dG)[sl]
             row = []
@@ -216,7 +232,9 @@ def main():
     ap.add_argument('--fracs', type=float, nargs='+', default=[0.5, 0.25])
     ap.add_argument('--frac', type=float, default=1.0)
     ap.add_argument('--nthin', type=int, default=200)
-    ap.add_argument('--pad', type=float, default=1.2)
+    ap.add_argument('--ells', type=int, nargs='+', default=[0], help='multipoles (0 only is ~20x cheaper)')
+    ap.add_argument('--pad', type=float, default=1.1)
+    ap.add_argument('--max-time', type=float, default=1500.0)
     ap.add_argument('--eps', type=float, default=1e-4)
     ap.add_argument('--seed', type=int, default=7)
     ap.add_argument('--n-randoms-max', type=float, default=8e6)
