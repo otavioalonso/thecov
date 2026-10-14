@@ -32,7 +32,10 @@ def ratios(mfile, tfile):
 
 def summarize(res, name):
     r, e = res['r12'], res['err']
-    b000, b202 = slice(0, 10), slice(10, 26)
+    labs = np.array(res['labels'])
+    is000 = np.flatnonzero(labs[:, 0] == 0)  # label = (L, i, j): B000 elements first, then B202
+    n000 = len(is000)
+    b000, b202 = slice(0, n000), slice(n000, len(r))
     print(f'{name}: R = {res["R"]:.0f}, {res["n_real"]} realisations')
     for sl, lab in ((b000, 'B000'), (b202, 'B202')):
         chi2 = np.sum(((r[sl] - 1) / e[sl]) ** 2)
@@ -45,9 +48,10 @@ def summarize(res, name):
 
 
 def main(args):
-    sets = [(ratios(args[0], args[1]), 'R = 500 Mpc/h')]
+    sets = [(ratios(args[0], args[1]), None)]
     if len(args) >= 4:
-        sets.append((ratios(args[2], args[3]), 'R = 1000 Mpc/h'))
+        sets.append((ratios(args[2], args[3]), None))
+    sets = [(res, f'R = {res["R"]:.0f} Mpc/h') for res, _ in sets]
     for res, name in sets:
         summarize(res, name)
     import matplotlib
