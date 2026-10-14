@@ -117,7 +117,19 @@ GRF/theory excess is the omitted class 2 plus a residual.
 
 1. **Understand the sphere residual** (section 4): thinner-shell GRF run; test the A1/A2 approximations by a GRF with
    a uniform-weight footprint far from the observer (global line of sight) to separate the two.
-2. **The k3 ≈ 0 term** (`k3_zero_block`): zero for uniform `ω`, up to tens of per cent of the `(i, i)` variance for a radially varying `ω`; needs the long-mode variance of the `W`-weighted field with the integral constraint (the SSC machinery has the ingredients).
+2. **The k3 ≈ 0 term** (`k3_zero_block`), pairing (1 2)(1' 2')(3 3'): zero for uniform `ω` only for the exact zero
+   mode; the mean subtraction removes k3 = 0 but leaves the long modes |k3| ≲ k_w = 1/R, which the third-leg window
+   W(k3) still admits. Design: (a) the (1 2)(1' 2') part is a two-point object on legs 1, 2 — the product of the
+   two P-weighted leg kernels already in `BispectrumShellKernels.leg`, bin-averaged over shells (i, j) and (i', j')
+   with the Y_{ℓ1}Y_{ℓ2} Sugiyama weights collapsing to the (ℓ1 = ℓ2, L = 0) or local-LOS equivalent; (b) the
+   (3 3') part is the long-mode variance σ²_L = ∫ d³q/(2π)³ |W̃(q)|² P(q) of the W-weighted field with the integral
+   constraint subtracted (|W̃(q) − W̃(0) ρ̃(q)/ρ̃(0)|² with ρ the mean-subtraction weight), i.e. the quantity the SSC
+   module already computes for `W`; (c) the term is then an outer product of (a) over (i j) × (i' j') scaled by (b),
+   diagonal in neither shell index, which is the signature to look for in the GRF: a floor common to all elements of
+   the same multipole. Order of magnitude on the R = 500 sphere: σ²_L ∼ P(k_w)/V ∼ 10⁻² of the shell variance per
+   unit k_w/Δk, so a few per cent at Δk = 0.04 and more for thinner shells — the thin-shell run (Δk = 0.02) tests
+   exactly this scaling. For a radially varying `ω` the k3 = 0 mode itself survives and the term can reach tens of
+   per cent of the (i, i) variance.
 3. **Non-Gaussian terms** `P B`, `B B`, `P T`: each reduces to the power-spectrum master formula with two-point windows of weights `(ω³, W)`, `(ω³, ω³)`, `(ω⁴, W)` and effective spectra `β`, `β^u β^p`, `τ` (guide sec. 'Non-Gaussian terms'); `WindowLibrary` can count the new weight pairs, the kernels need `B_{ℓ''}` on two-magnitude grids and `T` on general quadrilaterals.
 4. **Pair-averaged (smoothed) windows** and `masked=True` models, as for the power spectrum.
 5. **Performance**: jax backend for the pair sums; disk cache of the coupling numbers.
