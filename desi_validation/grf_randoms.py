@@ -102,14 +102,15 @@ def fields(args):
     x = dc.sky_to_cartesian(rc.randoms['RA'], rc.randoms['DEC'], rc.randoms['Z'])
     del rc
     rng0 = np.random.default_rng(12345)
-    if args.poisson:            # galaxies are sampled from the first half of the files, randoms are the second half
-        nf = args.random_files
-        half = len(w) // 2    # files are concatenated in order: first half of the rows ~ first nf/2 files
-        par, ran = slice(0, half), slice(half, None)
-        xg_all, wg_all = x[par], w[par]
-        x, w = x[ran], w[ran]
-        rho = args.poisson * np.sum(wg_all) / (s * (np.sum(wg_all) + np.sum(w)))      # sum_g w_g / sum_data w
-        log(f'poisson mode: {len(wg_all)} parent randoms, {len(w)} estimator randoms, p0 = {args.poisson}, rho = {rho:.4f}')
+    if args.poisson:            # galaxies are sampled from a parent half of the randoms, the estimator uses the other half
+        x_all, w_all = x, w
+        half = len(w) // 2
+        rho = args.poisson * 0.5 / s                                  # sum_g w_g / sum_data w (halves have equal sums)
+        log(f'poisson mode: {len(w)} randoms split into parent / estimator halves ({"re-drawn every realisation" if args.resplit else "fixed"}), '
+            f'p0 = {args.poisson}, rho = {rho:.4f}')
+        perm0 = rng0.permutation(len(w))
+        xg_all, wg_all = x_all[perm0[:half]], w_all[perm0[:half]]
+        x, w = x_all[perm0[half:]], w_all[perm0[half:]]
     if len(w) > args.max_randoms:          # the mask is defined by any dense subset; the self-pair term is modelled
         keep = rng0.random(len(w)) < args.max_randoms / len(w)
         s, w, x = s * np.sum(w) / np.sum(w[keep]), w[keep], x[keep]
@@ -228,6 +229,14 @@ def fields(args):
         else:
             def evaluate(theta, xh):
                 return finufft.nufft3d2(*theta, W, isign=1, **opts).real
+        if args.poisson and args.resplit:                       # fresh parent / estimator halves: no frozen shot noise
+            perm = rng.permutation(len(w_all))
+            xg_all, wg_all = x_all[perm[:half]], w_all[perm[:half]]
+            x, w = x_all[perm[half:]], w_all[perm[half:]]
+            th = [np.ascontiguousarray(2 * np.pi * (x[:, i] - lo[i]) / L) for i in range(3)]
+            xhat = x / np.linalg.norm(x, axis=1)[:, None]
+            thg = [np.ascontiguousarray(2 * np.pi * (xg_all[:, i] - lo[i]) / L) for i in range(3)]
+            xhg = xg_all / np.linalg.norm(xg_all, axis=1)[:, None]
         if args.poisson:
             dg = evaluate(thg, xhg)
             p = np.clip(args.poisson * (1 + dg), 0, 1)
@@ -383,6 +392,7 @@ def main():
     ap.add_argument('--rsd', type=float, default=0.0, help='fields: linear RSD with this f at the true line of sight')
     ap.add_argument('--poisson', type=float, default=0.0,
                     help='fields: sample galaxies from the first half of the random files with p = p0 (1 + delta)')
+    ap.add_argument('--resplit', action='store_true', help='poisson: re-draw the parent / estimator split every realisation')
     ap.add_argument('--sigma', type=float, default=0.0, help='fields: rescale the field to this rms (poisson mode)')
     args = ap.parse_args()
     args.cs_version = args.spectra_dir = args.mock = args.synthetic = None
