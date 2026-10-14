@@ -93,6 +93,18 @@ GRF/theory excess is the omitted class 2 plus a residual.
   randoms, var(P̂₀)/`GaussianCovariance` = 1.016 ± 0.016 per shell (1.04, 1.01, 1.02, 1.00) with the neighbour
   correlations matching (0.05 vs 0.05). The local approximation A1 is therefore fine for the two-point function at
   RΔk = 20; the bispectrum offset is specific to the three-point estimator.
+* **Thin-shell run** (`grf_sphere.py 400 2000 192 800 _thin` with `BISPEC_K_EDGES=0.10,…,0.20`, i.e. Δk = 0.02,
+  k = 0.10–0.20, R = 800 in a 2000 Mpc/h box, 192³; theory `grf_theory2.py 2 800 _thin`, box theory
+  `grf_box_theory.py`; figure `bispectrum_grf_thin.png`): box B000 0.996 ± 0.018, B202 1.032 ± 0.014 (the formalism
+  is exact at Δk = 0.02 too); sphere B000 1.069 ± 0.020 (χ² 33/15), B202 1.063 ± 0.015 (χ² 41/25), off-diagonal
+  correlations 0.153 vs 0.149. Dividing out the box run on the same seeds, (var_sph/var_box)/(theory_sph/theory_box)
+  = 1.052 ± 0.024 (B000) and 1.014 ± 0.018 (B202); the same paired ratio for R = 500, Δk = 0.04 is 1.058 ± 0.022 and
+  1.120 ± 0.018. So: the B202 excess is gone once the low-k elements (k < 0.1) are out of the range and R is large
+  (A2 confirmed), while the B000 offset is +5–8 % at R = 500 / 800 / 1000, Δk = 0.04 / 0.02 and k_w/Δk = 0.025–0.06
+  alike — it does not scale with k_w/Δk, which rules out the k3 ≈ 0 long-mode term as its explanation. Per-element
+  scatter beyond the nominal errors (χ²/dof ≈ 2) is present in the **box** ratios as well, where only lattice
+  triangle-counting (beyond the mode-count correction) can produce it; the per-element errors should therefore be
+  inflated by ~1.4 and the B000 offset read as a ~2σ effect per run, ~3.5σ combined.
 * The B_000 offset, +8 ± 2 % (R = 500) and +10 ± 3 % (R = 1000), does **not** shrink with R and has element scatter
   above the noise (the B̂ samples are Gaussian to within kurtosis ±0.3, so the quoted errors are right). It is not the
   numerics: λ_w = 2 → 4 changes the theory by < 1.5 %, dr = 4 → 2 and n3 = 10 → 16 by < 0.2 %, and the pair-sum noise

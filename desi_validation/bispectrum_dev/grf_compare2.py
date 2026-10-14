@@ -69,9 +69,11 @@ def main(args):
         ax.plot(x + off, res['r1'], 'x', color=cols[k], alpha=0.5, label=f'{name}: var(GRF) / class 1 only' if k == 0 else None)
     ax.axhline(1, color='gray', lw=0.8)
     ax.set_xticks(x)
-    ax.set_xticklabels([f'{l[0]}{l[1]}{l[2]}\n({l[3]},{l[4]})' for l in labs], fontsize=7)
+    ax.set_xticklabels([f'{l[0]}{l[1]}{l[2]}\n({l[3]},{l[4]})' for l in labs], fontsize=7 if len(labs) <= 26 else 5)
     ax.set_ylabel('var(GRF) / var(theory)')
-    ax.set_title('Gaussian fields on a sphere centred on the observer, isotropic P, dk = 0.04')
+    from grf_sphere import K_EDGES
+    ax.set_title(f'Gaussian fields on a sphere centred on the observer, isotropic P, dk = {K_EDGES[1] - K_EDGES[0]:.2f}, '
+                 f'k = {K_EDGES[0]:.2f}-{K_EDGES[-1]:.2f}')
     ax.legend(fontsize=8, loc='upper left')
     ax = axes[1]
     for k, (res, name) in enumerate(sets):

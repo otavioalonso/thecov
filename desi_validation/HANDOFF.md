@@ -638,5 +638,7 @@ vertices, radial assembly exact against independent quadrature; window invariant
 structure. On a sphere centred on the observer (R = 500 and 1000, dk = 0.04) class 2 fixes the off-diagonal
 correlations and most of the diagonal, but a +8-10 % B000 offset that does not scale with R remains (numerics and
 pair-sum noise excluded), and a B202 excess on the low-k quadrupole elements that halves from R = 500 to 1000 (the local
-line-of-sight approximation). See report/bispectrum_implementation.md section 4 for the candidates and the next test.
+line-of-sight approximation). A thin-shell run (dk = 0.02, k = 0.10-0.20, R = 800) removes the B202 excess (1.01 +- 0.02
+paired with the box) but keeps the B000 offset (+5-8 %, independent of R, dk and k_w/dk, so not the k3 ~ 0 term);
+box theory for any shell set: grf_box_theory.py. See report/bispectrum_implementation.md section 4 for the candidates.
 Corrections to the notes found on the way: none to the physics; Q_n^box = V sqrt(N/4pi) H as the guide says.
