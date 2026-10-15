@@ -133,6 +133,30 @@ def main():
         od_mc = [np.mean([Ct[i, i + d] / np.sqrt(d1[i] * d1[i + d]) for i in np.flatnonzero(m) if i + d < nb]) for d in (1, 2, 3)]
         od_cf = [np.mean([Cc[i, i + d] / np.sqrt(d1[i] * d1[i + d]) for i in np.flatnonzero(m) if i + d < nb]) for d in (1, 2, 3)]
         print(f'         off-diagonal |i-j| = 1..3, k > 0.15: MC ' + ' '.join(f'{x:+.3f}' for x in od_mc) + '  closed ' + ' '.join(f'{x:+.3f}' for x in od_cf))
+        # noise-free decomposition at full density. thecov's Gaussian difference dG(p) = G(S_p) - G(S_1) is a quadratic in a = (1-p)/p
+    # (PS and SS terms); fit g1, g2 from the two thinned thecov runs. Then the galaxies' own terms at p = 1 are
+    #   B/n  = lin  - g1   (scales as 1/p = 1 + a)         P/n^2 = quad - g2   (scales as 1/p^2 = 1 + 2a + a^2, the a^2 part)
+    # both in units of diag G_thecov(p = 1), per bin; the 2a P/n^2 piece is absorbed consistently (it is in g1 + lin at the same order).
+    fns = {p: os.path.join(od, f'thecov_p{p:g}.npz') for p in g['fracs']}
+    if all(os.path.exists(f) for f in fns.values()) and len(fns) >= 2:
+        ps = sorted(fns)
+        A = np.array([[(1 - p) / p, ((1 - p) / p) ** 2] for p in ps])
+        dG = np.array([np.load(fns[p])['C_G'][:nb, :nb] - G1[:nb, :nb] for p in ps])
+        coef = np.linalg.solve(A, dG.reshape(len(ps), -1)).reshape(2, nb, nb)
+        g1, g2 = coef
+        Bn, Pn2 = Gsum - g1, quad - g2
+        print('\nfull-density discreteness terms of the catalogue (closed form minus thecov Gaussian S-dependence), units diag G(p=1):')
+        print('  band        B/n diag    P/n^2 diag   | thecov Gaussian S-terms g1, g2 (same units) | tree level (HANDOFF 9.4): B/n 0.07-0.08, P/n^2 0.015 at k 0.15-0.3')
+        for lo_, hi_ in KR:
+            m = (k >= lo_) & (k < hi_)
+            print(f'  {lo_}-{hi_}:  {np.mean(np.diag(Bn)[m] / d1[m]):+.3f}      {np.mean(np.diag(Pn2)[m] / d1[m]):+.3f}      | '
+                  f'{np.mean(np.diag(g1)[m] / d1[m]):.3f}, {np.mean(np.diag(g2)[m] / d1[m]):.3f}')
+        m = k > 0.15
+        for name, M_ in (('B/n', Bn), ('P/n^2', Pn2)):
+            od_ = [np.mean([M_[i, i + d] / np.sqrt(d1[i] * d1[i + d]) for i in np.flatnonzero(m) if i + d < nb]) for d in (0, 1, 2, 3, 5, 8)]
+            print(f'  {name:6s} (i,j) at k > 0.15, |i-j| = 0,1,2,3,5,8: ' + ' '.join(f'{x:+.3f}' for x in od_))
+        out.update(Bn=Bn, Pn2=Pn2, g1=g1, g2=g2)
+        np.savez(fn, **out)
     log(f'saved {fn}')
 
 
