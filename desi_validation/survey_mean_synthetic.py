@@ -61,6 +61,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     b, r = args.bin, args.region
     cfg = pl.Config()
+    args.data = False
     paths = paths_for(args, args.mock)
     rc = dc.load_region(paths, b, r, n_random_files=args.random_files)
     tracer, zr = dc.TRACER_SPECS[b]
