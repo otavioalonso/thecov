@@ -155,3 +155,51 @@ Reading.
   value, and the R_2 orientation dependence needs the window-weighted long-mode anisotropy (thin shell: transverse).
   Test 3 of the previous note (lognormal-Poisson catalogues cut from a larger box, known delta_survey) is the end-to-end
   check of this bookkeeping with a known answer.
+
+## 10. The survey-mean response, closed (2026-10-15)
+
+Two runs (one debug node each, 4 + 20 min). Figure: survey_mean_response_LRG1.png.
+
+**10.1 848-mock regression with an explicit convention** (`survey_mean_regression.py`, LRG1, both caps, 11 defective
+mocks excluded). Regressor delta_L = N_m / median(N) - 1 (weighted galaxy count of the cap). sigma(delta_L) = 0.417 %
+NGC / 0.535 % SGC (Poisson 0.12 / 0.17 %). sigma(delta ln sum N(z)^2) = 2.05 x sigma(delta_L): HANDOFF 9.2's regressor
+is 2 delta_L, and regressing on it reproduces 9.2 exactly (-0.062 +- 0.020, -0.091 +- 0.017 NGC; -0.061, -0.109 SGC).
+Per unit delta_L (bands 0.05-0.1 / 0.1-0.2 / 0.2-0.3):
+
+| | d ln P0 / d delta_L | d ln P2 / d delta_L (slope of P2/<P0> divided by <P2>/<P0> = 0.41 / 0.34 / 0.23) |
+|---|---|---|
+| NGC | +0.04 +- 0.10, -0.12 +- 0.04, -0.17 +- 0.03 | 1.4 +- 0.5, 1.8 +- 0.3, 2.1 +- 0.3 |
+| SGC | +0.10 +- 0.10, -0.13 +- 0.05, -0.24 +- 0.04 | 1.8 +- 0.6, 2.2 +- 0.3, 2.7 +- 0.4 |
+| predicted, in-survey R_0(k_L >= 0.015) - 2 (NGC) | -0.09 +- 0.03, -0.10 +- 0.02, -0.19 +- 0.01 | R_2 - 2: 0.4-0.9 (k_L 0.03, isotropic) or 1.3 +- 0.2, 1.2 +- 0.1, 1.3 +- 0.3 (k_L 0.01, transverse) |
+| tree level | -0.4 .. -0.8 | |
+
+P0: the mocks' net survey-mean response equals R_0(q -> 0) - 2 within 1 sigma in every band and both caps. P2: the
+mocks imply R_2(q -> 0) = 3.4-4.1 (NGC), the small-k_L (transverse) limit of section 9, not the isotropic 2.8; the
+0.2-0.3 band is somewhat above even that (2.1 vs 1.3). The delta_norm regressions are ~0 for P0 and negative for P2
+(as 9.2 found): sigma(delta_norm) = 0.395 % with corr(delta_norm, delta_L) = 0.41 (NGC), norm is not a proxy for the mode.
+
+**10.2 Synthetic catalogue with a known survey-mean mode** (`survey_mean_synthetic.py`, LRG1 NGC footprint, lognormal-
+Poisson galaxies from one half of the mock-173 randoms, p0 = 0.08 -> 6.2e5 galaxies, n P_fkp = 4.0 at the peak,
+<w_fkp> = 0.21; 8 seeds x delta_u in {-0.06, -0.03, 0, 0.03, 0.06} with common random numbers). R_global = 2 by
+construction. d ln P_hat_0 / d delta_u (bands 0.05-0.1 / 0.1-0.2 / 0.2-0.3):
+
+| normalisation | d ln norm / d delta_u | d ln P0 / d delta_u | expected |
+|---|---|---|---|
+| NX and FKP follow the data (holi pipeline, 9.3) | +0.397 +- 0.002 | -0.002 +- 0.019, +0.007 +- 0.014, -0.018 +- 0.013 | 0 = 2 - 2 |
+| NX follows the data, no FKP | +1.999 +- 0.002 | -0.004, +0.007, -0.019 (same errors) | 0 |
+| NX and FKP fixed | +1.000 +- 0.001 | +0.995 +- 0.019, +1.006 +- 0.014, +0.981 +- 0.013 | +1 = 2 - 1 |
+
+d(P2/<P0>)/d delta_u = 0.00 +- 0.03 in all three (isotropic field). The bookkeeping is exact to 1-2 %: with
+data-matched randoms the net response is R_global - 2 independently of the FKP weights (norm itself responds only by
+0.40 = 2 <w_fkp>_m-weighted when the weights follow n(z), but |F|^2 carries the same weights and the ratio does not
+see them), and with frozen NX only alpha follows the density (R_global - 1). The across-seed regression on the box's own
+realised survey mean (8 points, no common random numbers) gives +0.3 (matched) / +1.1 (fixed): consistent, noisy.
+
+**Conclusion.** The in-survey response extrapolated to q -> 0, the 848-mock survey-mean regression and the synthetic
+end-to-end test agree: P_hat_0's net survey-mean response for LRG1 is R_0 - 2 = -0.1 to -0.2 per unit galaxy mode,
+with R_0 = 1.9 (1.2-1.5x tree level), and the "3x weaker than tree level" of HANDOFF 9.2 was the factor 2 of its
+regressor combined with the near cancellation. For thecov's local-average term: keep norm_kind = 'data-randoms'
+(R - 2), use the measured R_0(q -> 0) = 1.9 for LRG1 instead of the tree-level 1.2-1.6, and for P2 the long-mode
+anisotropy of the window (thin shell -> transverse modes, R_2 = 3.4-4) rather than the isotropic response. The SSC
+amplitude then needs sigma^2 of the super-survey modes with the same anisotropy weighting (nz_scatter's radial
+measurement plus the transverse |W(q)|^2), which is where the remaining uncertainty in the SSC term sits.

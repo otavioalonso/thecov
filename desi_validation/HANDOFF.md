@@ -660,3 +660,14 @@ Corrections to the notes found on the way: none to the physics; Q_n^box = V sqrt
 -0.10 / -0.19 vs 9.2's -0.064 / -0.090 (x2 if 9.2's slopes are per delta ln int n^2 - to confirm). Section 9 of
 report/grf_randoms_results.md. Next: use R_0(q->0) in the local-average term; R_2 with the window's long-mode
 anisotropy; test 3 (lognormal-Poisson from a larger box) for the end-to-end check.
+
+### Update 2026-10-15 (d): survey-mean response closed (report section 10)
+
+`survey_mean_regression.py` (848 mocks, regressor delta_L = N/median - 1): 9.2's regressor was 2 delta_L (sigma ratio
+2.05, slopes reproduced). Per unit delta_L: d ln P0 = +0.04 / -0.12 / -0.17 (NGC), +0.10 / -0.13 / -0.24 (SGC), vs
+in-survey R_0 - 2 = -0.09 / -0.10 / -0.19: agreement within 1 sigma. d ln P2 = 1.4-2.1 (NGC), 1.8-2.7 (SGC) -> R_2(q->0)
+= 3.4-4.1, the transverse (small-k_L) limit. `survey_mean_synthetic.py` (known uniform mode delta_u, lognormal-Poisson,
+common random numbers): d ln P0 / d delta_u = 0.00 +- 0.02 with data-matched NX (+-FKP, expected 2 - 2) and
+1.00 +- 0.02 with fixed NX (expected 2 - 1); d ln norm / d delta_u = 0.40 (own FKP) / 2.00 (no FKP) / 1.00 (fixed).
+Next for thecov: R_0(q->0) = 1.9 (LRG1) in the local-average term; R_2 with the window's long-mode anisotropy; the
+super-survey sigma^2 with the same anisotropy (radial from nz_scatter, transverse from |W(q)|^2).
