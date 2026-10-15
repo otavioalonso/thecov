@@ -120,6 +120,8 @@ def main():
     for p in g['fracs']:
         a = (1 - p) / p
         Cc = a * Gsum + a ** 2 * quad
+        if f'P_p{p:g}' not in g:
+            continue
         Ct = np.cov(g[f'P_p{p:g}'][:, :nb].T)
         N = len(g[f'P_p{p:g}'])
         row = []
@@ -137,13 +139,19 @@ def main():
     # (PS and SS terms); fit g1, g2 from the two thinned thecov runs. Then the galaxies' own terms at p = 1 are
     #   B/n  = lin  - g1   (scales as 1/p = 1 + a)         P/n^2 = quad - g2   (scales as 1/p^2 = 1 + 2a + a^2, the a^2 part)
     # both in units of diag G_thecov(p = 1), per bin; the 2a P/n^2 piece is absorbed consistently (it is in g1 + lin at the same order).
-    fns = {p: os.path.join(od, f'thecov_p{p:g}.npz') for p in g['fracs']}
-    if all(os.path.exists(f) for f in fns.values()) and len(fns) >= 2:
+    import glob as _glob
+    fns = {float(os.path.basename(f)[8:-4]): f for f in _glob.glob(os.path.join(od, 'thecov_p*.npz'))}
+    fns = {p: f for p, f in fns.items() if p != 1}
+    if len(fns) >= 2:
         ps = sorted(fns)
         A = np.array([[(1 - p) / p, ((1 - p) / p) ** 2] for p in ps])
         dG = np.array([np.load(fns[p])['C_G'][:nb, :nb] - G1[:nb, :nb] for p in ps])
-        coef = np.linalg.solve(A, dG.reshape(len(ps), -1)).reshape(2, nb, nb)
-        g1, g2 = coef
+        coef, *_ = np.linalg.lstsq(A, dG.reshape(len(ps), -1), rcond=None)
+        g1, g2 = coef.reshape(2, nb, nb)
+        if len(ps) > 2:
+            resid = dG.reshape(len(ps), -1) - A @ coef
+            print(f'\n  quadratic-in-a fit of thecov dG over p = {ps}: rms residual / diag G = '
+                  f'{np.sqrt(np.mean(resid.reshape(len(ps), nb, nb)[:, np.arange(nb), np.arange(nb)] ** 2 / d1 ** 2)):.4f} (pair-count noise of the thecov runs)')
         Bn, Pn2 = Gsum - g1, quad - g2
         print('\nfull-density discreteness terms of the catalogue (closed form minus thecov Gaussian S-dependence), units diag G(p=1):')
         print('  band        B/n diag    P/n^2 diag   | thecov Gaussian S-terms g1, g2 (same units) | tree level (HANDOFF 9.4): B/n 0.07-0.08, P/n^2 0.015 at k 0.15-0.3')

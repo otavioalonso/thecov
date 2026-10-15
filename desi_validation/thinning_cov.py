@@ -156,7 +156,7 @@ def thecov_stage(args):
     ells = tuple(int(e) for e in g['ells'])
     cfg = dataclasses.replace(cfg, ells=ells)
     spec = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=cfg.rebin, ells=ells)
-    sn = float(g['sum_w2'] / p + g['sn_randoms']) if p == 1 else float(g[f'SN_p{p:g}'].mean())
+    sn = float(g[f'SN_p{p:g}'].mean()) if f'SN_p{p:g}' in g else float(g['sum_w2'] / p + g['sn_randoms'])   # MC mean, else expected
     spec = dict(spec, num_shotnoise=np.full(len(spec['norm']), sn))          # the files' norm; the thinned shot noise
     cfg = dataclasses.replace(cfg, n_randoms_max=int(args.n_randoms_max), target_near_pairs=args.target_near_pairs)
     rc = dc.load_region(paths, b, r, n_random_files=cfg.n_random_files)

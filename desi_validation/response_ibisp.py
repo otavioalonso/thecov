@@ -124,14 +124,18 @@ def one_catalogue(args, mock, grid_state):
     M = poles(moments(xd, wd) - alpha * moments(xr, wr))                       # F_l
     ML = poles(moments(xd, wd * dLd) - alpha * moments(xr, wr * dLr))         # FT[delta_L F]_l
     ML2 = poles(moments(xd, wd * dLd ** 2) - alpha * moments(xr, wr * dLr ** 2))
-    MS = poles(moments(xd, wd ** 2 * dLd) - alpha ** 2 * moments(xr, wr ** 2 * dLr))   # shot-noise collapsed term
     F0 = M[0]
     out = dict(k=0.5 * (edges[1:] + edges[:-1]), sig2=sig2, alpha=alpha, n_gal=len(wd))
     sn = float(np.sum(wd ** 2) + alpha ** 2 * np.sum(wr ** 2))
+    # discreteness of the three-point estimator: the same galaxy in F^* and in the F of FT[delta_L F] gives the self term
+    # sum_g w_g^2 delta_L(x_g) (+ alpha^2 sum_r w_r^2 delta_L(x_r)), one scalar; <delta_L at galaxies> = <delta_g delta_L> = int P W_L (> sigma_L^2 = int P W_L^2)
+    c_sn = float(np.sum(wd ** 2 * dLd) + alpha ** 2 * np.sum(wr ** 2 * dLr))
+    out['c_sn'] = c_sn
+    out['dL_at_gal'] = float(np.sum(wd * dLd) / np.sum(wd))
     for ell in (0, 2):
         P = (2 * ell + 1) * shell((F0 * np.conj(M[ell])).real) - (sn if ell == 0 else 0.0)
         C = (2 * ell + 1) * shell((np.conj(F0) * ML[ell]).real)                 # raw cross-spectrum (SN part reported separately)
-        CS = (2 * ell + 1) * shell((np.conj(F0) * MS[ell]).real)
+        CS = np.full(nb, c_sn if ell == 0 else 0.0)                         # self term: monopole only, k-independent
         C2 = (2 * ell + 1) * shell((np.conj(F0) * ML2[ell]).real)
         out[f'P{ell}'], out[f'C{ell}'], out[f'CS{ell}'], out[f'C2_{ell}'] = P, C, CS, C2
     log(f'  responses done ({time.time() - t0:.0f} s)')
@@ -169,7 +173,8 @@ def main():
     agg = {key: np.array([o[key] for o in runs]) for key in runs[0] if key != 'k'}
     np.savez(fn, k=k, mocks=np.array(mocks), **agg)
     print(f'{args.bin} {args.region} [{tag}]: {len(runs)} catalogues, sigma_L = {np.sqrt(agg["sig2"]).mean() * 100:.3f} % (k_L {args.k_L}); bands {KR}')
-    print('  dlnP_l / d delta_L  (C_l / (P_l sigma_L^2); "SN" = shot-noise collapsed part, already removed from the first number)')
+    print(f'  <delta_L at galaxies> / sigma_L^2 = {(agg["dL_at_gal"] / agg["sig2"]).mean():.2f} (int P W / int P W^2)')
+    print('  dlnP_l / d delta_L  (C_l / (P_l sigma_L^2); "SN" = self-pair term sum_g w^2 delta_L(x_g), removed from the first number)')
     for ell in (0, 2):
         P, C, CS, C2 = agg[f'P{ell}'], agg[f'C{ell}'], agg[f'CS{ell}'], agg[f'C2_{ell}']
         s2 = agg['sig2'][:, None]
