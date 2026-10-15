@@ -166,7 +166,7 @@ def main():
     k = runs[0]['k']
     tag = 'data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)
     fn = os.path.join(od, f'response_{args.bin}_{args.region}_{tag}_kL{args.k_L:g}.npz')
-    agg = {key: np.array([o[key] for o in runs]) for key in runs[0]}
+    agg = {key: np.array([o[key] for o in runs]) for key in runs[0] if key != 'k'}
     np.savez(fn, k=k, mocks=np.array(mocks), **agg)
     print(f'{args.bin} {args.region} [{tag}]: {len(runs)} catalogues, sigma_L = {np.sqrt(agg["sig2"]).mean() * 100:.3f} % (k_L {args.k_L}); bands {KR}')
     print('  dlnP_l / d delta_L  (C_l / (P_l sigma_L^2); "SN" = shot-noise collapsed part, already removed from the first number)')
