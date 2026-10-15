@@ -60,7 +60,37 @@ def one_catalogue(args, mock, grid_state):
     wd, wr = dc.total_weight(rc.data), dc.total_weight(rc.randoms)
     xd = dc.sky_to_cartesian(rc.data['RA'], rc.data['DEC'], rc.data['Z'])
     xr = dc.sky_to_cartesian(rc.randoms['RA'], rc.randoms['DEC'], rc.randoms['Z'])
-    if args.synthetic is not None:
+    if args.lnpoisson is not None:
+        # Poisson-sampled lognormal catalogue with DISTINCT randoms (the data's own bookkeeping): G = A_L dL + A_S ds on the
+        # randoms, delta_g = exp(G - var G / 2) - 1, galaxies drawn from one half of the randoms with p = p0 (1 + delta_g), the
+        # other half are the randoms. Local power is exactly (1 + delta_L)^2 P_s: R = 2 per unit galaxy long mode, any filter.
+        from desi_validation.grf_randoms import p_input, kgrid
+        A_L, A_S, p0, seed = args.lnpoisson
+        s1 = dc.read_spectra(paths.spectra_fns(*dc.TRACER_SPECS[b], r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=cfg.rebin, ells=cfg.ells)
+        P0 = s1['vectors'][:, :len(s1['k'])].mean(0) * 1.22
+        lo_, hi_ = xr.min(0), xr.max(0)
+        Lg = 1.2 * float(np.max(hi_ - lo_))
+        lo_ = 0.5 * (lo_ + hi_) - 0.5 * Lg
+        ng = sfft.next_fast_len(2 * int(np.ceil(0.32 / (2 * np.pi / Lg))) + 4)
+        kg = kgrid(ng, Lg)
+        Pg = p_input(s1['k'], P0, kg, 0.32)
+        rng = np.random.default_rng(int(seed) + 1000 * mock)
+        Wm = sfft.fftn(rng.standard_normal((ng,) * 3), workers=NTH) * (np.sqrt(Pg / (Lg / ng) ** 3) / ng ** 3)
+        WLg = np.exp(-0.5 * (kg / args.k_L) ** 2) if args.filter == 'gauss' else (kg < args.k_L).astype(float)
+        thg = [np.ascontiguousarray(2 * np.pi * (xr[:, i] - lo_[i]) / Lg) for i in range(3)]
+        opts0 = dict(eps=args.eps, nthreads=NTH, modeord=1)
+        G = A_L * finufft.nufft3d2(*thg, Wm * WLg, isign=1, **opts0).real + A_S * finufft.nufft3d2(*thg, Wm * (1 - WLg), isign=1, **opts0).real
+        del Wm, WLg, kg, Pg
+        dg = np.exp(G - 0.5 * G.var()) - 1.0
+        perm = rng.permutation(len(wr))
+        par, est = perm[: len(wr) // 2], perm[len(wr) // 2:]
+        sel = par[rng.random(len(par)) < np.clip(p0 * (1 + dg[par]), 0, 1)]
+        xd, wd = xr[sel], wr[sel]
+        xr, wr = xr[est], wr[est]
+        log(f'  lognormal-Poisson catalogue: sigma_G = {G.std():.3f} {len(sel)} galaxies from {len(par)} parents '
+            f'(p0 = {p0}), {len(est)} randoms; expected dlnP0/d delta_gL = 2, dlnP2 = 0')
+        del G, dg, perm, par, est, sel
+    elif args.synthetic is not None:
         # known-response field on the real randoms: delta_g = g delta_L + delta_s (1 + R_m delta_L), delta_L = W_L delta_m,
         # delta_s = (1 - W_L) delta_m, W_L the estimator's own filter. Expected dlnP/d delta_{g,L} = 2 R_m / g; P2 response = 0.
         from desi_validation.grf_randoms import p_input, kgrid
@@ -159,13 +189,13 @@ def one_catalogue(args, mock, grid_state):
     F0 = M[0]
     out = dict(k=0.5 * (edges[1:] + edges[:-1]), sig2=sig2, alpha=alpha, n_gal=len(wd))
     sn = float(np.sum(wd ** 2) + alpha ** 2 * np.sum(wr ** 2))
-    if args.synthetic is not None:                # data = randoms (same points): the self pairs are those of ONE weighted point set
+    if args.synthetic is not None and args.lnpoisson is None:   # data = randoms (same points): the self pairs are those of ONE weighted point set
         wq = wd - alpha * wr                      #   F = sum_r (w_d - alpha w_r) e,  self term sum_r wq^2 (and wq^2 delta_L for C)
         sn = float(np.sum(wq ** 2))
     # discreteness of the three-point estimator: the same galaxy in F^* and in the F of FT[delta_L F] gives the self term
     # sum_g w_g^2 delta_L(x_g) (+ alpha^2 sum_r w_r^2 delta_L(x_r)), one scalar; <delta_L at galaxies> = <delta_g delta_L> = int P W_L (> sigma_L^2 = int P W_L^2)
     c_sn = float(np.sum(wd ** 2 * dLd) + alpha ** 2 * np.sum(wr ** 2 * dLr))
-    if args.synthetic is not None:
+    if args.synthetic is not None and args.lnpoisson is None:
         c_sn = float(np.sum(wq ** 2 * dLd))
     out['c_sn'] = c_sn
     out['dL_at_gal'] = float(np.sum(wd * dLd) / np.sum(wd))
@@ -195,6 +225,8 @@ def main():
     ap.add_argument('--eps', type=float, default=1e-4)
     ap.add_argument('--synthetic', type=float, nargs=3, default=None, metavar=('R_M', 'G', 'SEED'),
                     help='known-response field on the randoms instead of the data (validation); G < 0: lognormal with sigma_G = |G| (R = 2 at all q)')
+    ap.add_argument('--lnpoisson', type=float, nargs=4, default=None, metavar=('A_L', 'A_S', 'P0', 'SEED'),
+                    help='Poisson-sampled lognormal catalogue with distinct randoms (validation, R = 2)')
     ap.add_argument('--out-dir', default=None)
     args = ap.parse_args()
     od = args.out_dir or os.path.expanduser(f'~/thecov/responses')
@@ -208,7 +240,7 @@ def main():
         except FileNotFoundError as e:
             log(f'  mock {m}: skipped ({e})')
     k = runs[0]['k']
-    tag = ('data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)) + (f'_synthR{args.synthetic[0]:g}g{args.synthetic[1]:g}' if args.synthetic else '') + (f'_{args.filter}' if args.filter != 'gauss' else '')
+    tag = ('data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)) + (f'_synthR{args.synthetic[0]:g}g{args.synthetic[1]:g}' if args.synthetic else '') + (f'_lnpoisson{args.lnpoisson[0]:g}_{args.lnpoisson[1]:g}' if args.lnpoisson else '') + (f'_{args.filter}' if args.filter != 'gauss' else '')
     fn = os.path.join(od, f'response_{args.bin}_{args.region}_{tag}_kL{args.k_L:g}.npz')
     agg = {key: np.array([o[key] for o in runs]) for key in runs[0] if key != 'k'}
     np.savez(fn, k=k, mocks=np.array(mocks), **agg)
