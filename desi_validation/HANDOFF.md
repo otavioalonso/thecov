@@ -650,3 +650,13 @@ line-of-sight approximation). A thin-shell run (dk = 0.02, k = 0.10-0.20, R = 80
 paired with the box) but keeps the B000 offset (+5-8 %, independent of R, dk and k_w/dk, so not the k3 ~ 0 term);
 box theory for any shell set: grf_box_theory.py. See report/bispectrum_implementation.md section 4 for the candidates.
 Corrections to the notes found on the way: none to the physics; Q_n^box = V sqrt(N/4pi) H as the guide says.
+
+### Update 2026-10-15 (c): R_l(k_L), survey-mean response resolved as a cancellation
+
+`response_ibisp.py` now takes several `--k-L` (F_l once per catalogue). LRG1 NGC, mocks 173-178: R_0 flat at
+1.89-1.94 / 1.89-1.90 / 1.80-1.82 (bands 0.05-0.1 / 0.1-0.2 / 0.2-0.3) for k_L = 0.015-0.03; R_2 rises from 2.8 to
+3.9 as k_L drops from 0.03 to 0.007 (onset at 2 pi / shell thickness: transverse long modes). k_L = 0.005 breaks down
+(<delta_L>_gal -> 0: the survey-mean mode is invisible in-survey). Net survey-mean P0 response R_0 - 2 = -0.09 /
+-0.10 / -0.19 vs 9.2's -0.064 / -0.090 (x2 if 9.2's slopes are per delta ln int n^2 - to confirm). Section 9 of
+report/grf_randoms_results.md. Next: use R_0(q->0) in the local-average term; R_2 with the window's long-mode
+anisotropy; test 3 (lognormal-Poisson from a larger box) for the end-to-end check.
