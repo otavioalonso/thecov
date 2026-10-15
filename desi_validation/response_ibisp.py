@@ -75,7 +75,7 @@ def one_catalogue(args, mock, grid_state):
         Pg = p_input(s1['k'], P0, kg, 0.32)
         rng = np.random.default_rng(int(seed) + 1000 * mock)
         Wm = sfft.fftn(rng.standard_normal((ng,) * 3), workers=NTH) * (np.sqrt(Pg / (Lg / ng) ** 3) / ng ** 3)
-        WLg = np.exp(-0.5 * (kg / args.k_L) ** 2)
+        WLg = np.exp(-0.5 * (kg / args.k_L) ** 2) if args.filter == 'gauss' else (kg < args.k_L).astype(float)
         thg = [np.ascontiguousarray(2 * np.pi * (xr[:, i] - lo_[i]) / Lg) for i in range(3)]
         opts0 = dict(eps=args.eps, nthreads=NTH, modeord=1)
         dL_r = finufft.nufft3d2(*thg, Wm * WLg, isign=1, **opts0).real
@@ -115,7 +115,7 @@ def one_catalogue(args, mock, grid_state):
     Fr = finufft.nufft3d1(*th(xr), (alpha * wr).astype(complex), (n,) * 3, isign=-1, **opts)
     F = Fd - Fr
     # long-mode overdensity: smooth F and m with the same filter W_L(k) = exp(-(k/k_L)^2/2), delta_L = F_L / m_L on the grid where m_L > 0
-    WL = np.exp(-0.5 * (km / args.k_L) ** 2)
+    WL = np.exp(-0.5 * (km / args.k_L) ** 2) if args.filter == 'gauss' else (km < args.k_L).astype(float)
     F_L = sfft.ifftn(F * WL, workers=NTH).real
     m_L = sfft.ifftn(Fr * WL, workers=NTH).real
     thr = 0.05 * m_L.max()
@@ -179,6 +179,7 @@ def main():
     ap.add_argument('--random-files', type=int, default=4)
     ap.add_argument('--k-L', type=float, default=0.01, help='Gaussian low-pass of the long mode [h/Mpc]')
     ap.add_argument('--kmax', type=float, default=0.3)
+    ap.add_argument('--filter', default='gauss', choices=['gauss', 'tophat'], help='long-mode filter W_L(k)')
     ap.add_argument('--pad', type=float, default=1.1)
     ap.add_argument('--eps', type=float, default=1e-4)
     ap.add_argument('--synthetic', type=float, nargs=3, default=None, metavar=('R_M', 'G', 'SEED'),
@@ -196,27 +197,26 @@ def main():
         except FileNotFoundError as e:
             log(f'  mock {m}: skipped ({e})')
     k = runs[0]['k']
-    tag = ('data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)) + (f'_synthR{args.synthetic[0]:g}g{args.synthetic[1]:g}' if args.synthetic else '')
+    tag = ('data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)) + (f'_synthR{args.synthetic[0]:g}g{args.synthetic[1]:g}' if args.synthetic else '') + (f'_{args.filter}' if args.filter != 'gauss' else '')
     fn = os.path.join(od, f'response_{args.bin}_{args.region}_{tag}_kL{args.k_L:g}.npz')
     agg = {key: np.array([o[key] for o in runs]) for key in runs[0] if key != 'k'}
     np.savez(fn, k=k, mocks=np.array(mocks), **agg)
     print(f'{args.bin} {args.region} [{tag}]: {len(runs)} catalogues, sigma_L = {np.sqrt(agg["sig2"]).mean() * 100:.3f} % (k_L {args.k_L}); bands {KR}')
     print(f'  <delta_L at galaxies> / sigma_L^2 = {(agg["dL_at_gal"] / agg["sig2"]).mean():.2f} (int P W / int P W^2)')
     print('  dlnP_l / d delta_L  (C_l / (P_l sigma_L^2); "SN" = self-pair term sum_g w^2 delta_L(x_g), removed from the first number)')
+    print('  normalisation: iB(k) = int W(q) B(k,-k-q,q) = R P(k) int W P  ->  R = (C - SN) / (P <delta_g delta_L>), <delta_g delta_L> = int P W '
+          '(the mean of delta_L at the galaxies; Var(delta_L) = int P W^2 is NOT the right normaliser for a soft filter)')
     for ell in (0, 2):
         P, C, CS, C2 = agg[f'P{ell}'], agg[f'C{ell}'], agg[f'CS{ell}'], agg[f'C2_{ell}']
-        s2 = agg['sig2'][:, None]
+        s2 = agg['dL_at_gal'][:, None]
         resp = ((C - CS) / (P * s2)).mean(0)
         err = ((C - CS) / (P * s2)).std(0) / np.sqrt(max(len(runs), 1)) if len(runs) > 1 else np.full(len(k), np.nan)
         snp = (CS / (P * s2)).mean(0)
         row = ' | '.join(f'{np.mean(resp[(k >= lo) & (k < hi)]):+.3f} +- {np.nanmean(err[(k >= lo) & (k < hi)]) / np.sqrt(np.sum((k >= lo) & (k < hi)) / 2.5):.3f} (SN {np.mean(snp[(k >= lo) & (k < hi)]):+.3f})'
                         for lo, hi in KR)
         print(f'  l = {ell}: {row}')
-        if ell == 0:
-            j = (C2 / (P * 3 * s2 ** 2)).mean(0)                      # <dL^4> = 3 sig^4 for Gaussian long modes: leading second-order response / 2
-            print('  second order (C2_0 / (3 P sigma_L^4), ~ d^2 lnP / d delta_L^2 / 2):', ' | '.join(f'{np.mean(j[(k >= lo) & (k < hi)]):+.2f}' for lo, hi in KR))
-    print('  tree level (HANDOFF 9.2 / review 1.2, LRG1): P0 ~ -0.25 .. -0.3 net (local-mean), R_0^(0)/P_0 = 2.9-4.0 global; P2 +0.5 .. +2.2;'
-          ' mocks vs delta_shell: P0 -0.06 .. -0.11, P2 +0.8 .. +2.5')
+    print('  tree level per unit GALAXY long mode (review 1.2 / g0 = b1 + f/3 = 2.45, LRG1): P0 1.2-1.6 (global-mean), P2 1.8-2.7;'
+          ' net (after local average) per unit galaxy mode = this - 2')
     log(f'saved {fn}')
 
 
