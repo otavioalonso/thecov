@@ -68,3 +68,36 @@ large masks. Figures: `holes_LRG1_compare.png`, `holes_LRG1_dense.png`, `holes_L
 loader bug (`KeyError: 'SIG'`, fixed), partial high-z fields of the first attempt (old settings, not mergeable), the
 QSO shot-noise fields. The first LRG1/LRG2 outputs sit in `~/thecov_desi/...` (outside the `~/thecov` scope); copy
 all outputs to `/global/cfs/cdirs/desicollab/users/oalves/thecov_validation/` when the queue is done.
+
+## 7. Discreteness terms from the catalogue alone: closed form (2026-10-15)
+
+`thinning_closed_form.py`: Cov_thin[P(k),P(k')] = a sum_g G_g(k) G_g(k') + a^2 [|W2(k-k')|^2 + |W2(k+k')|^2 - 2 sum w^4],
+a = (1-p)/p, G_g = 2 Re[F_1^* w_g e_g] - 2 w_g^2, W2 the transform of the w^2-weighted galaxies. Verified on toys (2-4 %) and
+against the 200-thinning Monte Carlo on mock 173 LRG1 NGC: every band within 1.5 sigma, off-diagonals to 5-10 %, at
+p = 0.5 and 0.25; 60 s per catalogue instead of 400 thinnings. With thecov's Gaussian S-dependence fitted as
+g1 a + g2 a^2 over p = 0.5, 0.25, 0.125 (rms residual 0.16 % LRG1 / 1.5 % QSO of G = the pair-count noise), the
+galaxies' own terms at full density, units diag G(p=1):
+
+| | B/n diag k 0.2-0.3 | B/n off-diag k > 0.15 | P/n^2 diag | P/n^2 off-diag | tree level (HANDOFF 9.4) |
+|---|---|---|---|---|---|
+| LRG1 NGC | +0.138 | +0.163..0.170 | +0.024 | +0.022 | B/n 0.07-0.08, P/n^2 0.015 |
+| QSO NGC | +0.031 (noisy) | +0.111..0.114 | +0.044 | +0.039 | same |
+
+LRG1: B/n = 2x tree level (the one-halo bispectrum of the mock galaxies), P/n^2 ~ 1.5x. QSO: P/n^2 = 2.6x (non-Poisson
+pairs), B/n ~ 1.5x. Both match the template-fit amplitudes of HANDOFF 9.4 with no template and no mocks: this is the
+"calibrate discreteness from the data" step, and it applies unchanged to the DESI catalogues (~1 min per cap).
+
+## 8. Long-mode responses from the integrated bispectrum (`response_ibisp.py`): status
+
+Estimator: C_l(k) = <F_l^*(k) FT[delta_L F](k)> with delta_L = W_L*(m delta)/W_L*m (Gaussian W_L, k_L = 0.01), minus the self
+term sum_g w_g^2 delta_L(x_g); response R_l = (C_l - SN) / (P_l <delta_g delta_L>), with <delta_g delta_L> = int P W (NOT
+Var(delta_L) = int P W^2: they differ by 2.2 for the Gaussian filter). Verified on periodic toys: sharp-split modulated field
+2R to 5 %, lognormal field (R = 2 exactly) 2.04. On the real randoms the known-response constructions do NOT reproduce
+their inputs (soft-split g = 2.45: 1.55 ok; g = 1: 1.9 instead of 3.8; top-hat g = 1: 1.5-2.8; lognormal: 3.9, then 8-14 +- 2-7
+after correcting the data = randoms self-pair terms): the window's spectral leakage into delta_L and the self-pair
+bookkeeping of a field painted on the randoms interact in a way not yet understood. Mock measurement (3 mocks, LRG1 NGC,
+per unit galaxy long mode): l = 0: 2.11, 2.01, 1.93, 1.83 (+- 0.02-0.09); l = 2: 3.20, 3.22, 3.14, 2.99 (+- 0.1-0.9), against
+tree level 1.2-1.6 and 1.8-2.7 (review 1.2 / g0). PROVISIONAL until a known-response field on the footprint passes.
+Options: (i) sub-volume position-dependent P (explicit sub-volume means, no filter); (ii) a Poisson-sampled lognormal
+catalogue with distinct randoms (the standard construction, same bookkeeping as the data); (iii) the 848-mock regression
+on delta_shell (HANDOFF 9.2) remains the clean measurement of the survey-mean response.

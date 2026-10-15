@@ -70,6 +70,12 @@ explicit thecov calls and compared with the mocks). Superseded: `report/report.t
 > at S/P up to 5. Item 2's "converging the kernel basis: chi2/n does not move" is confounded by pair-count sampling:
 > at matched sampling convergence raised chi2/n by 0.02 (the unconverged kernel over-diluted by accident). Queued:
 > the dilution-by-thinning decomposition of the discreteness terms (`thinning_cov.py`) and the clean P/n^2 field test.
+>
+> **2026-10-15:** the discreteness terms are now measured from the catalogue alone, in closed form, no thinnings, no templates
+> (`thinning_closed_form.py`, `grf_randoms_results.md` section 7): LRG1 B/n = 2x tree level, P/n^2 ~ 1.5x; QSO P/n^2 = 2.6x. Item 4 of
+> section 1 is thereby answered: thecov's discreteness module is right at tree level; the mocks' galaxies have a larger
+> collapsed bispectrum (one-halo) and QSO non-Poisson pairs. The response estimator (`response_ibisp.py`) is correct on
+> periodic toys but unvalidated on the footprint (section 8 there); its mock numbers are provisional.
 
 ## 2. What was tried and should not be repeated
 
