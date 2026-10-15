@@ -81,10 +81,16 @@ def one_catalogue(args, mock, grid_state):
         dL_r = finufft.nufft3d2(*thg, Wm * WLg, isign=1, **opts0).real
         ds_r = finufft.nufft3d2(*thg, Wm * (1 - WLg), isign=1, **opts0).real
         del Wm, WLg, kg, Pg
-        dg = g_b * dL_r + ds_r * (1 + R_m * dL_r)
+        if g_b < 0:                               # lognormal: delta_g = exp(sG - sG^2/2) - 1 with sG = |g| x (dL + ds)/sigma: R = 2 exactly for every q
+            dG = dL_r + ds_r
+            dG *= abs(g_b) / dG.std()
+            dg = np.exp(dG - 0.5 * dG.var()) - 1.0
+            log(f'  lognormal field on the randoms: sigma_G = {abs(g_b)}; expected dlnP0/d delta_gL = 2 (all q), dlnP2 = 0')
+        else:
+            dg = g_b * dL_r + ds_r * (1 + R_m * dL_r)
+            log(f'  synthetic field on the randoms: R_m = {R_m}, g = {g_b}; sigma(delta_L) = {dL_r.std() * 100:.2f} %, '
+                f'sigma(delta_s) = {ds_r.std():.3f}; expected dlnP0/d delta_gL = {2 * R_m / g_b:.3f} (modulation only at q < k_L), dlnP2 = 0')
         xd, wd = xr, wr * (1 + dg)
-        log(f'  synthetic field on the randoms: R_m = {R_m}, g = {g_b}; sigma(delta_L) = {dL_r.std() * 100:.2f} %, '
-            f'sigma(delta_s) = {ds_r.std():.3f}; expected dlnP0/d delta_gL = {2 * R_m / g_b:.3f}, dlnP2 = 0')
         del dL_r, ds_r, dg
     del rc
     alpha = float(np.sum(wd) / np.sum(wr))
@@ -183,7 +189,7 @@ def main():
     ap.add_argument('--pad', type=float, default=1.1)
     ap.add_argument('--eps', type=float, default=1e-4)
     ap.add_argument('--synthetic', type=float, nargs=3, default=None, metavar=('R_M', 'G', 'SEED'),
-                    help='known-response field on the randoms instead of the data (validation)')
+                    help='known-response field on the randoms instead of the data (validation); G < 0: lognormal with sigma_G = |G| (R = 2 at all q)')
     ap.add_argument('--out-dir', default=None)
     args = ap.parse_args()
     od = args.out_dir or os.path.expanduser(f'~/thecov/responses')
