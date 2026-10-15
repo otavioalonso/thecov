@@ -74,8 +74,10 @@ explicit thecov calls and compared with the mocks). Superseded: `report/report.t
 > **2026-10-15:** the discreteness terms are now measured from the catalogue alone, in closed form, no thinnings, no templates
 > (`thinning_closed_form.py`, `grf_randoms_results.md` section 7): LRG1 B/n = 2x tree level, P/n^2 ~ 1.5x; QSO P/n^2 = 2.6x. Item 4 of
 > section 1 is thereby answered: thecov's discreteness module is right at tree level; the mocks' galaxies have a larger
-> collapsed bispectrum (one-halo) and QSO non-Poisson pairs. The response estimator (`response_ibisp.py`) is correct on
-> periodic toys but unvalidated on the footprint (section 8 there); its mock numbers are provisional.
+> collapsed bispectrum (one-halo) and QSO non-Poisson pairs. The response estimator (`response_ibisp.py`, integrated
+> bispectrum in Fourier space, normalised by int P W) is validated on the footprint with a Poisson-sampled lognormal catalogue
+> (R = 2 recovered to 5 %): mock LRG1 responses per unit galaxy long mode are 1.8-2.0 (P0) and 3.0-3.2 (P2) at k = 0.05-0.3,
+> 1.3-1.5x tree level. Input for step 3.B (measured responses in the SSC).
 
 ## 2. What was tried and should not be repeated
 

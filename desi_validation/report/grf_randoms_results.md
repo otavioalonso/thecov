@@ -97,7 +97,12 @@ their inputs (soft-split g = 2.45: 1.55 ok; g = 1: 1.9 instead of 3.8; top-hat g
 after correcting the data = randoms self-pair terms): the window's spectral leakage into delta_L and the self-pair
 bookkeeping of a field painted on the randoms interact in a way not yet understood. Mock measurement (3 mocks, LRG1 NGC,
 per unit galaxy long mode): l = 0: 2.11, 2.01, 1.93, 1.83 (+- 0.02-0.09); l = 2: 3.20, 3.22, 3.14, 2.99 (+- 0.1-0.9), against
-tree level 1.2-1.6 and 1.8-2.7 (review 1.2 / g0). PROVISIONAL until a known-response field on the footprint passes.
-Options: (i) sub-volume position-dependent P (explicit sub-volume means, no filter); (ii) a Poisson-sampled lognormal
-catalogue with distinct randoms (the standard construction, same bookkeeping as the data); (iii) the 848-mock regression
-on delta_shell (HANDOFF 9.2) remains the clean measurement of the survey-mean response.
+tree level 1.2-1.6 and 1.8-2.7 (review 1.2 / g0). **Validated (2026-10-15, `--lnpoisson`):** a Poisson-sampled lognormal catalogue with DISTINCT randoms (the data's bookkeeping;
+R = 2 exactly for any filter) on the LRG1 NGC footprint returns l = 0: 1.86 +- 0.06 / 1.98 +- 0.05 / 1.91 +- 0.06 (Gaussian filter,
+bands 0.05-0.1 / 0.1-0.2 / 0.2-0.3, 3 catalogues) and 2.11 / 2.32 / 2.31 (+- 0.2-0.3, top-hat, 2 catalogues); l = 2 consistent
+with 0. The earlier failures were artefacts of painting a continuous field on the random points (data = randoms). The first
+band (k = 0.02-0.05, only 2-5 k_L) is outside the squeezed limit (2.8 for R = 2) and must not be used.
+So the mock responses above (bands 2-4) stand: the mock LRG1 galaxies respond to the long mode 1.3-1.5x (P0) and
+1.2-1.4x (P2) more strongly than tree level, the same physics as the B/n factor of 2 (one-halo). Next: a response table in
+`SuperSampleCovariance.responses()` (HANDOFF 3.B/C) from this measurement; the survey-mean (local-average) response is a
+separate quantity, measured by the 848-mock delta_shell regression (HANDOFF 9.2).
