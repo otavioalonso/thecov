@@ -60,6 +60,32 @@ def one_catalogue(args, mock, grid_state):
     wd, wr = dc.total_weight(rc.data), dc.total_weight(rc.randoms)
     xd = dc.sky_to_cartesian(rc.data['RA'], rc.data['DEC'], rc.data['Z'])
     xr = dc.sky_to_cartesian(rc.randoms['RA'], rc.randoms['DEC'], rc.randoms['Z'])
+    if args.synthetic is not None:
+        # known-response field on the real randoms: delta_g = g delta_L + delta_s (1 + R_m delta_L), delta_L = W_L delta_m,
+        # delta_s = (1 - W_L) delta_m, W_L the estimator's own filter. Expected dlnP/d delta_{g,L} = 2 R_m / g; P2 response = 0.
+        from desi_validation.grf_randoms import p_input, kgrid
+        R_m, g_b, seed = args.synthetic
+        s1 = dc.read_spectra(paths.spectra_fns(*dc.TRACER_SPECS[b], r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=cfg.rebin, ells=cfg.ells)
+        P0 = s1['vectors'][:, :len(s1['k'])].mean(0) * 1.22
+        lo_, hi_ = xr.min(0), xr.max(0)
+        Lg = 1.2 * float(np.max(hi_ - lo_))
+        lo_ = 0.5 * (lo_ + hi_) - 0.5 * Lg
+        ng = sfft.next_fast_len(2 * int(np.ceil(0.32 / (2 * np.pi / Lg))) + 4)
+        kg = kgrid(ng, Lg)
+        Pg = p_input(s1['k'], P0, kg, 0.32)
+        rng = np.random.default_rng(int(seed) + 1000 * mock)
+        Wm = sfft.fftn(rng.standard_normal((ng,) * 3), workers=NTH) * (np.sqrt(Pg / (Lg / ng) ** 3) / ng ** 3)
+        WLg = np.exp(-0.5 * (kg / args.k_L) ** 2)
+        thg = [np.ascontiguousarray(2 * np.pi * (xr[:, i] - lo_[i]) / Lg) for i in range(3)]
+        opts0 = dict(eps=args.eps, nthreads=NTH, modeord=1)
+        dL_r = finufft.nufft3d2(*thg, Wm * WLg, isign=1, **opts0).real
+        ds_r = finufft.nufft3d2(*thg, Wm * (1 - WLg), isign=1, **opts0).real
+        del Wm, WLg, kg, Pg
+        dg = g_b * dL_r + ds_r * (1 + R_m * dL_r)
+        xd, wd = xr, wr * (1 + dg)
+        log(f'  synthetic field on the randoms: R_m = {R_m}, g = {g_b}; sigma(delta_L) = {dL_r.std() * 100:.2f} %, '
+            f'sigma(delta_s) = {ds_r.std():.3f}; expected dlnP0/d delta_gL = {2 * R_m / g_b:.3f}, dlnP2 = 0')
+        del dL_r, ds_r, dg
     del rc
     alpha = float(np.sum(wd) / np.sum(wr))
     if grid_state is None:
@@ -155,6 +181,8 @@ def main():
     ap.add_argument('--kmax', type=float, default=0.3)
     ap.add_argument('--pad', type=float, default=1.1)
     ap.add_argument('--eps', type=float, default=1e-4)
+    ap.add_argument('--synthetic', type=float, nargs=3, default=None, metavar=('R_M', 'G', 'SEED'),
+                    help='known-response field on the randoms instead of the data (validation)')
     ap.add_argument('--out-dir', default=None)
     args = ap.parse_args()
     od = args.out_dir or os.path.expanduser(f'~/thecov/responses')
@@ -168,7 +196,7 @@ def main():
         except FileNotFoundError as e:
             log(f'  mock {m}: skipped ({e})')
     k = runs[0]['k']
-    tag = 'data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)
+    tag = ('data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)) + (f'_synthR{args.synthetic[0]:g}g{args.synthetic[1]:g}' if args.synthetic else '')
     fn = os.path.join(od, f'response_{args.bin}_{args.region}_{tag}_kL{args.k_L:g}.npz')
     agg = {key: np.array([o[key] for o in runs]) for key in runs[0] if key != 'k'}
     np.savez(fn, k=k, mocks=np.array(mocks), **agg)
