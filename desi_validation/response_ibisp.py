@@ -159,9 +159,14 @@ def one_catalogue(args, mock, grid_state):
     F0 = M[0]
     out = dict(k=0.5 * (edges[1:] + edges[:-1]), sig2=sig2, alpha=alpha, n_gal=len(wd))
     sn = float(np.sum(wd ** 2) + alpha ** 2 * np.sum(wr ** 2))
+    if args.synthetic is not None:                # data = randoms (same points): the self pairs are those of ONE weighted point set
+        wq = wd - alpha * wr                      #   F = sum_r (w_d - alpha w_r) e,  self term sum_r wq^2 (and wq^2 delta_L for C)
+        sn = float(np.sum(wq ** 2))
     # discreteness of the three-point estimator: the same galaxy in F^* and in the F of FT[delta_L F] gives the self term
     # sum_g w_g^2 delta_L(x_g) (+ alpha^2 sum_r w_r^2 delta_L(x_r)), one scalar; <delta_L at galaxies> = <delta_g delta_L> = int P W_L (> sigma_L^2 = int P W_L^2)
     c_sn = float(np.sum(wd ** 2 * dLd) + alpha ** 2 * np.sum(wr ** 2 * dLr))
+    if args.synthetic is not None:
+        c_sn = float(np.sum(wq ** 2 * dLd))
     out['c_sn'] = c_sn
     out['dL_at_gal'] = float(np.sum(wd * dLd) / np.sum(wd))
     for ell in (0, 2):
