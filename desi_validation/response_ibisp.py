@@ -2,6 +2,7 @@
 for the SSC and squeezed-T0 terms.
 
     python -u -m desi_validation.response_ibisp --bin LRG1 --region NGC --mock 173 --mocks 173 174 175 176
+    python -u -m desi_validation.response_ibisp --bin LRG1 --region NGC --mocks 173 174 175 --k-L 0.03 0.02 0.015 0.01 0.007 0.005   (scale dependence R(k_L))
     python -u -m desi_validation.response_ibisp --bin LRG1 --region NGC --data        (the DESI data catalogue)
 
 Estimator. With F the FKP field (galaxies minus alpha randoms) and delta_L(x) = [F / (alpha n_r)]_lowpass(k < k_L) the
@@ -76,7 +77,7 @@ def one_catalogue(args, mock, grid_state):
         Pg = p_input(s1['k'], P0, kg, 0.32)
         rng = np.random.default_rng(int(seed) + 1000 * mock)
         Wm = sfft.fftn(rng.standard_normal((ng,) * 3), workers=NTH) * (np.sqrt(Pg / (Lg / ng) ** 3) / ng ** 3)
-        WLg = np.exp(-0.5 * (kg / args.k_L) ** 2) if args.filter == 'gauss' else (kg < args.k_L).astype(float)
+        WLg = np.exp(-0.5 * (kg / args.k_L[0]) ** 2) if args.filter == 'gauss' else (kg < args.k_L[0]).astype(float)
         thg = [np.ascontiguousarray(2 * np.pi * (xr[:, i] - lo_[i]) / Lg) for i in range(3)]
         opts0 = dict(eps=args.eps, nthreads=NTH, modeord=1)
         G = A_L * finufft.nufft3d2(*thg, Wm * WLg, isign=1, **opts0).real + A_S * finufft.nufft3d2(*thg, Wm * (1 - WLg), isign=1, **opts0).real
@@ -105,7 +106,7 @@ def one_catalogue(args, mock, grid_state):
         Pg = p_input(s1['k'], P0, kg, 0.32)
         rng = np.random.default_rng(int(seed) + 1000 * mock)
         Wm = sfft.fftn(rng.standard_normal((ng,) * 3), workers=NTH) * (np.sqrt(Pg / (Lg / ng) ** 3) / ng ** 3)
-        WLg = np.exp(-0.5 * (kg / args.k_L) ** 2) if args.filter == 'gauss' else (kg < args.k_L).astype(float)
+        WLg = np.exp(-0.5 * (kg / args.k_L[0]) ** 2) if args.filter == 'gauss' else (kg < args.k_L[0]).astype(float)
         thg = [np.ascontiguousarray(2 * np.pi * (xr[:, i] - lo_[i]) / Lg) for i in range(3)]
         opts0 = dict(eps=args.eps, nthreads=NTH, modeord=1)
         dL_r = finufft.nufft3d2(*thg, Wm * WLg, isign=1, **opts0).real
@@ -130,7 +131,7 @@ def one_catalogue(args, mock, grid_state):
         lo = 0.5 * (lo + hi) - 0.5 * L
         n = sfft.next_fast_len(2 * int(np.ceil(args.kmax / (2 * np.pi / L))) + 4)
         grid_state = dict(lo=lo, L=L, n=n)
-        log(f'{b} {r}: box {L:.0f}, grid {n}^3; k_L = {args.k_L}')
+        log(f'{b} {r}: box {L:.0f}, grid {n}^3 (k_f = {2 * np.pi / L:.5f}); k_L = {args.k_L}')
     lo, L, n = grid_state['lo'], grid_state['L'], grid_state['n']
     th = lambda x: [np.ascontiguousarray(2 * np.pi * (x[:, i] - lo[i]) / L) for i in range(3)]
     opts = dict(eps=args.eps, nthreads=NTH, modeord=1)
@@ -150,17 +151,6 @@ def one_catalogue(args, mock, grid_state):
     Fd = finufft.nufft3d1(*th(xd), wd.astype(complex), (n,) * 3, isign=-1, **opts)
     Fr = finufft.nufft3d1(*th(xr), (alpha * wr).astype(complex), (n,) * 3, isign=-1, **opts)
     F = Fd - Fr
-    # long-mode overdensity: smooth F and m with the same filter W_L(k) = exp(-(k/k_L)^2/2), delta_L = F_L / m_L on the grid where m_L > 0
-    WL = np.exp(-0.5 * (km / args.k_L) ** 2) if args.filter == 'gauss' else (km < args.k_L).astype(float)
-    F_L = sfft.ifftn(F * WL, workers=NTH).real
-    m_L = sfft.ifftn(Fr * WL, workers=NTH).real
-    thr = 0.05 * m_L.max()
-    dL = np.where(m_L > thr, F_L / np.maximum(m_L, thr), 0.0)
-    sig2 = float(np.sum(m_L * dL ** 2) / np.sum(m_L))                      # m-weighted variance of the long mode
-    log(f'  mock {mock}: {len(wd)} galaxies, alpha {alpha:.4f}; sigma_L = {np.sqrt(sig2) * 100:.3f} % ({time.time() - t0:.0f} s)')
-    # the modulated fields: delta_L(x) F(x) and delta_L(x)^2 F(x), as particle sums (exact, no aliasing): evaluate dL at the particles
-    dLd = finufft.nufft3d2(*th(xd), sfft.fftn(dL, workers=NTH).astype(complex) / n ** 3, isign=1, **opts).real
-    dLr = finufft.nufft3d2(*th(xr), sfft.fftn(dL, workers=NTH).astype(complex) / n ** 3, isign=1, **opts).real
     orders = {0: ([()], np.array([1.0])), 2: tensor_index(2)}
     tens = [t for o in sorted(orders) for t in orders[o][0]]
 
@@ -183,28 +173,51 @@ def one_catalogue(args, mock, grid_state):
 
     def shell(v):
         return np.bincount(io, v, nb + 1)[:nb] / nsh
-    M = poles(moments(xd, wd) - alpha * moments(xr, wr))                       # F_l
-    ML = poles(moments(xd, wd * dLd) - alpha * moments(xr, wr * dLr))         # FT[delta_L F]_l
-    ML2 = poles(moments(xd, wd * dLd ** 2) - alpha * moments(xr, wr * dLr ** 2))
+    M = poles(moments(xd, wd) - alpha * moments(xr, wr))                       # F_l (once per catalogue)
     F0 = M[0]
-    out = dict(k=0.5 * (edges[1:] + edges[:-1]), sig2=sig2, alpha=alpha, n_gal=len(wd))
     sn = float(np.sum(wd ** 2) + alpha ** 2 * np.sum(wr ** 2))
     if args.synthetic is not None and args.lnpoisson is None:   # data = randoms (same points): the self pairs are those of ONE weighted point set
         wq = wd - alpha * wr                      #   F = sum_r (w_d - alpha w_r) e,  self term sum_r wq^2 (and wq^2 delta_L for C)
         sn = float(np.sum(wq ** 2))
-    # discreteness of the three-point estimator: the same galaxy in F^* and in the F of FT[delta_L F] gives the self term
-    # sum_g w_g^2 delta_L(x_g) (+ alpha^2 sum_r w_r^2 delta_L(x_r)), one scalar; <delta_L at galaxies> = <delta_g delta_L> = int P W_L (> sigma_L^2 = int P W_L^2)
-    c_sn = float(np.sum(wd ** 2 * dLd) + alpha ** 2 * np.sum(wr ** 2 * dLr))
-    if args.synthetic is not None and args.lnpoisson is None:
-        c_sn = float(np.sum(wq ** 2 * dLd))
-    out['c_sn'] = c_sn
-    out['dL_at_gal'] = float(np.sum(wd * dLd) / np.sum(wd))
+    nL = len(args.k_L)
+    out = dict(k=0.5 * (edges[1:] + edges[:-1]), k_L=np.array(args.k_L), alpha=alpha, n_gal=len(wd),
+               sig2=np.zeros(nL), c_sn=np.zeros(nL), dL_at_gal=np.zeros(nL))
     for ell in (0, 2):
-        P = (2 * ell + 1) * shell((F0 * np.conj(M[ell])).real) - (sn if ell == 0 else 0.0)
-        C = (2 * ell + 1) * shell((np.conj(F0) * ML[ell]).real)                 # raw cross-spectrum (SN part reported separately)
-        CS = np.full(nb, c_sn if ell == 0 else 0.0)                         # self term: monopole only, k-independent
-        C2 = (2 * ell + 1) * shell((np.conj(F0) * ML2[ell]).real)
-        out[f'P{ell}'], out[f'C{ell}'], out[f'CS{ell}'], out[f'C2_{ell}'] = P, C, CS, C2
+        out[f'P{ell}'] = (2 * ell + 1) * shell((F0 * np.conj(M[ell])).real) - (sn if ell == 0 else 0.0)
+        for key in ('C', 'CS', 'C2_'):
+            out[f'{key}{ell}'] = np.zeros((nL, nb))
+    log(f'  mock {mock}: {len(wd)} galaxies, alpha {alpha:.4f}; F_l done ({time.time() - t0:.0f} s)')
+    for iL, k_L in enumerate(args.k_L):
+        t1 = time.time()
+        # long-mode overdensity: smooth F and m with the same filter W_L(k) = exp(-(k/k_L)^2/2), delta_L = F_L / m_L on the grid where m_L > 0
+        WL = np.exp(-0.5 * (km / k_L) ** 2) if args.filter == 'gauss' else (km < k_L).astype(float)
+        F_L = sfft.ifftn(F * WL, workers=NTH).real
+        m_L = sfft.ifftn(Fr * WL, workers=NTH).real
+        thr = 0.05 * m_L.max()
+        dL = np.where(m_L > thr, F_L / np.maximum(m_L, thr), 0.0)
+        sig2 = float(np.sum(m_L * dL ** 2) / np.sum(m_L))                      # m-weighted variance of the long mode
+        del WL, F_L, m_L
+        # the modulated fields: delta_L(x) F(x) and delta_L(x)^2 F(x), as particle sums (exact, no aliasing): evaluate dL at the particles
+        dLk = sfft.fftn(dL, workers=NTH).astype(complex) / n ** 3
+        del dL
+        dLd = finufft.nufft3d2(*th(xd), dLk, isign=1, **opts).real
+        dLr = finufft.nufft3d2(*th(xr), dLk, isign=1, **opts).real
+        del dLk
+        ML = poles(moments(xd, wd * dLd) - alpha * moments(xr, wr * dLr))         # FT[delta_L F]_l
+        ML2 = poles(moments(xd, wd * dLd ** 2) - alpha * moments(xr, wr * dLr ** 2))
+        # discreteness of the three-point estimator: the same galaxy in F^* and in the F of FT[delta_L F] gives the self term
+        # sum_g w_g^2 delta_L(x_g) (+ alpha^2 sum_r w_r^2 delta_L(x_r)), one scalar; <delta_L at galaxies> = <delta_g delta_L> = int P W_L (> sigma_L^2 = int P W_L^2)
+        c_sn = float(np.sum(wd ** 2 * dLd) + alpha ** 2 * np.sum(wr ** 2 * dLr))
+        if args.synthetic is not None and args.lnpoisson is None:
+            c_sn = float(np.sum(wq ** 2 * dLd))
+        out['sig2'][iL], out['c_sn'][iL] = sig2, c_sn
+        out['dL_at_gal'][iL] = float(np.sum(wd * dLd) / np.sum(wd))
+        for ell in (0, 2):
+            out[f'C{ell}'][iL] = (2 * ell + 1) * shell((np.conj(F0) * ML[ell]).real)                 # raw cross-spectrum (SN part reported separately)
+            out[f'CS{ell}'][iL] = c_sn if ell == 0 else 0.0                                          # self term: monopole only, k-independent
+            out[f'C2_{ell}'][iL] = (2 * ell + 1) * shell((np.conj(F0) * ML2[ell]).real)
+        log(f'    k_L = {k_L:g}: sigma_L = {np.sqrt(sig2) * 100:.3f} %, <delta_L at gal> = {out["dL_at_gal"][iL] * 1e4:.2f}e-4 ({time.time() - t1:.0f} s)')
+        del dLd, dLr, ML, ML2
     log(f'  responses done ({time.time() - t0:.0f} s)')
     return out, grid_state
 
@@ -218,7 +231,7 @@ def main():
     ap.add_argument('--data', action='store_true')
     ap.add_argument('--data-dir', default='/global/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1/LSScats/v2')
     ap.add_argument('--random-files', type=int, default=4)
-    ap.add_argument('--k-L', type=float, default=0.01, help='Gaussian low-pass of the long mode [h/Mpc]')
+    ap.add_argument('--k-L', type=float, nargs='+', default=[0.01], help='Gaussian low-pass(es) of the long mode [h/Mpc]; several values loop inside each catalogue (F_l computed once)')
     ap.add_argument('--kmax', type=float, default=0.3)
     ap.add_argument('--filter', default='gauss', choices=['gauss', 'tophat'], help='long-mode filter W_L(k)')
     ap.add_argument('--pad', type=float, default=1.1)
@@ -241,25 +254,26 @@ def main():
             log(f'  mock {m}: skipped ({e})')
     k = runs[0]['k']
     tag = ('data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)) + (f'_synthR{args.synthetic[0]:g}g{args.synthetic[1]:g}' if args.synthetic else '') + (f'_lnpoisson{args.lnpoisson[0]:g}_{args.lnpoisson[1]:g}' if args.lnpoisson else '') + (f'_{args.filter}' if args.filter != 'gauss' else '')
-    fn = os.path.join(od, f'response_{args.bin}_{args.region}_{tag}_kL{args.k_L:g}.npz')
-    agg = {key: np.array([o[key] for o in runs]) for key in runs[0] if key != 'k'}
-    np.savez(fn, k=k, mocks=np.array(mocks), **agg)
-    print(f'{args.bin} {args.region} [{tag}]: {len(runs)} catalogues, sigma_L = {np.sqrt(agg["sig2"]).mean() * 100:.3f} % (k_L {args.k_L}); bands {KR}')
-    print(f'  <delta_L at galaxies> / sigma_L^2 = {(agg["dL_at_gal"] / agg["sig2"]).mean():.2f} (int P W / int P W^2)')
-    print('  dlnP_l / d delta_L  (C_l / (P_l sigma_L^2); "SN" = self-pair term sum_g w^2 delta_L(x_g), removed from the first number)')
-    print('  normalisation: iB(k) = int W(q) B(k,-k-q,q) = R P(k) int W P  ->  R = (C - SN) / (P <delta_g delta_L>), <delta_g delta_L> = int P W '
-          '(the mean of delta_L at the galaxies; Var(delta_L) = int P W^2 is NOT the right normaliser for a soft filter)')
-    for ell in (0, 2):
-        P, C, CS, C2 = agg[f'P{ell}'], agg[f'C{ell}'], agg[f'CS{ell}'], agg[f'C2_{ell}']
-        s2 = agg['dL_at_gal'][:, None]
-        resp = ((C - CS) / (P * s2)).mean(0)
-        err = ((C - CS) / (P * s2)).std(0) / np.sqrt(max(len(runs), 1)) if len(runs) > 1 else np.full(len(k), np.nan)
-        snp = (CS / (P * s2)).mean(0)
-        row = ' | '.join(f'{np.mean(resp[(k >= lo) & (k < hi)]):+.3f} +- {np.nanmean(err[(k >= lo) & (k < hi)]) / np.sqrt(np.sum((k >= lo) & (k < hi)) / 2.5):.3f} (SN {np.mean(snp[(k >= lo) & (k < hi)]):+.3f})'
-                        for lo, hi in KR)
-        print(f'  l = {ell}: {row}')
+    kLtag = f'{args.k_L[0]:g}' if len(args.k_L) == 1 else f'{min(args.k_L):g}-{max(args.k_L):g}x{len(args.k_L)}'
+    fn = os.path.join(od, f'response_{args.bin}_{args.region}_{tag}_kL{kLtag}.npz')
+    agg = {key: np.array([o[key] for o in runs]) for key in runs[0] if key not in ('k', 'k_L')}
+    np.savez(fn, k=k, k_L=np.array(args.k_L), mocks=np.array(mocks), **agg)
+    print(f'{args.bin} {args.region} [{tag}]: {len(runs)} catalogues; bands {KR}')
+    print('  dlnP_l / d delta_L = (C - SN) / (P <delta_g delta_L>), <delta_g delta_L> = int P W (the mean of delta_L at the galaxies; the "SN" self-pair term '
+          'sum_g w^2 delta_L(x_g) is removed); error = scatter over catalogues / sqrt(N)')
+    for iL, k_L in enumerate(args.k_L):
+        print(f'  k_L = {k_L:g}: sigma_L = {np.sqrt(agg["sig2"][:, iL]).mean() * 100:.3f} %, <delta_L at gal> / sigma_L^2 = {(agg["dL_at_gal"][:, iL] / agg["sig2"][:, iL]).mean():.2f}')
+        for ell in (0, 2):
+            P, C, CS = agg[f'P{ell}'], agg[f'C{ell}'][:, iL], agg[f'CS{ell}'][:, iL]
+            s2 = agg['dL_at_gal'][:, iL][:, None]
+            resp = ((C - CS) / (P * s2)).mean(0)
+            err = ((C - CS) / (P * s2)).std(0) / np.sqrt(max(len(runs), 1)) if len(runs) > 1 else np.full(len(k), np.nan)
+            snp = (CS / (P * s2)).mean(0)
+            row = ' | '.join(f'{np.mean(resp[(k >= lo) & (k < hi)]):+.3f} +- {np.nanmean(err[(k >= lo) & (k < hi)]) / np.sqrt(np.sum((k >= lo) & (k < hi)) / 2.5):.3f} (SN {np.mean(snp[(k >= lo) & (k < hi)]):+.3f})'
+                            for lo, hi in KR)
+            print(f'    l = {ell}: {row}')
     print('  tree level per unit GALAXY long mode (review 1.2 / g0 = b1 + f/3 = 2.45, LRG1): P0 1.2-1.6 (global-mean), P2 1.8-2.7;'
-          ' net (after local average) per unit galaxy mode = this - 2')
+          ' net (after local average) per unit galaxy mode = this - 2. Bands with k < ~3 k_L are outside the squeezed limit.')
     log(f'saved {fn}')
 
 
