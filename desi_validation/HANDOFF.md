@@ -9,7 +9,7 @@ Everything is reproducible from files in the repository and the NERSC outputs in
 Workflow from 2026-10-12: the data are being copied to the user's machine and the analysis continues with a local
 Claude Code session (section 10: what is needed locally). NERSC remains the place for pair counts of new windows.
 
-Reading order: this file (sections 1, 3, 9); `report/ssc_t0_review.md`; `report/ssc_formalism.pdf`;
+Reading order: `report/validation_report_tutorial.md` (the whole programme at introductory level, 2026-10-15); this file (sections 1, 3, 9); `report/ssc_t0_review.md`; `report/ssc_formalism.pdf`;
 `report/window_kernel.typ` (the pair-averaged window); `paper/README.md` (the JCAP draft and its notebooks:
 `paper/paper_nersc.ipynb`, figures from the original files; `paper/thecov_walkthrough.ipynb`, every term computed with
 explicit thecov calls and compared with the mocks). Superseded: `report/report.tex` section 6, `report/proposal_lowrank.md`
