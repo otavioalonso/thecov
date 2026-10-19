@@ -99,24 +99,30 @@ class GaussianCovariance:
     def _tracer(self, name) -> Tracer:
         return self.tracers[str(name)]
 
-    def _Ls_for(self, spec):
+    def _Ls_for(self, power):
         """Model multipoles of a window's spectrum: 0 for shot noise, those of the model otherwise."""
-        if spec[0] == 'S':
+        if power[0] == 'S':
             return (0,)
         if self.model is None:
             return self.Ls
-        avail = self.model.multipoles(spec[1], spec[2])
+        avail = self.model.multipoles(power[1], power[2])
         return tuple(L for L in self.Ls if L in avail)
 
     def _wick_terms(self, AB, CD):
-        """(term, omega, spec, omega', spec') for the two Wick terms: (omega, spec) at x^ (kernel of bin j, multipole
-        L2), (omega', spec') at x'^ (bin i, L1); term 1 pairs A with D and C with B, term 2 A with C and D with B."""
+        """(term, window_x, power_x, window_xp, power_xp) for the two Wick terms.
+
+        Each correlator of a Wick term is a sum of (window, power) pieces, the set P^{XY} of the note
+        (spectrum_window_pairs): the clustering window W^{XY} = m_X m_Y (or its smoothed basis windows) with the model
+        P_L^{XY}, and for X = Y the shot-noise window S^X with p_L = delta_L0. window_x (the note's omega) is the piece
+        of the first correlator, at x^, with the kernel of bin j and multipole L2; window_xp (omega') the piece of the
+        second, at x'^, with bin i and L1. Each (window_x, window_xp) needs its own tripolar window Q^{omega omega'}.
+        Term 1 pairs A with D and C with B, term 2 A with C and D with B."""
         (A, B), (C, D) = AB, CD
         pairs = lambda X, Y: spectrum_window_pairs(self._tracer(X), self._tracer(Y), self.shot_noise, self.smoothing)
         for term, (X, Xp) in ((1, ((A, D), (C, B))), (2, ((A, C), (D, B)))):
-            for omega, spec in pairs(*X):
-                for omega_p, spec_p in pairs(*Xp):
-                    yield term, omega, spec, omega_p, spec_p
+            for window_x, power_x in pairs(*X):
+                for window_xp, power_xp in pairs(*Xp):
+                    yield term, window_x, power_x, window_xp, power_xp
 
     # ------------------------------------------------------------------ normalisation
     def I(self, A, B) -> float:
@@ -157,11 +163,11 @@ class GaussianCovariance:
         centres = 0.5 * (self.k_edges[1:] + self.k_edges[:-1])
         return self.I(A, B) / np.interp(k, centres, self.I_k(A, B))
 
-    def _kernel(self, spec, L, lam):
+    def _kernel(self, power, L, lam):
         """pbar^{(i)}_{L lam}(s) for every bin i, (nbins, ns): shot noise, the model, or the masked model."""
-        if spec[0] == 'S':
+        if power[0] == 'S':
             return self.kernels.average(None, lam, tag=('S',))
-        A, B = spec[1], spec[2]
+        A, B = power[1], power[2]
         if self.masked:
             return self.kernels.average(lambda k: self.model(A, B, L, k) * self.mask_factor(A, B, k), lam,
                                         tag=('P', A, B, L, 'masked'))
@@ -176,10 +182,10 @@ class GaussianCovariance:
             for CD in spectra:
                 if (AB, CD, id(self.model)) in self._requested:      # the model sets the multipoles needed
                     continue
-                for term, omega, spec, omega_p, spec_p in self._wick_terms(AB, CD):
-                    trip = {t[2:] for ell1 in self.ells for ell2 in self.ells for L1 in self._Ls_for(spec_p)
-                            for L2 in self._Ls_for(spec) for t in index_tuples(term, ell1, ell2, L1, L2)}
-                    self.windows.request(omega, omega_p, trip)
+                for term, window_x, power_x, window_xp, power_xp in self._wick_terms(AB, CD):
+                    trip = {t[2:] for ell1 in self.ells for ell2 in self.ells for L1 in self._Ls_for(power_xp)
+                            for L2 in self._Ls_for(power_x) for t in index_tuples(term, ell1, ell2, L1, L2)}
+                    self.windows.request(window_x, window_xp, trip)
                 self._requested.add((AB, CD, id(self.model)))
 
     def build_smoothing(self, spectra, log=print):
@@ -253,14 +259,14 @@ class GaussianCovariance:
         if self.windows.missing():          # lazily compute whatever pair counts are missing
             self.windows.compute_all()
         C = np.zeros((self.nbins, self.nbins))
-        for term, omega, spec, omega_p, spec_p in self._wick_terms(AB, CD):
-            ci, cj = omega_p.coeffs_for(self.k_edges), omega.coeffs_for(self.k_edges)   # basis-window coefficients
-            for L1 in self._Ls_for(spec_p):
-                for L2 in self._Ls_for(spec):
+        for term, window_x, power_x, window_xp, power_xp in self._wick_terms(AB, CD):
+            ci, cj = window_xp.coeffs_for(self.k_edges), window_x.coeffs_for(self.k_edges)   # basis-window coefficients
+            for L1 in self._Ls_for(power_xp):
+                for L2 in self._Ls_for(power_x):
                     for (lam, lamp), group in _couplings(term, ell1, ell2, L1, L2).items():
-                        q = sum(c * self.windows.get(omega, omega_p, *trip, self.s) for c, trip in group)
-                        u = self._kernel(spec_p, L1, lam)     # (nbins, ns), bin i
-                        v = self._kernel(spec, L2, lamp)      # (nbins, ns), bin j
+                        q = sum(c * self.windows.get(window_x, window_xp, *trip, self.s) for c, trip in group)
+                        u = self._kernel(power_xp, L1, lam)     # (nbins, ns), bin i
+                        v = self._kernel(power_x, L2, lamp)      # (nbins, ns), bin j
                         if ci is not None:
                             u = u * ci[:, None]
                         if cj is not None:
