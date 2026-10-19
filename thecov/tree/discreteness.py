@@ -26,7 +26,7 @@ clustering in these terms is on scales ~ 1/k).
 from __future__ import annotations
 
 import numpy as np
-from scipy.interpolate import CubicSpline
+from ._common import LinearPower, shell_nodes, fill_symmetric
 
 from .responses import _Z1, _Z2
 
@@ -42,20 +42,11 @@ class DiscretenessCovariance:
 
     def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, n_mu=12, n_phi=16, n_k=2, sigma_fog=0.0):
         self.cov = cov
-        k, P = (np.asarray(x, float) for x in p_lin)
-        self._spl = CubicSpline(np.log(k), P)
-        self._kmin, self._kmax = k[0], k[-1]
+        self.P = LinearPower(*p_lin)
         self.b1, self.f, self.b2 = float(b1), float(f), float(b2)
         self.bs2 = -4.0 / 7.0 * (self.b1 - 1.0) if bs2 is None else float(bs2)
         self.n_mu, self.n_phi, self.n_k = int(n_mu), int(n_phi), int(n_k)
         self.sigma_fog = float(sigma_fog)
-
-    def P(self, k):
-        k = np.asarray(k, float)
-        out = np.zeros_like(k)
-        ok = (k > self._kmin) & (k < self._kmax)
-        out[ok] = self._spl(np.log(k[ok]))
-        return out
 
     def window_integrals(self, A):
         """(J_Smm, J_SS) = (int S m^2, int S^2) / norm^2 from the host randoms (S = data's nbar <w^2>)."""
@@ -113,19 +104,10 @@ class DiscretenessCovariance:
             raise NotImplementedError('discreteness terms: auto-spectrum of one tracer')
         A = spectra[0][0]
         J_Smm, J_SS = self.window_integrals(A)
-        edges = cov.k_edges
-        xk, wk = np.polynomial.legendre.leggauss(self.n_k)
+        kn, kw = shell_nodes(cov.k_edges, self.n_k)
+        nb = len(kn)
         xm, wm = np.polynomial.legendre.leggauss(self.n_mu)
         phi = 2 * np.pi * (np.arange(self.n_phi) + 0.5) / self.n_phi
-        nb = len(edges) - 1
-        # shell nodes (k^2-weighted)
-        kn, kw = [], []
-        for i in range(nb):
-            lo, hi = edges[i], edges[i + 1]
-            kk = 0.5 * (hi - lo) * xk + 0.5 * (hi + lo)
-            ww = 0.5 * (hi - lo) * wk * kk ** 2
-            kn.append(kk)
-            kw.append(ww / ww.sum())
         mu1, mu2, ph = np.meshgrid(xm, xm, phi, indexing='ij')
         s1, s2 = np.sqrt(1 - mu1 ** 2), np.sqrt(1 - mu2 ** 2)
         u1 = np.stack([s1, np.zeros_like(s1), mu1])
@@ -147,10 +129,7 @@ class DiscretenessCovariance:
                                     acc[(t, l1, l2)] += (a_ * b_ * (2 * l1 + 1) * (2 * l2 + 1)
                                                          * np.sum(wang * L[l1][0] * L[l2][1] * F[t]))
                 for t in out:
-                    for p, l1 in enumerate(ells):
-                        for q, l2 in enumerate(ells):
-                            out[t][p * nb + i, q * nb + j] = acc[(t, l1, l2)]
-                            out[t][q * nb + j, p * nb + i] = acc[(t, l1, l2)]
+                    fill_symmetric(out[t], i, j, {(l1, l2): acc[(t, l1, l2)] for l1 in ells for l2 in ells}, ells, nb)
         if return_index:
             return out, [(A, A, l, i) for l in ells for i in range(nb)]
         return out

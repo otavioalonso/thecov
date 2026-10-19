@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._common import fill_symmetric
 from .trispectrum import Z1, Z2
 
 

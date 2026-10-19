@@ -44,7 +44,7 @@ import itertools
 from functools import partial
 
 import numpy as np
-from scipy.interpolate import CubicSpline
+from ._common import LinearPower, shell_nodes, fill_symmetric
 
 _TINY = 1e-24
 
@@ -381,22 +381,6 @@ def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None,
 
 
 # ----------------------------------------------------------------------------- covariance
-class LinearPower:
-    """P_lin(k) from a table (cubic spline in ln k; 0 outside the table, in particular at k = 0); picklable"""
-
-    def __init__(self, k, P):
-        k, P = np.asarray(k, float), np.asarray(P, float)
-        self._spl = CubicSpline(np.log(k), P)
-        self.kmin, self.kmax = k[0], k[-1]
-
-    def __call__(self, k):
-        k = np.asarray(k, float)
-        out = np.zeros_like(k)
-        ok = (k > self.kmin) & (k < self.kmax)
-        out[ok] = self._spl(np.log(k[ok]))
-        return out
-
-
 def _row(i, settings):
     """bin-averaged multipoles of all pairs (bin i, bin j >= i): [{part: {(l1, l2): value}}] (one per j).
     settings: k_nodes, k_weights (per bin) and the keyword arguments of multipoles (P, bias, f, ells, ...)."""
@@ -447,15 +431,7 @@ class TrispectrumCovariance:
         return T.alpha * float(np.sum(w * m ** 3)) / self.cov.I(A, A) ** 2
 
     def _nodes(self):
-        edges = self.cov.k_edges
-        xk, wk = np.polynomial.legendre.leggauss(self.n_k)
-        kn, kw = [], []
-        for lo, hi in zip(edges[:-1], edges[1:]):
-            kk = 0.5 * (hi - lo) * xk + 0.5 * (hi + lo)
-            ww = wk * kk ** 2
-            kn.append(kk)
-            kw.append(ww / ww.sum())
-        return kn, kw
+        return shell_nodes(self.cov.k_edges, self.n_k)
 
     def components(self, spectra, ells=None, verbose=False):
         """{'snake': C, 'star': C, 'star_b3': d C_star / d b3} for [P^{AA}_ell(k_i)] ordered by ell, bin (as
@@ -485,14 +461,9 @@ class TrispectrumCovariance:
                 rows.append(_row(i, settings))
         out = {p: np.zeros((nl * nb, nl * nb)) for p in rows[0][0]}
         for i, row in enumerate(rows):
-            for dj, acc in enumerate(row):
-                j = i + dj
+            for dj, values in enumerate(row):
                 for p in out:
-                    for a, l1 in enumerate(ells):
-                        for b, l2 in enumerate(ells):
-                            v = J4 * acc[p][(l1, l2)]
-                            out[p][a * nb + i, b * nb + j] = v
-                            out[p][b * nb + j, a * nb + i] = v
+                    fill_symmetric(out[p], i, i + dj, values[p], ells, nb, scale=J4)
         return out
 
     def covariance(self, spectra, ells=None, verbose=False):
