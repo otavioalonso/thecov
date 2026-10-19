@@ -41,6 +41,7 @@ can be fitted (e.g. to subvolumes of the data; desi_validation/templates.py). Th
 from __future__ import annotations
 
 import itertools
+from functools import partial
 
 import numpy as np
 from scipy.interpolate import CubicSpline
@@ -49,19 +50,24 @@ _TINY = 1e-24
 
 
 # ----------------------------------------------------------------------------- vector helpers
-class _Gram:
-    """Momenta as linear combinations of a few basis vectors: every dot product and z-component is a
-    combination of the basis' Gram matrix and z-components, computed once and cached (the kernels below
-    take either plain (3, ...) arrays or _Vec's of one _Gram)."""
+class _MomentumBasis:
+    """Speed trick for the kernels: every momentum in T(k1, -k1, k2, -k2) is a combination c1 k1 + c2 k2 of two
+    vectors (k1 + k2, -k1, k2 - k1, ...). Instead of building each (3, n_angles) vector and taking dot products
+    component by component, a momentum is stored as its coefficients (c1, c2) (_Momentum) and
+        (c1 k1 + c2 k2) . (d1 k1 + d2 k2) = sum_ij c_i d_j (k_i . k_j),   z-component = sum_i c_i k_i,z,
+    from the 2 x 2 Gram matrix k_i . k_j and the z-components, computed once on the angular grid. Dot products,
+    z-components and 1/|q|^2 are cached per coefficient tuple, so each is evaluated once however many kernel terms
+    use it. The kernels accept plain (3, ...) arrays as well (same formulas)."""
 
     def __init__(self, *vectors):
         self.n = len(vectors)
-        self.g = [[np.sum(a * b, 0) for b in vectors] for a in vectors]
-        self.zc = [v[2] for v in vectors]
+        self.gram = [[np.sum(a * b, 0) for b in vectors] for a in vectors]
+        self.z_components = [v[2] for v in vectors]
         self._dot, self._z, self._inv2 = {}, {}, {}
 
     def basis(self):
-        return [_Vec(self, tuple(float(i == j) for j in range(self.n))) for i in range(self.n)]
+        """the basis vectors themselves, as _Momentum's"""
+        return [_Momentum(self, tuple(float(i == j) for j in range(self.n))) for i in range(self.n)]
 
     def dot(self, c1, c2):
         key = (c1, c2) if c1 <= c2 else (c2, c1)
@@ -71,45 +77,46 @@ class _Gram:
                 if a:
                     for j, b in enumerate(c2):
                         if b:
-                            out = out + (a * b) * self.g[i][j]
+                            out = out + (a * b) * self.gram[i][j]
             self._dot[key] = out
         return self._dot[key]
 
     def z(self, c):
         if c not in self._z:
-            self._z[c] = sum((a * z for a, z in zip(c, self.zc) if a), 0.0)
+            self._z[c] = sum((a * z for a, z in zip(c, self.z_components) if a), 0.0)
         return self._z[c]
 
 
-class _Vec:
-    __slots__ = ('ctx', 'c')
+class _Momentum:
+    """A momentum sum_i coefficients[i] k_i on a _MomentumBasis: supports +, -, scalar *, and [2] (the z component)."""
+    __slots__ = ('ctx', 'coefficients')
 
-    def __init__(self, ctx, c):
-        self.ctx, self.c = ctx, c
+    def __init__(self, ctx, coefficients):
+        self.ctx, self.coefficients = ctx, coefficients
 
     def __add__(self, o):
-        return _Vec(self.ctx, tuple(a + b for a, b in zip(self.c, o.c)))
+        return _Momentum(self.ctx, tuple(a + b for a, b in zip(self.coefficients, o.coefficients)))
 
     def __sub__(self, o):
-        return _Vec(self.ctx, tuple(a - b for a, b in zip(self.c, o.c)))
+        return _Momentum(self.ctx, tuple(a - b for a, b in zip(self.coefficients, o.coefficients)))
 
     def __neg__(self):
-        return _Vec(self.ctx, tuple(-a for a in self.c))
+        return _Momentum(self.ctx, tuple(-a for a in self.coefficients))
 
     def __mul__(self, x):
-        return _Vec(self.ctx, tuple(x * a for a in self.c))
+        return _Momentum(self.ctx, tuple(x * a for a in self.coefficients))
 
     __rmul__ = __mul__
 
     def __getitem__(self, i):
         if i != 2:
             raise IndexError('only the z (line-of-sight) component is available')
-        return self.ctx.z(self.c)
+        return self.ctx.z(self.coefficients)
 
 
 def _dot(a, b):
-    if isinstance(a, _Vec):
-        return a.ctx.dot(a.c, b.c)
+    if isinstance(a, _Momentum):
+        return a.ctx.dot(a.coefficients, b.coefficients)
     return np.sum(a * b, 0)
 
 
@@ -119,9 +126,9 @@ def _inv(x):
 
 
 def _inv2(a):
-    """1 / |a|^2 (0 for a = 0), cached for _Vec's"""
-    if isinstance(a, _Vec):
-        ctx, key = a.ctx, a.c
+    """1 / |a|^2 (0 for a = 0), cached for _Momentum's"""
+    if isinstance(a, _Momentum):
+        ctx, key = a.ctx, a.coefficients
         if key not in ctx._inv2:
             ctx._inv2[key] = _inv(ctx.dot(key, key))
         return ctx._inv2[key]
@@ -295,8 +302,8 @@ def trispectrum(ks, P, bias, f, parts=('snake', 'star')):
 def parallelogram(k1, k2, P, bias, f, parts=('snake', 'star', 'star_b3')):
     """T(k1, -k1, k2, -k2) = trispectrum([k1, -k1, k2, -k2]) using its symmetries (kernels are even under
     q -> -q of all arguments; the P(0) terms dropped): 6 snake terms instead of 24, 2 Z3 instead of 4."""
-    if not isinstance(k1, _Vec):
-        k1, k2 = _Gram(k1, k2).basis()
+    if not isinstance(k1, _Momentum):
+        k1, k2 = _MomentumBasis(k1, k2).basis()
     m1, m2 = np.sqrt(_dot(k1, k1)), np.sqrt(_dot(k2, k2))
     P1, P2 = P(m1), P(m2)
     za, zb = Z1(k1, bias, f), Z1(k2, bias, f)
@@ -390,21 +397,21 @@ class LinearPower:
         return out
 
 
-def _row(args):
-    """multipoles of all pairs (bin i, bin j >= i), bin-averaged: [{part: {(l1, l2): value}}] (one per j)"""
-    i, kn, kw, P, bias, f, ells, n_mu, n_psi, mu12, sigma_fog, k_collapse = args
+def _row(i, settings):
+    """bin-averaged multipoles of all pairs (bin i, bin j >= i): [{part: {(l1, l2): value}}] (one per j).
+    settings: k_nodes, k_weights (per bin) and the keyword arguments of multipoles (P, bias, f, ells, ...)."""
+    k_nodes, k_weights = settings['k_nodes'], settings['k_weights']
+    kwargs = {k: v for k, v in settings.items() if k not in ('k_nodes', 'k_weights')}
     rows = []
-    for j in range(i, len(kn)):
-        acc = {}
-        for wa, ka in zip(kw[i], kn[i]):
-            for wb, kb in zip(kw[j], kn[j]):
-                m = multipoles(ka, kb, P, bias, f, ells=ells, n_mu=n_mu, n_psi=n_psi, mu12=mu12, sigma_fog=sigma_fog,
-                               k_collapse=k_collapse)
-                for p, d in m.items():
-                    a = acc.setdefault(p, {})
-                    for key, v in d.items():
-                        a[key] = a.get(key, 0.0) + wa * wb * v
-        rows.append(acc)
+    for j in range(i, len(k_nodes)):
+        total = {}
+        for wa, ka in zip(k_weights[i], k_nodes[i]):
+            for wb, kb in zip(k_weights[j], k_nodes[j]):
+                for part, values in multipoles(ka, kb, **kwargs).items():
+                    acc = total.setdefault(part, {})
+                    for key, v in values.items():
+                        acc[key] = acc.get(key, 0.0) + wa * wb * v
+        rows.append(total)
     return rows
 
 
@@ -463,20 +470,19 @@ class TrispectrumCovariance:
         J4 = self.window_integral(A)
         kn, kw = self._nodes()
         nb, nl = len(kn), len(ells)
-        tasks = [(i, kn, kw, self.P, self.bias, self.f, ells, self.n_mu, self.n_psi, self.mu12, self.sigma_fog,
-                  self.k_collapse)
-                 for i in range(nb)]
+        settings = dict(k_nodes=kn, k_weights=kw, P=self.P, bias=self.bias, f=self.f, ells=ells, n_mu=self.n_mu,
+                        n_psi=self.n_psi, mu12=self.mu12, sigma_fog=self.sigma_fog, k_collapse=self.k_collapse)
         if self.n_workers > 1:
             from concurrent.futures import ProcessPoolExecutor
             import multiprocessing as mp
             with ProcessPoolExecutor(self.n_workers, mp_context=mp.get_context('spawn')) as ex:
-                rows = list(ex.map(_row, tasks[::-1]))[::-1]           # long rows first
+                rows = list(ex.map(partial(_row, settings=settings), range(nb)[::-1]))[::-1]      # long rows first
         else:
             rows = []
-            for t in tasks:
+            for i in range(nb):
                 if verbose:
-                    print(f'T0: bin {t[0] + 1}/{nb}', flush=True)
-                rows.append(_row(t))
+                    print(f'T0: bin {i + 1}/{nb}', flush=True)
+                rows.append(_row(i, settings))
         out = {p: np.zeros((nl * nb, nl * nb)) for p in rows[0][0]}
         for i, row in enumerate(rows):
             for dj, acc in enumerate(row):
