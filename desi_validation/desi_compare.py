@@ -785,7 +785,7 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
     scale = sn_real / sn_rand if shotnoise == 'realised' else 1.0
     if shotnoise_target is not None:
         scale = float(shotnoise_target) / sn_rand
-    tr = Tracer(name, randoms, alpha, shotnoise_scale=scale)
+    tr = Tracer(name, randoms, alpha, shotnoise=scale * sn_rand)
     info.update(alpha=alpha, shotnoise_scale=scale, shotnoise_numerator=sn_real, keep_frac=keep_frac,
                 nw=nw, n_randoms=len(w))
     if verbose:

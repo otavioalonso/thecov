@@ -123,6 +123,8 @@ class GaussianCovariance:
     def set_normalization(self, A, B, norm: float):
         """Use the normalisation the power-spectrum estimator actually divided by.
 
+        Default (no call): I_AB = int m_A m_B = alpha sum_r m_B(x_r) w_r over the randoms, the standard FKP
+        normalisation int nbar^2 w^2 of an FKP estimator normalised with the randoms; nothing to do for it.
         The covariance scales as 1 / (I_AB I_CD), so it must match the estimator. pypower and
         jaxpower default to painting data x randoms on a 10 Mpc/h mesh (their `wnorm` / `norm`),
         which differs from int nbar_A nbar_B w_A w_B by a few per cent (2 % low in the mock

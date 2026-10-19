@@ -16,8 +16,9 @@ inherits the weight of a random data object), nbar(x_r) w_r evaluated with a ran
 gives the auto window ~ <w^2> instead of <w>^2, too large by 1 + var(w)/<w>^2. Pass the smooth 'NW'
 then; the windows use it in place of NZ * WEIGHT, while every random still carries its own weight as
 a sampling weight (sum_r w_r f(x_r) ~ int m f / alpha) and in the shot-noise window.
-`shotnoise_scale` multiplies the shot-noise window, e.g. to match (sum_d w^2 + alpha^2 sum_r w^2)
-when the random weights do not reproduce the distribution of the data weights.
+`shotnoise` sets the integral of the shot-noise window, int S = sum_g w_g^2 + alpha^2 sum_r w_r^2 as the estimator
+subtracts it (pypower / jaxpower `num_shotnoise`), when the random weights do not reproduce the distribution of the
+data weights; by default it is the randoms' own (1 + alpha) alpha sum_r w_r^2.
 
 Cross windows W^{AB} are sampled by the randoms of A, with nbar_B w_B taken from the nearest random
 of B and set to zero when that random is farther than `mask_factor` x the LOCAL spacing of B's
@@ -41,14 +42,16 @@ from scipy.spatial import cKDTree
 
 class Tracer:
     def __init__(self, name: str, randoms: dict, alpha: float, nbar=None, knn: int = 64,
-                 mask_factor: float = 2.5, mask_knn: int = 8, shotnoise_scale: float = 1.0):
+                 mask_factor: float = 2.5, mask_knn: int = 8, shotnoise=None):
         self.name = str(name)
         self.pos = np.ascontiguousarray(randoms['POSITION'], dtype=float)
         if self.pos.ndim != 2 or self.pos.shape[1] != 3:
             raise ValueError("randoms['POSITION'] must have shape (N, 3)")
         self.w = np.asarray(randoms['WEIGHT'], dtype=float)
         self.alpha = float(alpha)
-        self.shotnoise_scale = float(shotnoise_scale)
+        # the S window is (1 + alpha) w^2 at the randoms, scaled to the requested int S
+        sn_randoms = (1.0 + self.alpha) * self.alpha * float(np.sum(self.w ** 2))
+        self.shotnoise_scale = 1.0 if shotnoise is None else float(shotnoise) / sn_randoms
         self._tree = None
         nw = randoms.get('NW', None)
         if nbar is None:
@@ -132,24 +135,6 @@ class Tracer:
         r = d[:, -1]
         return self.alpha * k / (4.0 / 3.0 * np.pi * r ** 3)
 
-    def nbar_w_at(self, positions: np.ndarray):
-        """(nbar(x), w(x)) of this tracer at arbitrary positions (nearest random)."""
-        if positions is self.pos:
-            return self.nbar, self.w
-        d, idx = self.tree.query(positions, k=1)
-        inside = d <= self.mask_factor * self.spacing[idx]
-        return np.where(inside, self.nbar[idx], 0.0), np.where(inside, self.w[idx], 0.0)
-
-    def nbar_w_at_randoms_of(self, T: "Tracer"):
-        """nbar_w_at(T.pos), cached: the nearest-random lookup at every random of T is the costly
-        part of building the cross windows, and several of them need the same one."""
-        if T is self:
-            return self.nbar, self.w
-        cache = self.__dict__.setdefault('_at_cache', {})
-        if T.name not in cache:
-            cache[T.name] = self.nbar_w_at(T.pos)
-        return cache[T.name]
-
     def mw_w_at(self, positions: np.ndarray):
         """(m(x), w(x)) at arbitrary positions: the smooth mean weighted density and the weight of the
         nearest random (both zero outside the footprint)."""
@@ -167,10 +152,6 @@ class Tracer:
         if T.name not in cache:
             cache[T.name] = self.mw_w_at(T.pos)
         return cache[T.name]
-
-    def nw_at(self, positions: np.ndarray) -> np.ndarray:
-        """m(x) = nbar(x) w(x) (or NW) of this tracer at arbitrary positions (nearest random)."""
-        return self.mw_w_at(positions)[0]
 
     def subsample_indices(self, n: int, seed: int = 0) -> np.ndarray:
         key = (n, seed)
@@ -260,7 +241,7 @@ class Window:
                 raise NotImplementedError('pair-averaged windows are evaluated at tracer randoms only '
                                           '(value_at_host_randoms)')
             A, B = self.tracers
-            return A.nw_at(positions) * B.nw_at(positions)
+            return A.mw_w_at(positions)[0] * B.mw_w_at(positions)[0]
         A = self.host
         if self.kind == 'M':
             return A.mw_w_at(positions)[0]

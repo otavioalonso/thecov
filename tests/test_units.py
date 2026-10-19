@@ -186,5 +186,5 @@ def test_per_object_weights_need_the_smooth_mean_density():
     assert np.isclose(Window('W', new, new).integral() / exact_W, np.mean(u), rtol=1e-3)
     assert np.isclose(Window('S', new).integral() / exact_S, 1.0, rtol=1e-3)
     half = Tracer('A', {'POSITION': pos, 'WEIGHT': ws * u, 'NW': np.full(n, nbar * ws)}, alpha,
-                  shotnoise_scale=0.5)
+                  shotnoise=0.5 * (1 + alpha) * alpha * np.sum((ws * u) ** 2))
     assert np.isclose(Window('S', half).integral() / exact_S, 0.5, rtol=1e-3)
