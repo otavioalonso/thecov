@@ -111,15 +111,17 @@ class SuperSampleCovariance:
              pair-averaged value, e.g. WindowSmoothing.I_k / norm)
     """
 
+    # how many times the m-weighted (M, alpha) and m^2-weighted (W, the data in norm) means of the long mode enter
+    # ln norm: delta_norm = sum_n g_n (lam_W D^W_n + lam_M D^M_n) + eps_N
     NORM_KINDS = {'data-randoms': {'M': 1.0, 'W': 1.0},   # norm = alpha sum_c D_c R_c: alpha and the data realised
                   'randoms': {'M': 2.0, 'W': 0.0},        # norm = alpha^2 sum_c R_c^2: realised through alpha only, twice
                   'alpha': {'M': 1.0, 'W': 0.0}}          # norm = alpha x (fixed randoms integral, e.g. sum_r nbar w^2)
 
     def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, local_average=True, damping=1.0, n_mu=D.SSC_N_MU,
                  n_near=D.SSC_N_NEAR, dilution=None, discreteness=True, p_dressed=None, norm_kind='data-randoms'):
-        self.cov = cov
-        self.p_dressed = p_dressed
-        self.dilution = dilution
+        if norm_kind not in self.NORM_KINDS:
+            raise ValueError(f'norm_kind must be one of {sorted(self.NORM_KINDS)}')
+        self.cov, self.p_dressed, self.dilution, self.norm_kind = cov, p_dressed, dilution, norm_kind
         opts = dict(cov.windows.opts)
         opts.update(n_mu=int(n_mu), n_near=min(int(n_near), int(opts['n_near'])))
         self.windows = WindowLibrary(cov.windows.s_edges, **opts)
@@ -128,40 +130,37 @@ class SuperSampleCovariance:
         self.bs2 = -4.0 / 7.0 * (self.b1 - 1.0) if bs2 is None else float(bs2)
         self.local_average = bool(local_average)
         self.discreteness = bool(discreteness) and self.local_average
-        if norm_kind not in self.NORM_KINDS:
-            raise ValueError(f'norm_kind must be one of {sorted(self.NORM_KINDS)}')
-        self.norm_kind = norm_kind
-        # lam_x: how many times the x-weighted mean of the long mode (and its Poisson noise) enters ln norm:
-        # delta_norm = sum_n g_n (lam_W D^W_n + lam_M D^M_n) + eps_N. Which convention jaxpower uses decides the
-        # sign of the net P_0 response (see local_average_statistics); it must be checked on the mocks.
+        # The convention of the estimator's norm decides the sign of the net P_0 response (see
+        # local_average_statistics); it must be checked on the mocks.
         self.lam = dict(self.NORM_KINDS[norm_kind]) if self.local_average else {'M': 0.0, 'W': 0.0}
         self.damping = float(damping)
-        self.a, self.c = response_coefficients(self.b1, self.f, self.b2, self.bs2)    # (ns_bc; tree level)
+        self.a, self.c = response_coefficients(self.b1, self.f, self.b2, self.bs2)    # R = a P + c dP/dlnk (tree level)
         scale = np.max(np.abs(self.a)) + np.max(np.abs(self.c))
         self.ns_bc = tuple(n for j, n in enumerate(ELLS)                   # nu^4 vanishes (to O(eps^2))
                            if np.max(np.abs(self.a[:, j]) + np.abs(self.c[:, j])) > 1e-6 * scale)
-        self.g = {0: self.b1 + self.f / 3.0, 2: 2.0 * self.f / 3.0}
+        self.g = {0: self.b1 + self.f / 3.0, 2: 2.0 * self.f / 3.0}         # observed long mode, Legendre components
         self._sigma2 = {}
 
-    # -- windows
-    def _windows(self, A):
+    # -- long-mode projections X = (window, n) and their windows
+    def _long_mode_windows(self, A):
         T = self.cov._tracer(A)
         return {'W': Window('W', T, T), 'M': Window('M', T)}
 
-    def _modes(self):
-        """the long-mode projections X = (window, n) that enter"""
-        modes = [('W', n) for n in sorted(set(self.ns_bc) | (set(self.g) if self.lam['W'] else set()))]
-        if self.lam['M']:
-            modes += [('M', n) for n in sorted(self.g)]
-        return modes
+    def _projections(self):
+        """the long-mode projections X = (window, n) that enter: (W, n) for beat coupling and the data's share of the
+        local average, (M, n) for alpha's"""
+        ns_W = sorted(set(self.ns_bc) | (set(self.g) if self.lam['W'] else set()))
+        return [('W', n) for n in ns_W] + ([('M', n) for n in sorted(self.g)] if self.lam['M'] else [])
+
+    def _projection_pairs(self):
+        X = self._projections()
+        return [(x, y) for i, x in enumerate(X) for y in X[i:]]
 
     def request_windows(self, A):
-        win = self._windows(A)
-        modes = self._modes()
-        for i, (x, n) in enumerate(modes):
-            for (y, n2) in modes[i:]:
-                self.windows.request(win[x], win[y], [(n, n2, lam) for lam in tri(n, n2)])
-        return win
+        windows = self._long_mode_windows(A)
+        for (x, n), (y, n2) in self._projection_pairs():
+            self.windows.request(windows[x], windows[y], [(n, n2, lam) for lam in tri(n, n2)])
+        return windows
 
     def compute_windows(self, A, verbose=False):
         self.request_windows(A)
@@ -177,7 +176,7 @@ class SuperSampleCovariance:
         self.windows.load(path)
         return self
 
-    # -- xi_lam
+    # -- xi_lam and the long-mode variances
     def xi(self, lam, s):
         """xi_lam(s) = int q^2 dq / (2 pi^2) P_lin(q) j_lam(q s), on a linear q grid fine enough for s."""
         s = np.asarray(s, float)
@@ -191,82 +190,77 @@ class SuperSampleCovariance:
             out[i0:i0 + 64] = spherical_jn(lam, np.outer(s[i0:i0 + 64], q)) @ pq
         return out
 
-    # -- long-mode variances
     def sigma2(self, A):
-        """{(X, Y): sigma^2_XY} for the projections X = (window, n) of _modes()."""
-        if A in self._sigma2:
-            return self._sigma2[A]
-        win = self.compute_windows(A)._windows(A)
-        s, sw = self.cov.s, self.cov.s_weights
-        I = {name: w.integral() for name, w in win.items()}
-        xis = {}
-        out = {}
-        modes = self._modes()
-        for i, (x, n) in enumerate(modes):
-            for (y, n2) in modes[i:]:
-                tot = 0.0
+        """{(X, Y): sigma^2_XY} for the projections X = (window, n) (both orders)."""
+        if A not in self._sigma2:
+            windows = self.compute_windows(A)._long_mode_windows(A)
+            s, s_weights = self.cov.s, self.cov.s_weights
+            integral = {name: w.integral() for name, w in windows.items()}
+            xi = {}
+            out = {}
+            for (x, n), (y, n2) in self._projection_pairs():
+                total = 0.0
                 for lam in tri(n, n2):
                     w3 = wigner_3j(n, n2, lam, 0, 0, 0)
                     if w3 == 0.0:
                         continue
-                    if lam not in xis:
-                        xis[lam] = self.xi(lam, s)
-                    Q = self.windows.get(win[x], win[y], n, n2, lam, s)
-                    tot += ((-1) ** (lam // 2) * math.sqrt((2 * lam + 1) / ((2 * n + 1) * (2 * n2 + 1))) * w3
-                            * np.sum(sw * xis[lam] * Q))
-                val = FOUR_PI ** 1.5 * tot / (I[x] * I[y])
-                out[((x, n), (y, n2))] = out[((y, n2), (x, n))] = val
-        self._sigma2[A] = out
-        return out
+                    if lam not in xi:
+                        xi[lam] = self.xi(lam, s)
+                    Q = self.windows.get(windows[x], windows[y], n, n2, lam, s)
+                    total += ((-1) ** (lam // 2) * math.sqrt((2 * lam + 1) / ((2 * n + 1) * (2 * n2 + 1))) * w3
+                              * np.sum(s_weights * xi[lam] * Q))
+                out[((x, n), (y, n2))] = out[((y, n2), (x, n))] = FOUR_PI ** 1.5 * total / (integral[x] * integral[y])
+            self._sigma2[A] = out
+        return self._sigma2[A]
 
-    # -- coefficients per k-bin
+    # -- per-k-bin quantities
     def _bin_average(self, func):
         K = self.cov.kernels
         return np.sum(K.wq * func(K.kq), axis=1) / K.norm
 
+    def _linear_power(self):
+        spl = CubicSpline(np.log(self.k_lin), self.p_lin)
+        return (lambda k: spl(np.log(k))), (lambda k: spl(np.log(k), 1))
+
     def responses(self):
-        """{(ell, n): R_ell^(n) averaged over each k bin} (tree level, true-power units); with p_dressed,
-        from the dressed (damped) power at each k node (response_multipoles)."""
+        """{(ell, n): R_ell^(n) averaged over each k bin} (tree level, true-power units); with p_dressed, from the
+        dressed (damped) power at each k node (response_multipoles)."""
         if self.p_dressed is not None:
             K = self.cov.kernels
             kq = np.asarray(K.kq, float)
             R = response_multipoles(kq.ravel(), self.p_dressed, self.b1, self.f, self.b2, self.bs2)
             return {key: np.sum(K.wq * v.reshape(kq.shape), axis=1) / K.norm for key, v in R.items()}
-        lk = np.log(self.k_lin)
-        spl = CubicSpline(lk, self.p_lin)
-        P = lambda k: spl(np.log(k))
-        dP = lambda k: spl(np.log(k), 1)
+        P, dP = self._linear_power()
         Pb, dPb = self._bin_average(P), self._bin_average(dP)
-        return {(l, n): self.a[i, j] * Pb + self.c[i, j] * dPb
-                for i, l in enumerate(ELLS) for j, n in enumerate(ELLS)}
+        return {(l, n): self.a[i, j] * Pb + self.c[i, j] * dPb for i, l in enumerate(ELLS) for j, n in enumerate(ELLS)}
 
     def _dilution(self, A):
+        """d_k = I_k / norm per bin (the `dilution` given, or the covariance's I_k / I)."""
         if self.dilution is not None:
             return np.broadcast_to(np.asarray(self.dilution, float), (self.cov.nbins,)).copy()
         return np.asarray(self.cov.I_k(A, A), float) / self.cov.I(A, A)
 
-    def coefficients(self, A, ells):
-        """{X: (len(ells) * nbins,) vector c^X} in the data-vector order (ell, bin)."""
-        cov = self.cov
-        d = self._dilution(A)
-        R = self.responses()
-        Pmeas = {}
-        for l in ells:
-            Pm = self._bin_average(lambda k: cov.model(A, A, l, k))
-            Pmeas[l] = Pm if cov.masked else Pm * d
-        out = {}
-        for (x, n) in self._modes():
-            vec = []
-            for l in ells:
-                v = np.zeros(cov.nbins)
-                if x == 'W' and (l, n) in R:
-                    v += d * R[(l, n)]
-                if self.lam[x] and n in self.g:
-                    v -= self.lam[x] * Pmeas[l] * self.g[n]
-                vec.append(v)
-            out[(x, n)] = np.concatenate(vec)
-        return out
+    def _measured(self, A, l):
+        """P_hat_l per bin: the window-diluted spectrum the estimator measures (the masked model itself, or model x d_k)."""
+        p = self._bin_average(lambda k: self.cov.model(A, A, l, k))
+        return p if self.cov.masked else p * self._dilution(A)
 
+    def coefficients(self, A, ells):
+        """{X: (len(ells) * nbins,) vector c^X} in the data-vector order (ell, bin):
+        c^{(W, n)}_l = d_k R_l^(n) - lam_W P_hat_l g_n,  c^{(M, n)}_l = - lam_M P_hat_l g_n."""
+        d, R = self._dilution(A), self.responses()
+        measured = {l: self._measured(A, l) for l in ells}
+
+        def one(x, n, l):
+            v = np.zeros(self.cov.nbins)
+            if x == 'W' and (l, n) in R:
+                v += d * R[(l, n)]
+            if self.lam[x] and n in self.g:
+                v -= self.lam[x] * measured[l] * self.g[n]
+            return v
+        return {(x, n): np.concatenate([one(x, n, l) for l in ells]) for (x, n) in self._projections()}
+
+    # -- Poisson noise of the local average
     def discreteness_integrals(self, A):
         """Var_P(eps_N) and (J_alpha + J_D, J3_alpha + J3_D) from the host randoms (see module docstring)."""
         T = self.cov._tracer(A)
@@ -279,6 +273,47 @@ class SuperSampleCovariance:
         J3 = lM * a * np.sum(w * m ** 2) / I_M + lW * a * np.sum(w * m ** 3) / I_W
         return var, J, J3
 
+    def _poisson_terms(self, A, ells):
+        """(P_hat, T, Var_P(eps_N)): measured multipoles and T_l = <P_raw_l eps_N> as (len(ells) nbins,) vectors."""
+        d, norm = self._dilution(A), self.cov.I(A, A)
+        var, J, J3 = self.discreteness_integrals(A)
+        P, _ = self._linear_power()
+        P2 = self._bin_average(lambda k: P(k) ** 2)
+        b1, f = self.b1, self.f
+        kaiser = {0: b1 ** 2 + 2 / 3 * b1 * f + f ** 2 / 5, 2: 4 / 3 * b1 * f + 4 / 7 * f ** 2, 4: 8 / 35 * f ** 2}
+        collapsed = self.b2 + 2.0 / 3.0 * self.bs2                    # 2 Z2(k, -k) = b2 + 2 bs2 / 3
+        measured = [self._measured(A, l) for l in ells]
+        T = [2.0 * p / d * J / norm + collapsed * kaiser.get(l, 0.0) * P2 * J3 / norm for p, l in zip(measured, ells)]
+        return np.concatenate(measured), np.concatenate(T), var
+
+    def discreteness_covariance(self, A, ells):
+        """the Poisson / collapsed-bispectrum part of the local average, (len(ells) nbins)^2"""
+        Pm, T, var = self._poisson_terms(A, ells)
+        return -np.outer(T, Pm) - np.outer(Pm, T) + var * np.outer(Pm, Pm)
+
+    # -- results
+    def covariance(self, spectra, ells=None):
+        """C^SSC for the data vector [P^{AA}_ell(k_i)] ordered by spectrum, ell, bin (as GaussianCovariance.covariance);
+        returns (matrix, labels)."""
+        cov = self.cov
+        if cov.model is None:
+            raise RuntimeError("set the covariance's model first (cov.set_model)")
+        ells = cov.ells if ells is None else tuple(ells)
+        spectra = [tuple(str(x) for x in sp) for sp in spectra]
+        if any(sp[0] != sp[1] for sp in spectra):
+            raise NotImplementedError('SSC is implemented for auto-spectra only')
+        if len(set(sp[0] for sp in spectra)) > 1:
+            raise NotImplementedError('SSC is implemented for a single tracer')
+        A = spectra[0][0]
+        sigma2, coefficients = self.sigma2(A), self.coefficients(A, ells)
+        X = list(coefficients)
+        V = np.stack([coefficients[x] for x in X])                        # (nX, n)
+        C = V.T @ np.array([[sigma2[(x, y)] for y in X] for x in X]) @ V
+        if self.discreteness:
+            C = C + self.discreteness_covariance(A, ells)
+        return C, [(A, A, l, i) for l in ells for i in range(cov.nbins)]
+
+    # -- diagnostics
     def local_average_statistics(self, A, ells=None, C_total=None):
         """What the per-realisation normalisation implies, for a direct test on mocks (no fitting):
         delta_norm = norm / <norm> - 1 = sum_n g_n (lam_W D^W_n + lam_M D^M_n) + eps_N, so
@@ -293,95 +328,31 @@ class SuperSampleCovariance:
         quantities; they fix the normalisation convention (`norm_kind`) and test the long-mode variances and the
         net (beat coupling minus local average) response at once. The Poisson parts (Var_P, T_l) are included whatever
         `discreteness` is, since the realised norm carries them."""
-        cov = self.cov
-        ells = cov.ells if ells is None else tuple(ells)
+        ells = self.cov.ells if ells is None else tuple(ells)
         if not self.local_average:
             raise RuntimeError('local_average_statistics needs local_average=True')
-        sig = self.sigma2(A)
-        cf = self.coefficients(A, ells)
-        gl = {x: self.lam[x[0]] * self.g.get(x[1], 0.0) for x in cf}       # the weight of D^X in delta_norm
-        var_c = sum(gl[x] * gl[y] * sig[(x, y)] for x in cf for y in cf)
-        var_p, J, J3 = self.discreteness_integrals(A)
-        var = var_c + var_p
-        var_bin_c = sum(cf[x] * cf[y] * sig[(x, y)] for x in cf for y in cf)          # clustering SSC variance per bin
-        d = self._dilution(A)
-        norm = cov.I(A, A)
-        lk = np.log(self.k_lin)
-        spl = CubicSpline(lk, self.p_lin)
-        P2 = self._bin_average(lambda k: spl(np.log(k)) ** 2)
-        b1, f = self.b1, self.f
-        kais = {0: b1 ** 2 + 2 / 3 * b1 * f + f ** 2 / 5, 2: 4 / 3 * b1 * f + 4 / 7 * f ** 2, 4: 8 / 35 * f ** 2}
-        zc = self.b2 + 2.0 / 3.0 * self.bs2
-        Pm, Tv = [], []
-        for l in ells:
-            p = self._bin_average(lambda k: cov.model(A, A, l, k))
-            p = p if cov.masked else p * d
-            Pm.append(p)
-            Tv.append(2.0 * p / d * J / norm + zc * kais.get(l, 0.0) * P2 * J3 / norm)
-        Pm, Tv = np.concatenate(Pm), np.concatenate(Tv)
-        cov_c = sum(cf[x] * gl[y] * sig[(x, y)] for x in cf for y in cf)
-        cov_v = cov_c + Tv - Pm * var_p
+        sigma2, coefficients = self.sigma2(A), self.coefficients(A, ells)
+        weight = {x: self.lam[x[0]] * self.g.get(x[1], 0.0) for x in coefficients}       # the weight of D^X in delta_norm
+        pairs = [(x, y) for x in coefficients for y in coefficients]
+        var_clustering = sum(weight[x] * weight[y] * sigma2[(x, y)] for x, y in pairs)
+        var_bin = sum(coefficients[x] * coefficients[y] * sigma2[(x, y)] for x, y in pairs)   # clustering SSC per bin
+        cov_clustering = sum(coefficients[x] * weight[y] * sigma2[(x, y)] for x, y in pairs)
+        Pm, T, var_poisson = self._poisson_terms(A, ells)
+        var = var_clustering + var_poisson
+        cov_total = cov_clustering + T - Pm * var_poisson
         with np.errstate(divide='ignore', invalid='ignore'):
-            corr = np.where(var_bin_c * var_c > 0, cov_c / np.sqrt(np.abs(var_bin_c * var_c)), 0.0)
-        out = dict(sigma_norm=math.sqrt(var), sigma_norm_clustering=math.sqrt(max(var_c, 0.0)),
-                   sigma_norm_poisson=math.sqrt(var_p), cov=cov_v, slope=cov_v / var / Pm, corr=corr, P_hat=Pm)
+            corr = np.where(var_bin * var_clustering > 0, cov_clustering / np.sqrt(np.abs(var_bin * var_clustering)), 0.0)
+        out = dict(sigma_norm=math.sqrt(var), sigma_norm_clustering=math.sqrt(max(var_clustering, 0.0)),
+                   sigma_norm_poisson=math.sqrt(var_poisson), cov=cov_total, slope=cov_total / var / Pm, corr=corr, P_hat=Pm)
         if C_total is not None:
-            out['corr_total'] = cov_v / np.sqrt(np.diag(np.asarray(C_total, float)) * var)
+            out['corr_total'] = cov_total / np.sqrt(np.diag(np.asarray(C_total, float)) * var)
         return out
 
-    def discreteness_covariance(self, A, ells):
-        """the Poisson / collapsed-bispectrum part of the local average, (len(ells) nbins)^2"""
-        cov = self.cov
-        d = self._dilution(A)
-        norm = cov.I(A, A)
-        var, J, J3 = self.discreteness_integrals(A)
-        lk = np.log(self.k_lin)
-        spl = CubicSpline(lk, self.p_lin)
-        P2 = self._bin_average(lambda k: spl(np.log(k)) ** 2)
-        b1, f = self.b1, self.f
-        kais = {0: b1 ** 2 + 2 / 3 * b1 * f + f ** 2 / 5, 2: 4 / 3 * b1 * f + 4 / 7 * f ** 2, 4: 8 / 35 * f ** 2}
-        zc = self.b2 + 2.0 / 3.0 * self.bs2                    # 2 Z2(k, -k) = b2 + 2 bs2 / 3
-        Pm, Tv = [], []
-        for l in ells:
-            p = self._bin_average(lambda k: cov.model(A, A, l, k))
-            p = p if cov.masked else p * d
-            Pm.append(p)
-            Tv.append(2.0 * p / d * J / norm + zc * kais.get(l, 0.0) * P2 * J3 / norm)
-        Pm, Tv = np.concatenate(Pm), np.concatenate(Tv)
-        return -np.outer(Tv, Pm) - np.outer(Pm, Tv) + var * np.outer(Pm, Pm)
-
-    def covariance(self, spectra, ells=None):
-        """C^SSC for the data vector [P^{AA}_ell(k_i)] ordered by spectrum, ell, bin (as
-        GaussianCovariance.covariance); returns (matrix, labels)."""
-        cov = self.cov
-        if cov.model is None:
-            raise RuntimeError("set the covariance's model first (cov.set_model)")
-        ells = cov.ells if ells is None else tuple(ells)
-        spectra = [tuple(str(x) for x in sp) for sp in spectra]
-        for sp in spectra:
-            if sp[0] != sp[1]:
-                raise NotImplementedError('SSC is implemented for auto-spectra only')
-        if len(set(sp[0] for sp in spectra)) > 1:
-            raise NotImplementedError('SSC is implemented for a single tracer')
-        A = spectra[0][0]
-        sig = self.sigma2(A)
-        cf = self.coefficients(A, ells)
-        X = list(cf)
-        V = np.stack([cf[x] for x in X])                        # (nX, n)
-        S = np.array([[sig[(x, y)] for y in X] for x in X])
-        C = V.T @ S @ V
-        if self.discreteness:
-            C = C + self.discreteness_covariance(A, ells)
-        labels = [(A, A, l, i) for l in ells for i in range(cov.nbins)]
-        return C, labels
-
     def amplitude_scatter(self, A, ells=None):
-        """Diagnostics: per (ell) the SSC standard deviation of P_ell at each bin in units of the
-        measured P_0 (comparable with sqrt(A_ll) of desi_validation.rank1_excess)."""
+        """Diagnostics: per (ell) the SSC standard deviation of P_ell at each bin in units of the measured P_0
+        (comparable with sqrt(A_ll) of desi_validation.rank1_excess)."""
         ells = self.cov.ells if ells is None else tuple(ells)
         C, _ = self.covariance([(A, A)], ells)
         nb = self.cov.nbins
-        d = self._dilution(A)
-        P0 = self._bin_average(lambda k: self.cov.model(A, A, 0, k))
-        P0 = P0 if self.cov.masked else P0 * d
+        P0 = self._measured(A, 0)
         return {l: np.sqrt(np.clip(np.diag(C)[i * nb:(i + 1) * nb], 0, None)) / np.abs(P0) for i, l in enumerate(ells)}
