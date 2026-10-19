@@ -259,7 +259,7 @@ def run_region(paths, cfg, OUT, b, r, args):
     wfile = pl.windows_path(OUT, b, tr.name)
     if not os.path.exists(wfile) and not args.no_thecov:
         log(f'  no cached windows {wfile}: computing them (pair counts)')
-    var_thecov, I_thecov = {}, tr.alpha * float(np.sum(tr.w * tr.mw))
+    var_thecov, I_thecov = {}, tr.alpha * float(np.sum(tr.weights * tr.weighted_density))
     for f, s in (() if args.no_thecov else specs.items()):
         nb = len(s['k'])
         s_iso = copy.deepcopy(s)
@@ -269,7 +269,7 @@ def run_region(paths, cfg, OUT, b, r, args):
                                       model_norm_correction=cfg.model_norm_correction)
         var_thecov[f] = np.diag(C)[:nb]
         I_thecov = cov.I_randoms
-    pos_tr = tr.pos
+    pos_tr = tr.positions
     del rc1
     log(f'  thecov (isotropic model) ' + ('skipped' if args.no_thecov else 'done') + f'; int m^2 (thecov) / norm = {I_thecov / norm:.4f}')
 
@@ -292,7 +292,7 @@ def run_region(paths, cfg, OUT, b, r, args):
         inside = np.flatnonzero(frac.ravel() > 0)
         _, nn = tr.tree.query(grid.centers(inside), k=1, workers=-1)
         mt = np.zeros(m.size, np.float32)
-        mt[inside] = tr.mw[nn] * frac.ravel()[inside]
+        mt[inside] = tr.weighted_density[nn] * frac.ravel()[inside]
         windows['thecov_m'] = mt.reshape(m.shape)
         del mt, nn, inside
     del frac, tr

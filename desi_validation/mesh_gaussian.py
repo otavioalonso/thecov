@@ -84,16 +84,16 @@ def self_test(log=print):
 
 
 def windows_from_tracer(mesh, tr, num_sn, n_split=4, seed=1):
-    """W_s = alpha_s sum_{r in s} w_r m_r delta (thecov's m = tr.mw) and S_s with integral num_sn,
+    """W_s = alpha_s sum_{r in s} w_r m_r delta (thecov's m = tr.weighted_density) and S_s with integral num_sn,
     for n_split disjoint random subsets. Returns (W list, S list, int W)."""
-    lab = np.random.default_rng(seed).integers(0, n_split, len(tr.w))
+    lab = np.random.default_rng(seed).integers(0, n_split, len(tr.weights))
     W, S = [], []
     for s in range(n_split):
         sel = lab == s
-        a_s = tr.alpha * tr.w.sum() / tr.w[sel].sum()
-        W.append(mesh.ft(mesh.paint(tr.pos[sel], a_s * tr.w[sel] * tr.mw[sel])))
-        S.append(mesh.ft(mesh.paint(tr.pos[sel], num_sn * tr.w[sel] ** 2 / np.sum(tr.w[sel] ** 2))))
-    return W, S, float(tr.alpha * np.sum(tr.w * tr.mw))
+        a_s = tr.alpha * tr.weights.sum() / tr.weights[sel].sum()
+        W.append(mesh.ft(mesh.paint(tr.positions[sel], a_s * tr.weights[sel] * tr.weighted_density[sel])))
+        S.append(mesh.ft(mesh.paint(tr.positions[sel], num_sn * tr.weights[sel] ** 2 / np.sum(tr.weights[sel] ** 2))))
+    return W, S, float(tr.alpha * np.sum(tr.weights * tr.weighted_density))
 
 
 def p0_variance(mesh, W, S, intW, spec, norm, shells, los, qcut=0.1, log=print, label=''):

@@ -81,7 +81,7 @@ def test_ssc_assembly(sphere_ssc):
     P0 = ssc._bin_average(lambda kk: cov.model('T', 'T', 0, kk))       # unmasked model, d = I_k / I = 1
     v = resp - 2 * ssc.b1 * P0
     tr = cov._tracer('T')
-    N = tr.alpha * len(tr.w)                                             # galaxies (unit weights)
+    N = tr.alpha * len(tr.weights)                                             # galaxies (unit weights)
     var, J, J3 = ssc.discreteness_integrals('T')
     assert np.isclose(var, 4.0 / N, rtol=0.03)                           # (1/N)(1 + 1)^2: alpha and the data in norm
     assert np.isclose(J / cov.I('T', 'T'), 2.0 / N, rtol=0.03)

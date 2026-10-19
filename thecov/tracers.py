@@ -20,16 +20,15 @@ a sampling weight (sum_r w_r f(x_r) ~ int m f / alpha) and in the shot-noise win
 subtracts it (pypower / jaxpower `num_shotnoise`), when the random weights do not reproduce the distribution of the
 data weights; by default it is the randoms' own (1 + alpha) alpha sum_r w_r^2.
 
-Cross windows W^{AB} are sampled by the randoms of A, with nbar_B w_B taken from the nearest random
-of B and set to zero when that random is farther than `mask_factor` x the LOCAL spacing of B's
-randoms, so that B's footprint is respected. The footprint edge is therefore resolved to a few
-inter-random spacings: use dense random catalogues for cross windows, and check I_AB against an
-independent estimate (it is exposed as GaussianCovariance.I).
+Cross windows W^{AB} are sampled by the randoms of A, with m_B taken from the nearest random of B and set to
+zero when that random is farther than `mask_factor` x the LOCAL spacing of B's randoms, so that B's footprint is
+respected. The footprint edge is therefore resolved to a few inter-random spacings: use dense random catalogues
+for cross windows, and check I_AB against an independent estimate (it is exposed as GaussianCovariance.I).
 
-Windows (eq. windows of the note):
-    W^{AB}(x) = nbar_A nbar_B w_A w_B      (clustering)
-    S^{A}(x)  = (1 + alpha_A) nbar_A w_A^2 (shot noise)
-Both are of the form nbar_X(x) * omega~(x) and are sampled by the randoms of X.
+Windows (eq. windows of the note), each sampled by the randoms of its host (the first tracer):
+    W^{AB}(x) = m_A m_B                  (clustering; or m_A (K_b * m_B) with kernel smoothing)
+    S^{A}(x)  = (1 + alpha_A) m_A w_A    (shot noise)
+    M^{A}(x)  = m_A                      (mean weighted density; used by the super-sample covariance)
 """
 from __future__ import annotations
 
@@ -39,160 +38,165 @@ import zlib
 import numpy as np
 from scipy.spatial import cKDTree
 
+CLUSTERING, SHOT_NOISE, MEAN_DENSITY = 'W', 'S', 'M'      # window kinds (the letters are part of the cache keys)
+
 
 class Tracer:
+    """A tracer's random catalogue with its weights, mean densities and footprint (see the module docstring).
+
+    Attributes: positions (N, 3), weights w (N,), alpha, nbar (N,), weighted_density m (N,) (= NW, or nbar w),
+    shotnoise_scale (S window scale giving the requested int S), random_spacing (local, for the footprint mask).
+    `nbar` may be given (array or callable of positions) instead of 'NZ'; without NZ, NW or nbar it is estimated
+    from a k-nearest-neighbour density of the randoms (`knn`).
+    """
+
     def __init__(self, name: str, randoms: dict, alpha: float, nbar=None, knn: int = 64,
                  mask_factor: float = 2.5, mask_knn: int = 8, shotnoise=None):
         self.name = str(name)
-        self.pos = np.ascontiguousarray(randoms['POSITION'], dtype=float)
-        if self.pos.ndim != 2 or self.pos.shape[1] != 3:
+        self.positions = np.ascontiguousarray(randoms['POSITION'], dtype=float)
+        if self.positions.ndim != 2 or self.positions.shape[1] != 3:
             raise ValueError("randoms['POSITION'] must have shape (N, 3)")
-        self.w = np.asarray(randoms['WEIGHT'], dtype=float)
+        self.weights = np.asarray(randoms['WEIGHT'], dtype=float)
         self.alpha = float(alpha)
         # the S window is (1 + alpha) w^2 at the randoms, scaled to the requested int S
-        sn_randoms = (1.0 + self.alpha) * self.alpha * float(np.sum(self.w ** 2))
-        self.shotnoise_scale = 1.0 if shotnoise is None else float(shotnoise) / sn_randoms
+        self.shotnoise_scale = 1.0 if shotnoise is None else float(shotnoise) / (
+            (1.0 + self.alpha) * self.alpha * float(np.sum(self.weights ** 2)))
         self._tree = None
+        self._subsamples = {}
         nw = randoms.get('NW', None)
-        if nbar is None:
-            nbar = randoms.get('NZ', None)
+        self.nbar = self._mean_density(randoms.get('NZ', None) if nbar is None else nbar, nw, knn)
+        # m(x): the mean weighted galaxy density entering the clustering windows
+        self.has_weighted_density = nw is not None
+        self.weighted_density = np.asarray(nw, dtype=float) if self.has_weighted_density else self.nbar * self.weights
+        if self.weighted_density.shape != (self.size,):
+            raise ValueError("NW must have one value per random")
+        # Footprint mask used when this tracer's density is needed at foreign positions: a position is outside the
+        # footprint if it is farther than mask_factor x the LOCAL random spacing from the nearest random. The
+        # threshold has to be local: with a global value, a tracer whose density varies strongly (e.g. a steep n(z))
+        # would have its sparse outskirts masked away. The spacing is estimated from the k-th neighbour
+        # (k = mask_knn) rather than the first: the first-neighbour distance of a Poisson set has ~50 % scatter, so
+        # a threshold built on it masks out interior positions whose nearest random happens to sit in a close pair.
+        self.mask_factor = float(mask_factor)
+        k = min(int(mask_knn), self.size - 1)
+        self.random_spacing = self.tree.query(self.positions, k=k + 1)[0][:, k] / k ** (1.0 / 3.0)
+        self._check_alpha(knn)
+
+    # -- construction helpers --------------------------------------------------
+    def _mean_density(self, nbar, nw, knn):
+        """nbar at the randoms: given (array or callable of positions), NW / w, or a k-NN estimate."""
         if nbar is None and nw is not None:
             with np.errstate(divide='ignore', invalid='ignore'):
-                nbar = np.where(self.w != 0, np.asarray(nw, dtype=float) / self.w, 0.0)
+                nbar = np.where(self.weights != 0, np.asarray(nw, dtype=float) / self.weights, 0.0)
         if nbar is None:
             warnings.warn(f"Tracer {self.name}: no 'NZ' given; estimating nbar from the randoms "
                           f"with a {knn}-nearest-neighbour density estimate.")
-            nbar = self._knn_nbar(knn)
+            r = self.tree.query(self.positions, k=knn + 1)[0][:, -1]
+            nbar = self.alpha * knn / (4.0 / 3.0 * np.pi * r ** 3)
         elif callable(nbar):
-            nbar = nbar(self.pos)
-        self.nbar = np.asarray(nbar, dtype=float)
-        if self.nbar.shape != (len(self.pos),):
+            nbar = nbar(self.positions)
+        nbar = np.asarray(nbar, dtype=float)
+        if nbar.shape != (self.size,):
             raise ValueError("nbar must have one value per random")
-        # m(x): the mean weighted galaxy density entering the clustering windows
-        self.has_nw = nw is not None
-        self.mw = np.asarray(nw, dtype=float) if self.has_nw else self.nbar * self.w
-        if self.mw.shape != (len(self.pos),):
-            raise ValueError("NW must have one value per random")
-        self._sub_cache = {}
-        # Footprint mask used when this tracer's density is needed at foreign positions: a position
-        # is outside the footprint if it is farther than mask_factor x the LOCAL random spacing from
-        # the nearest random. The threshold has to be local: with a global value, a tracer whose
-        # density varies strongly (e.g. a steep n(z)) would have its sparse outskirts masked away.
-        # The spacing is estimated from the k-th neighbour (k = mask_knn) rather than the first: the
-        # first-neighbour distance of a Poisson set has ~50 % scatter, so a threshold built on it
-        # masks out interior positions whose nearest random happens to sit in a close pair.
-        self.mask_factor = float(mask_factor)
-        kk = min(int(mask_knn), self.size - 1)
-        d, _ = self.tree.query(self.pos, k=kk + 1)
-        self.spacing = d[:, kk] / kk ** (1.0 / 3.0)
-        # consistency of alpha with NZ: the randoms must sample nbar/alpha. The pair counts use alpha
-        # and the randoms, the s = 0 anchor and cross windows use NZ; an inconsistent pair of
-        # (alpha, NZ) would mis-normalise them relative to each other.
-        # The k-NN density averages over a sphere of ~(k / n_ran)^(1/3) (~20 Mpc/h for DESI randoms), so it includes the
-        # veto holes inside it while m is the density between them: for a footprint with fine veto masks the ratio is
-        # ~1 / (unvetoed fraction at that scale), e.g. 1.2 for DESI LRG, without anything being wrong.
-        ratio = self._implied_alpha(knn) / self.alpha
+        return nbar
+
+    def _check_alpha(self, knn):
+        """Warn if alpha is inconsistent with NZ (or NW) and the density of the randoms.
+
+        The randoms must sample nbar / alpha: the pair counts use alpha and the randoms, the s = 0 anchor and cross
+        windows use NZ, and an inconsistent (alpha, NZ) would mis-normalise them relative to each other. The k-NN
+        density averages over a sphere of ~(k / n_ran)^(1/3) (~20 Mpc/h for DESI randoms), so it includes the veto
+        holes inside it while m is the density between them: for a footprint with fine veto masks the ratio is
+        ~1 / (unvetoed fraction at that scale), e.g. 1.2 for DESI LRG, without anything being wrong.
+        """
+        # a random subsample: catalogues are often sorted (by z or sky position), and the first randoms then sit at
+        # an edge, where the k-NN density is underestimated
+        rng = np.random.default_rng(0)
+        sub = np.sort(rng.choice(self.size, size=min(self.size, 20000), replace=False))
+        d, idx = self.tree.query(self.positions[sub], k=knn + 1)
+        n_randoms = knn / (4.0 / 3.0 * np.pi * d[:, -1] ** 3)
+        if self.has_weighted_density:      # m / (n_ran <w>_k), <w>_k the mean weight of the neighbours
+            implied = np.median(self.weighted_density[sub] / (n_randoms * self.weights[idx[:, 1:]].mean(axis=1)))
+        else:
+            implied = np.median(self.nbar[sub] / n_randoms)
+        ratio = float(implied) / self.alpha
         if abs(ratio - 1) > 0.15:
-            what = 'NW' if self.has_nw else 'NZ'
+            sub = np.random.default_rng(0).choice(self.size, size=min(self.size, 2000), replace=False)
+            scale = float(np.median(self.tree.query(self.positions[sub], k=knn + 1)[0][:, -1]))
+            what = 'NW' if self.has_weighted_density else 'NZ'
             warnings.warn(f"Tracer {self.name}: alpha={self.alpha:.4g} but the random density and {what} imply "
                           f"alpha~{self.alpha * ratio:.4g} (ratio {ratio:.2f}). Expected if the footprint has veto holes "
-                          f"(ratio ~ 1 / unvetoed fraction on ~{self._knn_scale(knn):.0f} Mpc/h scales); otherwise "
+                          f"(ratio ~ 1 / unvetoed fraction on ~{scale:.0f} Mpc/h scales); otherwise "
                           + ("NW must equal alpha x (random density) x (local mean random weight)."
-                             if self.has_nw else "nbar/alpha must equal the density of the randoms."))
+                             if self.has_weighted_density else "nbar/alpha must equal the density of the randoms."))
 
-    def _knn_scale(self, k: int) -> float:
-        """median radius of the k-NN spheres of the alpha check [Mpc/h]"""
-        sub = np.random.default_rng(0).choice(self.size, size=min(self.size, 2000), replace=False)
-        return float(np.median(self.tree.query(self.pos[sub], k=k + 1)[0][:, -1]))
-
-    def _implied_alpha(self, k: int) -> float:
-        """alpha implied by NZ (or NW) and a k-nearest-neighbour density of the randoms: median over
-        a subsample of nbar / n_ran, or of m / (n_ran <w>_k) with <w>_k the mean weight of the
-        neighbours (excluding the random itself) when NW is given."""
-        # a random subsample: catalogues are often sorted (by z or sky position), and the first randoms then sit
-        # at an edge, where the k-NN density is underestimated
-        sub = np.sort(np.random.default_rng(0).choice(self.size, size=min(self.size, 20000), replace=False))
-        d, idx = self.tree.query(self.pos[sub], k=k + 1)
-        n_ran = k / (4.0 / 3.0 * np.pi * d[:, -1] ** 3)
-        if self.has_nw:
-            wmean = self.w[idx[:, 1:]].mean(axis=1)
-            return float(np.median(self.mw[sub] / (n_ran * wmean)))
-        return float(np.median(self.nbar[sub] / n_ran))
-
-    # -- geometry helpers ------------------------------------------------------
+    # -- geometry ---------------------------------------------------------------
     @property
     def size(self) -> int:
-        return len(self.pos)
+        return len(self.positions)
 
     @property
     def tree(self) -> cKDTree:
         if self._tree is None:
-            self._tree = cKDTree(self.pos)
+            self._tree = cKDTree(self.positions)
         return self._tree
-
-    def _knn_nbar(self, k: int) -> np.ndarray:
-        d, _ = self.tree.query(self.pos, k=k + 1)
-        r = d[:, -1]
-        return self.alpha * k / (4.0 / 3.0 * np.pi * r ** 3)
-
-    def mw_w_at(self, positions: np.ndarray):
-        """(m(x), w(x)) at arbitrary positions: the smooth mean weighted density and the weight of the
-        nearest random (both zero outside the footprint)."""
-        if positions is self.pos:
-            return self.mw, self.w
-        d, idx = self.tree.query(positions, k=1)
-        inside = d <= self.mask_factor * self.spacing[idx]
-        return np.where(inside, self.mw[idx], 0.0), np.where(inside, self.w[idx], 0.0)
-
-    def mw_w_at_randoms_of(self, T: "Tracer"):
-        """mw_w_at(T.pos), cached per tracer T."""
-        if T is self:
-            return self.mw, self.w
-        cache = self.__dict__.setdefault('_mw_cache', {})
-        if T.name not in cache:
-            cache[T.name] = self.mw_w_at(T.pos)
-        return cache[T.name]
-
-    def subsample_indices(self, n: int, seed: int = 0) -> np.ndarray:
-        key = (n, seed)
-        if key not in self._sub_cache:
-            rng = np.random.default_rng(seed + zlib.crc32(self.name.encode()) % 10000)
-            n = min(n, self.size)
-            self._sub_cache[key] = np.sort(rng.choice(self.size, size=n, replace=False))
-        return self._sub_cache[key]
 
     def s_max(self) -> float:
         """Upper bound on pair separations (bounding-box diagonal)."""
-        return float(np.linalg.norm(self.pos.max(0) - self.pos.min(0)))
+        return float(np.linalg.norm(self.positions.max(0) - self.positions.min(0)))
+
+    def subsample_indices(self, n: int, seed: int = 0) -> np.ndarray:
+        if (n, seed) not in self._subsamples:
+            rng = np.random.default_rng(seed + zlib.crc32(self.name.encode()) % 10000)
+            self._subsamples[(n, seed)] = np.sort(rng.choice(self.size, size=min(n, self.size), replace=False))
+        return self._subsamples[(n, seed)]
+
+    def density_and_weight_at(self, positions: np.ndarray):
+        """(m(x), w(x)) at arbitrary positions: the smooth mean weighted density and the weight of the nearest random
+        (both zero outside the footprint)."""
+        if positions is self.positions:
+            return self.weighted_density, self.weights
+        d, idx = self.tree.query(positions, k=1)
+        inside = d <= self.mask_factor * self.random_spacing[idx]
+        return np.where(inside, self.weighted_density[idx], 0.0), np.where(inside, self.weights[idx], 0.0)
+
+    def density_and_weight_at_randoms_of(self, other: "Tracer"):
+        """density_and_weight_at(other.positions), cached per tracer: the nearest-random lookup at every random of
+        the other tracer is the costly part of building the cross windows, and several of them need the same one."""
+        if other is self:
+            return self.weighted_density, self.weights
+        cache = self.__dict__.setdefault('_at_randoms_of', {})
+        if other.name not in cache:
+            cache[other.name] = self.density_and_weight_at(other.positions)
+        return cache[other.name]
 
 
 class Window:
-    """omega(x) = nbar_host(x) * tilde_omega(x), sampled by the randoms of `host`.
+    """A window omega(x) over the survey, sampled by the randoms of its host (the first tracer).
 
+    kind CLUSTERING ('W', two tracers), SHOT_NOISE ('S') or MEAN_DENSITY ('M', one tracer); see the module docstring.
     With `smoothing` (a WindowSmoothing) and `basis` b, the clustering window is the pair-averaged
-    W_b^{AB}(x) = m_A(x) (K_b * m_B)(x) instead of m_A m_B (see smoothing.py); `coeffs` then gives the
-    per-k-bin coefficients c_ib of K_{k_i} = sum_b c_ib K_b.
+    W_b^{AB}(x) = m_A(x) (K_b * m_B)(x) instead of m_A m_B (see smoothing.py); `coeffs_for` then gives the per-k-bin
+    coefficients c_ib of K_{k_i} = sum_b c_ib K_b.
     """
 
     def __init__(self, kind: str, A: Tracer, B: Tracer | None = None, smoothing=None, basis: int | None = None):
-        self.smoothing, self.basis = smoothing, basis
-        if basis is not None and (kind != 'W' or smoothing is None):
-            raise ValueError("a basis index needs kind 'W' and a smoothing")
-        if kind == 'W':
-            if B is None:
-                raise ValueError("clustering window needs two tracers")
-            # canonical ordering: the window is symmetric, host = alphabetically first
-            if B.name < A.name:
-                A, B = B, A
-            self.tracers = (A, B)
-        elif kind in ('S', 'M'):
-            self.tracers = (A,)
-        else:
+        if kind not in (CLUSTERING, SHOT_NOISE, MEAN_DENSITY):
             raise ValueError("kind must be 'W', 'S' or 'M'")
-        self.kind = kind
-        self.key = (kind,) + tuple(t.name for t in self.tracers)
-        if basis is not None:
-            self.key = self.key + (f'k{basis}:{smoothing.tag}',)
+        if basis is not None and (kind != CLUSTERING or smoothing is None):
+            raise ValueError("a basis index needs kind 'W' and a smoothing")
+        if kind == CLUSTERING and B is None:
+            raise ValueError("clustering window needs two tracers")
+        # the clustering window is symmetric: host = alphabetically first
+        self.tracers = (tuple(sorted((A, B), key=lambda t: t.name)) if kind == CLUSTERING else (A,))
+        self.kind, self.smoothing, self.basis = kind, smoothing, basis
+        self.key = (kind,) + tuple(t.name for t in self.tracers) + ((f'k{basis}:{smoothing.tag}',) if basis is not None else ())
+
+    @property
+    def host(self) -> Tracer:
+        return self.tracers[0]
+
+    def __repr__(self):
+        return "Window" + str(self.key)
 
     def coeffs_for(self, k_edges):
         """(nbins,) coefficients of this basis window in each k-bin (None for an unsmoothed window)."""
@@ -201,104 +205,77 @@ class Window:
         A, B = self.tracers
         return self.smoothing.coeffs(A.name, B.name, k_edges)[:, self.basis]
 
-    @property
-    def host(self) -> Tracer:
-        return self.tracers[0]
+    def sampling_weights(self) -> np.ndarray:
+        """The weight with which each host random samples omega, so that alpha sum_r (.) f(x_r) -> int omega f
+        (cached on the host: a cross window needs a nearest-random lookup of the other tracer at every host random).
 
-    def tilde_weights(self) -> np.ndarray:
-        """omega / nbar_host at the host randoms, i.e. the per-random weight with which the host
-        randoms sample omega (cached on the host: a cross window needs a nearest-random lookup of
-        the other tracer at every host random).
-
-        W^{AB}: w_r m_B(x_r) (m_B = nbar_B w_B, or NW), so that alpha sum_r -> int m_A m_B.
-        S^A:    scale (1 + alpha) w_r^2, each random with its OWN weight (the shot noise is <w^2>).
-        M^A:    w_r, so that alpha sum_r -> int m_A (the mean weighted density; used by the
-                super-sample covariance for alpha's average of the long mode).
+            W^{AB}: w_r m_B(x_r)              (m_A at the random is carried by the sampling itself)
+            W_b^{AB}: w_r (K_b * m_B)(x_r)
+            S^A:    scale (1 + alpha) w_r^2   (each random with its OWN weight: the shot noise is <w^2>)
+            M^A:    w_r
         """
         A = self.host
-        cache = A.__dict__.setdefault('_tilde_cache', {})
+        cache = A.__dict__.setdefault('_sampling_weights', {})
         if self.key not in cache:
-            if self.kind == 'W' and self.basis is not None:
-                cache[self.key] = A.w * self.smoothing.values(A.name, self.tracers[1].name, self.basis, A.name)
-            elif self.kind == 'W':
-                m, _ = self.tracers[1].mw_w_at_randoms_of(A)
-                cache[self.key] = A.w * m
-            elif self.kind == 'M':
-                cache[self.key] = np.asarray(A.w, float).copy()
+            if self.kind == CLUSTERING and self.basis is not None:
+                cache[self.key] = A.weights * self.smoothing.values(A.name, self.tracers[1].name, self.basis, A.name)
+            elif self.kind == CLUSTERING:
+                cache[self.key] = A.weights * self.tracers[1].density_and_weight_at_randoms_of(A)[0]
+            elif self.kind == MEAN_DENSITY:
+                cache[self.key] = np.asarray(A.weights, float).copy()
             else:
-                cache[self.key] = A.shotnoise_scale * (1.0 + A.alpha) * A.w ** 2
+                cache[self.key] = A.shotnoise_scale * (1.0 + A.alpha) * A.weights ** 2
         return cache[self.key]
 
-    def value_at(self, positions: np.ndarray) -> np.ndarray:
-        """omega(x) at arbitrary positions (nearest-random interpolation).
+    def values_at_randoms_of(self, T: Tracer) -> np.ndarray:
+        """omega(x) at the randoms of T (nearest-random interpolation of the other tracers; cached on T).
 
-        For S the nearest random's weight stands in for w(x): (1 + alpha) m w, whose average is
-        exact for a smooth weight and ~<w>^2/<w^2> low with per-object weights; it only enters the
-        s = 0 anchor of window pairs that involve S.
+        For S the nearest random's weight stands in for w(x): (1 + alpha) m w, whose average is exact for a smooth
+        weight and ~<w>^2/<w^2> low with per-object weights; it only enters the s = 0 anchor of window pairs with S.
         """
-        if self.kind == 'W':
-            if self.basis is not None:
-                raise NotImplementedError('pair-averaged windows are evaluated at tracer randoms only '
-                                          '(value_at_host_randoms)')
-            A, B = self.tracers
-            return A.mw_w_at(positions)[0] * B.mw_w_at(positions)[0]
-        A = self.host
-        if self.kind == 'M':
-            return A.mw_w_at(positions)[0]
-        m, w = A.mw_w_at(positions)
-        return A.shotnoise_scale * (1.0 + A.alpha) * m * w
+        cache = T.__dict__.setdefault('_window_values', {})
+        if self.key not in cache:
+            m_host, w_host = self.host.density_and_weight_at_randoms_of(T)
+            if self.kind == CLUSTERING and self.basis is not None:
+                A, B = self.tracers
+                cache[self.key] = m_host * self.smoothing.values(A.name, B.name, self.basis, T.name)
+            elif self.kind == CLUSTERING:
+                cache[self.key] = m_host * self.tracers[1].density_and_weight_at_randoms_of(T)[0]
+            elif self.kind == MEAN_DENSITY:
+                cache[self.key] = m_host
+            else:
+                cache[self.key] = self.host.shotnoise_scale * (1.0 + self.host.alpha) * m_host * w_host
+        return cache[self.key]
 
     def integral(self) -> float:
         """int d^3x omega(x)  (e.g. I_AB for kind 'W')."""
-        return self.host.alpha * float(np.sum(self.tilde_weights()))
-
-    def value_at_host_randoms(self, T: Tracer) -> np.ndarray:
-        """value_at(T.pos), cached on T (each needs a nearest-random lookup at every random of T)."""
-        cache = T.__dict__.setdefault('_value_cache', {})
-        if self.key not in cache:
-            if self.kind == 'W' and self.basis is not None:
-                A, B = self.tracers
-                cache[self.key] = A.mw_w_at_randoms_of(T)[0] * self.smoothing.values(A.name, B.name, self.basis, T.name)
-            elif self.kind == 'W':
-                A, B = self.tracers
-                cache[self.key] = A.mw_w_at_randoms_of(T)[0] * B.mw_w_at_randoms_of(T)[0]
-            elif self.kind == 'M':
-                cache[self.key] = self.host.mw_w_at_randoms_of(T)[0]
-            else:
-                A = self.host
-                m, w = A.mw_w_at_randoms_of(T)
-                cache[self.key] = A.shotnoise_scale * (1.0 + A.alpha) * m * w
-        return cache[self.key]
+        return self.host.alpha * float(np.sum(self.sampling_weights()))
 
     def overlap_integral(self, other: "Window") -> float:
         """int d^3x omega(x) omega'(x): the s -> 0 anchor of the window pair function."""
         A = self.host
-        return A.alpha * float(np.sum(self.tilde_weights() * other.value_at_host_randoms(A)))
+        return A.alpha * float(np.sum(self.sampling_weights() * other.values_at_randoms_of(A)))
 
     def sample(self, n_sub: int, seed: int = 0):
-        """(positions, tilde weights, effective alpha) of a subsample of the host randoms."""
+        """(positions, sampling weights, effective alpha) of a subsample of the host randoms."""
         A = self.host
         idx = A.subsample_indices(n_sub, seed)
-        tw = self.tilde_weights()[idx]
-        alpha_eff = A.alpha * A.size / len(idx)
-        return A.pos[idx], tw, alpha_eff
-
-    def __repr__(self):
-        return "Window" + str(self.key)
+        return A.positions[idx], self.sampling_weights()[idx], A.alpha * A.size / len(idx)
 
 
 def spectrum_window_pairs(A: Tracer, B: Tracer, shot_noise: bool = True, smoothing=None):
-    """The set P^{AB} of (window, spectrum-label) pairs, eq. pairs of the note.
+    """The set P^{AB} of (window, power) pairs of one correlator, eq. pairs of the note.
 
-    Spectrum labels: ('P', nameA, nameB) for the clustering multipoles and ('S', nameA) for
-    shot noise (p_L = delta_{L0}). With a built `smoothing` for (A, B), the clustering window is
-    replaced by its pair-averaged basis windows (each with its per-k-bin coefficients).
+    power labels: ('P', nameA, nameB) for the clustering multipoles and ('S', nameA) for shot noise (p_L = delta_L0).
+    With a built `smoothing` for (A, B), the clustering window is replaced by its pair-averaged basis windows (each
+    with its per-k-bin coefficients).
     """
-    spec = ('P',) + tuple(sorted((A.name, B.name)))
+    power = ('P',) + tuple(sorted((A.name, B.name)))
     if smoothing is not None and smoothing.has(A.name, B.name):
-        pairs = [(Window('W', A, B, smoothing=smoothing, basis=b), spec) for b in range(smoothing.n_basis(A.name, B.name))]
+        pairs = [(Window(CLUSTERING, A, B, smoothing=smoothing, basis=b), power)
+                 for b in range(smoothing.n_basis(A.name, B.name))]
     else:
-        pairs = [(Window('W', A, B), spec)]
+        pairs = [(Window(CLUSTERING, A, B), power)]
     if shot_noise and A.name == B.name:
-        pairs.append((Window('S', A), ('S', A.name)))
+        pairs.append((Window(SHOT_NOISE, A), ('S', A.name)))
     return pairs

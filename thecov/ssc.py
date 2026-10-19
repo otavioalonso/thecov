@@ -270,7 +270,7 @@ class SuperSampleCovariance:
     def discreteness_integrals(self, A):
         """Var_P(eps_N) and (J_alpha + J_D, J3_alpha + J3_D) from the host randoms (see module docstring)."""
         T = self.cov._tracer(A)
-        a, w, m = T.alpha, np.asarray(T.w, float), np.asarray(T.mw, float)
+        a, w, m = T.alpha, np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
         w2 = a * T.shotnoise_scale * w ** 2                    # sum_g w^2 g  ->  sum_r w2_r g(x_r)
         I_M, I_W = a * np.sum(w), a * np.sum(w * m)
         lM, lW = self.lam['M'], self.lam['W']

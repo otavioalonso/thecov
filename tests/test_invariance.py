@@ -123,7 +123,7 @@ def test_rotation_invariance():
     rng = np.random.default_rng(23)
     A1, B1 = two_tracers(np.random.default_rng(24))
     Rm = random_rotation(rng)
-    rot = lambda t: Tracer(t.name, {'POSITION': t.pos @ Rm.T, 'WEIGHT': t.w, 'NZ': t.nbar}, t.alpha)
+    rot = lambda t: Tracer(t.name, {'POSITION': t.positions @ Rm.T, 'WEIGHT': t.weights, 'NZ': t.nbar}, t.alpha)
     cov1 = GaussianCovariance([A1, B1], K_EDGES, **COV_OPTS).set_model(MODEL)
     cov2 = GaussianCovariance([rot(A1), rot(B1)], K_EDGES, **COV_OPTS).set_model(MODEL)
     b1, b2 = blocks_of(cov1), blocks_of(cov2)

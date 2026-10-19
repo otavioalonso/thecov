@@ -883,8 +883,8 @@ def suggest_n_near(tracer, s_split=80.0, target_pairs=2e9):
     """n_near giving ~target_pairs near pairs: pairs ~ n_near^2 V(s_split) / V_survey, with V_survey
     = N_randoms / (mean random density) estimated from the weights' sampling identity."""
     from scipy.spatial import cKDTree
-    sub = tracer.pos[:: max(1, tracer.size // 20000)]
-    d, _ = cKDTree(tracer.pos).query(sub, k=33)
+    sub = tracer.positions[:: max(1, tracer.size // 20000)]
+    d, _ = cKDTree(tracer.positions).query(sub, k=33)
     rho = 32 / (4 / 3 * np.pi * d[:, -1] ** 3)
     V = tracer.size / np.median(rho)
     vs = 4 / 3 * np.pi * s_split ** 3

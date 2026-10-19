@@ -93,7 +93,7 @@ def test_I_k_matches_pair_count_integral_with_holes():
     Ki = bin_kernels(k_edges, sm.r, xi)
     Qr = np.interp(sm.r, rc, Q)
     I_bf = np.trapezoid(4 * np.pi * sm.r ** 2 * Ki * Qr[None, :], sm.r, axis=1)
-    I_loc = tr.alpha * np.sum(tr.w * tr.mw)
+    I_loc = tr.alpha * np.sum(tr.weights * tr.weighted_density)
     assert np.all(Ik < I_loc)                                             # holes dilute the pair-averaged window
     assert np.allclose(Ik / I_bf, 1.0, atol=0.02)
     # another binning: coefficients projected on the same basis (no new smoothing or pair counts)

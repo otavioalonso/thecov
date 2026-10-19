@@ -144,15 +144,15 @@ def main():
     pos_d = dc.sky_to_cartesian(rc.data['RA'], rc.data['DEC'], rc.data['Z'])
 
     # ------------------------------------------------------------------ window integrals
-    a, sc, w, m = tr.alpha, tr.shotnoise_scale, np.asarray(tr.w, float), np.asarray(tr.mw, float)
+    a, sc, w, m = tr.alpha, tr.shotnoise_scale, np.asarray(tr.weights, float), np.asarray(tr.weighted_density, float)
     ratio = np.sum(w ** 2) / np.sum(w)
-    m_d, _ = tr.mw_w_at(pos_d)                                   # m at each galaxy (nearest random)
+    m_d, _ = tr.density_and_weight_at(pos_d)                                   # m at each galaxy (nearest random)
     # local <w^2>/<w> of the data: k nearest other galaxies, at each galaxy and at each random
     td = cKDTree(pos_d)
     _, idx = td.query(pos_d, k=args.knn + 1, workers=-1)
     idx = idx[:, 1:]
     ratio_d = np.sum(wd[idx] ** 2, 1) / np.sum(wd[idx], 1)
-    _, idx = td.query(tr.pos, k=args.knn, workers=-1)
+    _, idx = td.query(tr.positions, k=args.knn, workers=-1)
     ratio_r = np.sum(wd[idx] ** 2, 1) / np.sum(wd[idx], 1)
     del idx
     J = {

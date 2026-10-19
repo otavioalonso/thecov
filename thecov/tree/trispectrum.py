@@ -436,7 +436,7 @@ class TrispectrumCovariance:
         if self._J4 is not None:
             return float(self._J4)
         T = self.cov._tracer(A)
-        w, m = np.asarray(T.w, float), np.asarray(T.mw, float)
+        w, m = np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
         return T.alpha * float(np.sum(w * m ** 3)) / self.cov.I(A, A) ** 2
 
     def _nodes(self):

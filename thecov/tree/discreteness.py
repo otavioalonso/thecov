@@ -60,7 +60,7 @@ class DiscretenessCovariance:
     def window_integrals(self, A):
         """(J_Smm, J_SS) = (int S m^2, int S^2) / norm^2 from the host randoms (S = data's nbar <w^2>)."""
         T = self.cov._tracer(A)
-        a, w, m = T.alpha, np.asarray(T.w, float), np.asarray(T.mw, float)
+        a, w, m = T.alpha, np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
         # sum_g w^2 g(x_g) = alpha sum_r scale w_r^2 g(x_r): the density S = nbar <w^2> sampled by the randoms
         # as alpha * scale * w_r^2 / (random density) -> int S g = alpha sum_r scale w_r^2 g(x_r) / ... with
         # g = m^2: int S m^2 = alpha sum_r scale w_r^2 m_r^2 / ... (one random per random-density volume);

@@ -380,7 +380,7 @@ class WindowSmoothing:
         projection P (n_kernels, B) with c = d P, the coefficients c, the window basis T (B, n_kernels),
         W_j = sum_a T_ja W_a, and the errors on I_k and on the windows."""
         v = v.astype(float)
-        G = host.alpha * (v * (host.w * host.mw)[None, :]) @ v.T
+        G = host.alpha * (v * (host.weights * host.weighted_density)[None, :]) @ v.T
         g, E = np.linalg.eigh(0.5 * (G + G.T))
         g = np.maximum(g, g.max() * 1e-14)
         L, Linv = E * np.sqrt(g)[None, :], (E / np.sqrt(g)[None, :]).T          # G = L L^T
@@ -415,18 +415,18 @@ class WindowSmoothing:
             dens = self._densities[key[1]]
             vals = {}
             for name, tr in tracers.items():
-                v = dens.smooth_far(self.r, far, tr.pos)
-                v += dens.smooth_near(self.r, near, tr.pos, self.r_split + self.taper_width)
+                v = dens.smooth_far(self.r, far, tr.positions)
+                v += dens.smooth_near(self.r, near, tr.positions, self.r_split + self.taper_width)
                 vals[name] = v.astype(np.float32)
             host = tracers[key[0]]
-            I_b = host.alpha * (vals[key[0]].astype(float) @ host.w)
+            I_b = host.alpha * (vals[key[0]].astype(float) @ host.weights)
             proj, wcoeffs, T, d2 = self._window_basis(coeffs, vals[key[0]], host, I_b)
             self._values[key] = {n: (T @ v.astype(float)).astype(np.float32) for n, v in vals.items()}
             self._pairs[key] = dict(kcoeffs=coeffs, coeffs=wcoeffs, proj=proj, I_b=I_b,
                                     n_basis=len(T), n_kernels=len(basis), basis=basis,
                                     err_IW=d2['err_I'], err_W=d2['err_W'], **diag)
             Ik = self.I_k(*key)
-            loc = host.alpha * float(np.sum(host.w * host.mw))
+            loc = host.alpha * float(np.sum(host.weights * host.weighted_density))
             log(f'  smoothing {key}: {len(basis)} kernels -> {len(T)} windows (errors: I_k {d2["err_I"]:.1e}, '
                 f'windows {d2["err_W"]:.1e}); built in {time.time() - t0:.0f} s; I_k / int m_A m_B (first, last bin) = '
                 f'{Ik[0] / loc:.4f}, {Ik[-1] / loc:.4f}')
