@@ -87,6 +87,14 @@ LRG1: B/n = 2x tree level (the one-halo bispectrum of the mock galaxies), P/n^2 
 pairs), B/n ~ 1.5x. Both match the template-fit amplitudes of HANDOFF 9.4 with no template and no mocks: this is the
 "calibrate discreteness from the data" step, and it applies unchanged to the DESI catalogues (~1 min per cap).
 
+> **Correction (2026-10-19).** E[Cov_thin] = [G(S_p) - G(S_1)] + a B/n + (2a + a^2) P/n^2, so the linear coefficient is
+> g1 + B/n + 2 P/n^2 and B/n = (lin - g1) - 2 (quad - g2). The table above used B/n = lin - g1. Recomputed from
+> thinning_closed_form.npz (units diag G; off-diag = mean over |i-j| = 2-8 at k > 0.15):
+> LRG1 NGC B/n diag 0.2-0.3: 0.138 -> 0.090 (1.2x tree level), off-diag 0.163-0.170 -> 0.117-0.126 (~1.6x);
+> QSO NGC B/n off-diag 0.111-0.114 -> 0.031-0.040, diag -0.058 (not robust: the diagonal P/n^2 is grid-sensitive, section 11).
+> P/n^2 unchanged. QSO tree level is P/n^2 0.02-0.03 (HANDOFF 9.4), not LRG1's 0.015; "QSO 2.6x" was a units error.
+> `thinning_closed_form.py` now reports the corrected B/n.
+
 ## 8. Long-mode responses from the integrated bispectrum (`response_ibisp.py`): status
 
 Estimator: C_l(k) = <F_l^*(k) FT[delta_L F](k)> with delta_L = W_L*(m delta)/W_L*m (Gaussian W_L, k_L = 0.01), minus the self
@@ -203,3 +211,29 @@ regressor combined with the near cancellation. For thecov's local-average term: 
 anisotropy of the window (thin shell -> transverse modes, R_2 = 3.4-4) rather than the isotropic response. The SSC
 amplitude then needs sigma^2 of the super-survey modes with the same anisotropy weighting (nz_scatter's radial
 measurement plus the transverse |W(q)|^2), which is where the remaining uncertainty in the SSC term sits.
+
+## 11. The QSO pair term, checked directly (2026-10-19)
+
+`pair_diagnostics.py` (mocks 173-175 NGC, 173 and 175 SGC) and `pair_model.py` (mock 173, both caps). Mock catalogues only.
+
+- Duplicates: zero repeated positions in every catalogue (TARGETID not loaded by the reader).
+- Close pairs: 1 + xi(r) ~ 8-17 at 0.1-1 Mpc/h, 6.5 at 1-2, 3.2 at 2-5. Pairs below 1 Mpc/h: 300-600 per cap, 3-7 % of
+  the diagonal clustered pair term.
+- Angular: 1 + w(theta < 7") = 0.82-0.94 (fibre-collision deficit, not restored by WEIGHT); 1.0 above ~60".
+- Weights: <w^2>/<w>^2 1.039 (objects) vs 1.059 (randoms) (NGC); the off-diagonal pair term is the same with
+  WEIGHT x FKP and FKP-only weights.
+- Clustered pair term (catalogue pairs minus the alpha-scaled randoms' pairs, units of the smooth diagonal, k > 0.15)
+  against the EXACT Poisson-clustering expectation (1/V) sum_p P(p) |W~(q - p)|^2 with the mocks' mean P0 (validated on
+  a toy to 0.93-1.02):
+
+  | |i-j| | 0 | 1 | 2 | 3 | 5 | 8 | 15 | 25 |
+  |---|---|---|---|---|---|---|---|---|
+  | NGC mock 173 / model | 0.41 | 0.92 | 1.03 | 1.03 | 1.03 | 1.03 | 1.04 | 1.04 |
+  | SGC mock 173 / model | 0.29 | 0.89 | 1.01 | 1.01 | 1.02 | 1.01 | 1.01 | 1.01 |
+
+  In units of diag G (NGC mock 173): |i-j| = 3 measured 0.041, model 0.040 (= the closed-form P/n^2 off-diagonal 0.039).
+  |i-j| <= 1 is q ~ 0, where the measurement carries the integral constraint (alpha fixes the mean) and the model does
+  not; the diagonal P/n^2 of section 7 (0.044) is also grid-sensitive there (0.015 on this grid).
+- Conclusion: the holi QSO pair term is ordinary clustering; no one-halo/duplicate excess. The x2.2-4.1 P/n^2
+  amplitudes of HANDOFF 9.4 must come from thecov's local P(|k - k'|) term or from the degeneracy of those fits.
+  Next: thecov's DiscretenessCovariance P/n^2 off-diagonal for QSO NGC against 0.040.

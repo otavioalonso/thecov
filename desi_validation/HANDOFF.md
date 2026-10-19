@@ -671,3 +671,12 @@ common random numbers): d ln P0 / d delta_u = 0.00 +- 0.02 with data-matched NX 
 1.00 +- 0.02 with fixed NX (expected 2 - 1); d ln norm / d delta_u = 0.40 (own FKP) / 2.00 (no FKP) / 1.00 (fixed).
 Next for thecov: R_0(q->0) = 1.9 (LRG1) in the local-average term; R_2 with the window's long-mode anisotropy; the
 super-survey sigma^2 with the same anisotropy (radial from nz_scatter, transverse from |W(q)|^2).
+
+### Update 2026-10-19: B/n bookkeeping corrected; QSO pair term is ordinary clustering
+
+- thinning closed form: B/n = lin - g1 - 2 P/n^2 (the 2a part of the 1/p^2 scaling was missed). LRG1 NGC B/n 0.090 diag
+  (1.2x tree), 0.12 off-diag; QSO off-diag 0.03-0.04. P/n^2 unchanged. QSO "2.6x" was against LRG1's tree level (units error).
+- `pair_diagnostics.py`, `pair_model.py`: QSO mocks have no duplicates, few close pairs (3-7 % of the pair term), and an
+  off-diagonal pair term equal to the exact clustering expectation (1.01-1.04).
+  Nothing to report to the mock builders; the HANDOFF 9.4 QSO P/n^2 excess is a thecov (local approximation) or fit
+  question. report/grf_randoms_results.md sections 7 (correction) and 11; tutorial report Part B rewritten.

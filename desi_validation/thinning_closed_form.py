@@ -9,7 +9,7 @@ shot noise sum_g (w_g eps_g / p)^2 subtracted,
     P_p(k) - P_1(k) = sum_g eta_g G_g(k) + sum_{g != h} w_g w_h eta_g eta_h Re[e_g(k) e_h^*(k)],
     G_g(k) = 2 Re[F_1^*(k) w_g e_g(k)] - 2 w_g^2,      e_g(k) = exp(-i k.x_g),
 (the eta_g^2 diagonal of |D|^2 cancels against the shot-noise term exactly), hence
-    Cov_thin[P_p(k), P_p(k')] = a sum_g G_g(k) G_g(k') + a^2/2 [ |M_1(k,k')|^2 + |M_2(k,k')|^2 - 2 sum_g w_g^4 ],
+    Cov_thin[P_p(k), P_p(k')] = a sum_g G_g(k) G_g(k') + a^2 [ |M_1(k,k')|^2 + |M_2(k,k')|^2 - 2 sum_g w_g^4 ],
     M_1(k,k') = sum_g w_g^2 e_g(k) e_g^*(k'),   M_2(k,k') = sum_g w_g^2 e_g(k) e_g(k').
 Shell-averaged for P0: every piece is a sum over the galaxies of products of the data field and the w^2-weighted
 catalogue's transform, i.e. mesh-level quantities. Here they are computed exactly with NUFFTs on the output grid of
@@ -137,8 +137,9 @@ def main():
         print(f'         off-diagonal |i-j| = 1..3, k > 0.15: MC ' + ' '.join(f'{x:+.3f}' for x in od_mc) + '  closed ' + ' '.join(f'{x:+.3f}' for x in od_cf))
         # noise-free decomposition at full density. thecov's Gaussian difference dG(p) = G(S_p) - G(S_1) is a quadratic in a = (1-p)/p
     # (PS and SS terms); fit g1, g2 from the two thinned thecov runs. Then the galaxies' own terms at p = 1 are
-    #   B/n  = lin  - g1   (scales as 1/p = 1 + a)         P/n^2 = quad - g2   (scales as 1/p^2 = 1 + 2a + a^2, the a^2 part)
-    # both in units of diag G_thecov(p = 1), per bin; the 2a P/n^2 piece is absorbed consistently (it is in g1 + lin at the same order).
+    #   E[Cov_thin] = Cov(P_p) - Cov(P_1) = [G(S_p) - G(S_1)] + a B/n + (2a + a^2) P/n^2   (B/n ~ 1/p = 1 + a, P/n^2 ~ 1/p^2)
+    # so  quad = g2 + P/n^2  and  lin = g1 + B/n + 2 P/n^2:   P/n^2 = quad - g2,  B/n = lin - g1 - 2 P/n^2
+    # (corrected 2026-10-19: earlier versions reported B/n = lin - g1, i.e. B/n + 2 P/n^2). Units diag G_thecov(p = 1), per bin.
     import glob as _glob
     fns = {float(os.path.basename(f)[8:-4]): f for f in _glob.glob(os.path.join(od, 'thecov_p*.npz'))}
     fns = {p: f for p, f in fns.items() if p != 1}
@@ -152,9 +153,10 @@ def main():
             resid = dG.reshape(len(ps), -1) - A @ coef
             print(f'\n  quadratic-in-a fit of thecov dG over p = {ps}: rms residual / diag G = '
                   f'{np.sqrt(np.mean(resid.reshape(len(ps), nb, nb)[:, np.arange(nb), np.arange(nb)] ** 2 / d1 ** 2)):.4f} (pair-count noise of the thecov runs)')
-        Bn, Pn2 = Gsum - g1, quad - g2
+        Pn2 = quad - g2
+        Bn = Gsum - g1 - 2 * Pn2
         print('\nfull-density discreteness terms of the catalogue (closed form minus thecov Gaussian S-dependence), units diag G(p=1):')
-        print('  band        B/n diag    P/n^2 diag   | thecov Gaussian S-terms g1, g2 (same units) | tree level (HANDOFF 9.4): B/n 0.07-0.08, P/n^2 0.015 at k 0.15-0.3')
+        print('  band        B/n diag    P/n^2 diag   | thecov Gaussian S-terms g1, g2 (same units) | tree level (HANDOFF 9.4, diag k 0.15-0.3): LRG1 B/n 0.07-0.08, P/n^2 0.014-0.02; QSO P/n^2 0.02-0.03')
         for lo_, hi_ in KR:
             m = (k >= lo_) & (k < hi_)
             print(f'  {lo_}-{hi_}:  {np.mean(np.diag(Bn)[m] / d1[m]):+.3f}      {np.mean(np.diag(Pn2)[m] / d1[m]):+.3f}      | '

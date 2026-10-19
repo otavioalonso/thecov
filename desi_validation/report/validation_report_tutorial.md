@@ -158,26 +158,61 @@ the power at $k$) and $W_2$ the transform of the $w^2$-weighted catalogue. It ag
 
 ### 3.3 Results
 
-Galaxies' own discreteness terms at full density, in units of the Gaussian diagonal, from mock 173 (fit over
-$p = 0.5, 0.25, 0.125$; rms residual of the quadratic fit 0.16 % of G for LRG1, 1.5 % for QSO):
+Bookkeeping. Averaged over catalogues, the thinning covariance is ${\rm Cov}(P_p) - {\rm Cov}(P_1)$. With
+$B/\bar n \propto 1/p = 1 + a$ and $P/\bar n^2 \propto 1/p^2 = 1 + 2a + a^2$, and thecov's Gaussian shot-noise
+dependence written as $g_1 a + g_2 a^2$, the two measured coefficients are
 
-| | $B/\bar n$ diagonal ($k$ 0.2-0.3) | $B/\bar n$ off-diagonal ($k > 0.15$) | $P/\bar n^2$ diagonal | $P/\bar n^2$ off-diagonal | tree level |
+$$ {\rm quad} = g_2 + P/\bar n^2, \qquad {\rm lin} = g_1 + B/\bar n + 2\,P/\bar n^2 , $$
+
+so $P/\bar n^2 = {\rm quad} - g_2$ and $B/\bar n = {\rm lin} - g_1 - 2\,P/\bar n^2$. (A first version of this
+analysis omitted the $-2P/\bar n^2$ and overstated $B/\bar n$; the numbers below are corrected, 2026-10-19.)
+
+Galaxies' own discreteness terms at full density, in units of the Gaussian diagonal, from mock 173 NGC (fit over
+$p = 0.5, 0.25, 0.125$; rms residual of the quadratic fit 0.16 % of G for LRG1, 1.5 % for QSO). "Off-diagonal" is
+the mean over neighbours $|i - j| = 2$-8 at $k > 0.15$, which is robust; the diagonal is not (see below).
+
+| | $B/\bar n$ diag ($k$ 0.2-0.3) | $B/\bar n$ off-diag | $P/\bar n^2$ diag ($k$ 0.2-0.3) | $P/\bar n^2$ off-diag | thecov tree level (diag, $k$ 0.15-0.3) |
 |---|---|---|---|---|---|
-| LRG1 NGC | 0.138 | 0.163-0.170 | 0.024 | 0.022 | $B/\bar n$ 0.07-0.08, $P/\bar n^2$ 0.015 |
-| QSO NGC | 0.031 (noisy) | 0.111-0.114 | 0.044 | 0.039 | same |
+| LRG1 NGC | 0.090 | 0.12 | 0.024 | 0.022 | $B/\bar n$ 0.07-0.08, $P/\bar n^2$ 0.014-0.02 |
+| QSO NGC | $-0.06$ (not robust) | 0.03-0.04 | 0.044 (not robust) | 0.039 | $P/\bar n^2$ 0.02-0.03 |
 
-Reading: for LRGs the $B/\bar n$ term is **twice** its tree-level value and $P/\bar n^2$ about 1.5x; for QSOs
-$P/\bar n^2$ is **2.6x** tree level and $B/\bar n$ about 1.5x. These are exactly the amplitudes the earlier Wishart
-template fits to 848 mocks had asked for (HANDOFF 9.4: $B/\bar n$ x 1.8-2.3 for LRG1, $P/\bar n^2$ x 2.2-4.1 for
-QSO), now obtained from one catalogue with no template. The physics is also legible: a factor 2 in $B/\bar n$ for
-LRGs is the one-halo (satellite) bispectrum that tree-level perturbation theory does not contain; a factor 2.6 in
-$P/\bar n^2$ for QSOs says the QSO point process is not Poisson at the pair level (an excess of close pairs or
-duplicates — a question for the mock builders, testable with $p \approx 0.9$). Both measurements apply unchanged to
-the DESI data catalogues (about a minute per cap).
+Reading.
+- **LRG1**: $B/\bar n$ is about 1.2x its tree-level value on the diagonal and about 1.6x off the diagonal;
+  $P/\bar n^2$ is about 1.1-1.5x. The excess over tree level is modest, not a factor of 2.
+- **QSO**: the off-diagonal $P/\bar n^2$ (0.039) is *exactly* what the QSOs' own two-point clustering predicts. A
+  direct check (section 3.4) compares the pair term of the catalogue with the exact expectation for a Poisson
+  sampling of a field with the mocks' measured $P(k)$, $(1/V)\sum_{\mathbf p} P(p)\,|\tilde W(\mathbf q - \mathbf p)|^2$
+  with the full window: measured/model = 1.03 (NGC) and 1.01 (SGC) for $|i - j| \geq 2$. There is no non-Poisson
+  (one-halo or duplicate) excess in the QSO mocks.
+- **The diagonal is fragile.** On the diagonal the pair term is dominated by $q = k - k' \approx 0$, where it is
+  a small difference of two large numbers and is sensitive to the integral constraint and to the $k$-grid (the same
+  catalogue gives 0.039 or 0.015 on two grids). The negative QSO $B/\bar n$ diagonal is this artefact propagating
+  through the $-2P/\bar n^2$ correction. Use the off-diagonal values.
 
-**Conclusion of Part B.** The discreteness terms are *larger* than `thecov`'s tree-level implementation by
-tracer-dependent factors that can be measured from the catalogue itself. This is the "calibrate from the data" step
-for two of the three high-$k$ terms, and it breaks the shape degeneracy without using any mocks.
+### 3.4 The QSO pair term, checked directly
+
+Before attributing the QSO pair term to the mocks, we checked the mock catalogues directly (mocks 173-175, both caps;
+`pair_diagnostics.py`, `pair_model.py`):
+
+- **No duplicates** (zero repeated positions in every catalogue). Pairs closer than 1 Mpc/$h$ are strongly clustered
+  ($1 + \xi \approx 10$) but few (300-600 per cap), carrying 3-7 % of the diagonal pair term.
+- **Weights are not the cause**: the off-diagonal pair term is the same with analysis weights and with FKP-only weights.
+- **The pair term equals the exact clustering expectation** for $|i - j| \geq 2$ (measured/model 1.03 NGC, 1.01 SGC).
+  At angular separations below 7 arcsec the mocks have 6-18 % fewer pairs than random (a fibre-collision deficit);
+  these pairs are far too few to matter for the covariance at $k \leq 0.3$.
+
+![QSO mock pair term against the exact clustering expectation; close pairs; angular pairs](qso_pair_checks.png)
+
+*Figure 2b. (a) Clustered pair term of QSO mock 173 (points) against the exact clustering expectation with the mocks'
+own P(k) (lines), versus bin separation; the shaded region is $q \approx 0$, where the measurement carries the integral
+constraint. (b) $1 + \xi(r)$ at 0.1-20 Mpc/h. (c) $1 + w(\theta)$ at fibre-collision scales. Mock catalogues only.*
+
+**Conclusion of Part B.** The discreteness terms can be measured from the catalogue itself. For LRG1, $B/\bar n$
+is about 1.2-1.6x thecov's tree-level value and $P/\bar n^2$ about 1.1-1.5x. For QSO the pair term is ordinary
+clustering, so the large QSO $P/\bar n^2$ amplitudes of the earlier mock fits (HANDOFF 9.4: x2.2-4.1) must come from
+how thecov's tree-level term approximates $P(|\mathbf k - \mathbf k'|)$ (its local approximation) or from the
+degeneracy of those fits. That is a thecov question, not a mock question, and the exact model of section 3.4 is the
+reference to test it against.
 
 ## 4. Part C — the long-mode response, measured from one catalogue
 
@@ -228,8 +263,8 @@ compared with the regression over 848 mocks (section 5).*
 Three things to take from this table.
 
 - **The monopole response is 1.9, flat over a factor 2 in $k_L$** (0.015-0.03), i.e. 1.2-1.5 times tree level. This
-  is the same physics as the factor 2 in $B/\bar n$: the mock LRGs respond to a long mode more strongly than linear
-  bias plus tree-level perturbation theory say, because of the one-halo term.
+  is the same direction as the $B/\bar n$ excess of Part B (1.2-1.6x): the mock LRGs respond to a long mode more
+  strongly than linear bias plus tree-level perturbation theory say, plausibly through the one-halo term.
 - **The quadrupole response is not flat**: it rises from 2.8 to 3.9 as $k_L$ decreases, and the rise begins at
   $k_L \approx 2\pi/460\,{\rm Mpc}/h$, the radial thickness of the LRG1 shell. Below that scale the long modes that
   fit inside the survey are predominantly *transverse* to the line of sight, and the quadrupole's response depends on
@@ -299,7 +334,7 @@ Status of the budget after this work:
 |---|---|---|
 | Gaussian | correct with the $\xi$-kernel window (random-field test, Figure 2); 1-2 % Gaussian-shaped residual against the mocks above $k = 0.06$ | make `kernel` the DESI default; remaining residual is pair-count sampling / mesh resolution, not the window concept |
 | SSC + local average | sign, shape and normalisation bookkeeping validated; $R_0$ measured (1.9, LRG1) | use measured $R_0(q\to0)$ instead of tree level; give $R_2$ the window's long-mode anisotropy (thin shell $\Rightarrow$ transverse, $R_2 = 3.4$-$4$); compute $\sigma_L^2$ with the same anisotropy weighting |
-| discreteness $B/\bar n$, $P/\bar n^2$ | measured from one catalogue; 2x / 1.5x (LRG1), 1.5x / 2.6x (QSO) tree level | port the closed-form thinning estimator into `DiscretenessCovariance` as the mesh-level calibration; do not use `window_convolve` |
+| discreteness $B/\bar n$, $P/\bar n^2$ | measured from one catalogue; LRG1 1.2-1.6x / 1.1-1.5x tree level; QSO pair term = exact clustering expectation | port the closed-form thinning estimator into `DiscretenessCovariance` as the mesh-level calibration; do not use `window_convolve` |
 | T0 | tree level rejected by mocks earlier (amplitude 0.2-0.4); not isolated here | bound as the remainder after the three measured terms; do not fit it |
 
 Immediate next steps, in order of cost:
@@ -309,8 +344,8 @@ Immediate next steps, in order of cost:
    ($\chi^2/n$, variance ratios, whitened directions); the remainder is the T0 bound.
 3. The super-survey variance with the correct anisotropy (radial from the mocks' $n(z)$ scatter, transverse from
    $|W(q)|^2$) — the last free piece of the SSC term.
-4. Report the QSO $P/\bar n^2$ excess to the mock builders (a $p \approx 0.9$ thinning distinguishes duplicates from
-   clustering).
+4. Compare thecov's tree-level $P/\bar n^2$ term (local approximation) with the exact clustering expectation of
+   section 3.4, off the diagonal, for QSO and LRG1; this decides where the earlier QSO excess came from.
 
 ## 7. Glossary
 
