@@ -5,11 +5,16 @@
 
     I^(1)_ij = sum_{(w,p) in P^{AD}} sum_{(w',p') in P^{CB}} int s^2 ds  pbar'^{(i)}_{L1 lam}  pbar^{(j)}_{L2 lam'}  Q^{w w'}_{Lam1 Lam2 Lam},
     I^(2)_ij = sum_{(w,p) in P^{AC}} sum_{(w',p') in P^{DB}} int s^2 ds  pbar'^{(i)}_{L1 lam}  pbar^{(j)}_{L2 lam'}  Q^{w w'}_{Lam1 Lam2 Lam}.
+
+Structure: `_wick_terms` lists, for a pair of spectra, every (Wick term, window pair, model multipoles) combination;
+`_couplings` gives, for one combination of multipoles, the (lam, lam') groups of window triples with their coefficients
+(selection rules and t-coefficients, computed once). Both the window requests and the assembly iterate over these.
 """
 from __future__ import annotations
 
 import os
 import time
+from functools import lru_cache
 
 import numpy as np
 
@@ -18,6 +23,31 @@ from .kernels import PowerSpectrumModel, ShellKernels
 from .tracers import Tracer, Window, spectrum_window_pairs
 from .wigner import CouplingCoefficients, tri, tri_multi, FOUR_PI
 from .windows import WindowLibrary
+
+_COEFFS = CouplingCoefficients()
+
+
+@lru_cache(maxsize=None)
+def index_tuples(term, ell1, ell2, L1, L2):
+    """All (lam, lam', Lam1, Lam2, Lam) allowed by the selection rules (Section 5.1)."""
+    Lam1s = tri(ell1, L2) if term == 1 else tri_multi((ell1, ell2, L2))
+    Lam2s = tri(L1, ell2) if term == 1 else (L1,)
+    return tuple((lam, lamp, Lam1, Lam2, Lam)
+                 for lam in tri(ell1, L1) for lamp in tri(ell2, L2) for Lam1 in Lam1s for Lam2 in Lam2s
+                 for Lam in sorted(set(tri(lam, lamp)) & set(tri(Lam1, Lam2))))
+
+
+@lru_cache(maxsize=None)
+def _couplings(term, ell1, ell2, L1, L2):
+    """{(lam, lam'): ((c, (Lam1, Lam2, Lam)), ...)}: the window triples of each (lam, lam') with their coefficient
+    c = (4 pi)^4 (-1)^((lam+lam')/2) t / ((2L1+1)(2L2+1)); vanishing t are dropped."""
+    out = {}
+    for lam, lamp, Lam1, Lam2, Lam in index_tuples(term, ell1, ell2, L1, L2):
+        t = _COEFFS.t(term, ell1, ell2, L1, L2, lam, lamp, Lam1, Lam2, Lam)
+        if abs(t) >= 1e-15:
+            c = FOUR_PI ** 4 * (-1) ** ((lam + lamp) // 2) / ((2 * L1 + 1) * (2 * L2 + 1)) * t
+            out.setdefault((lam, lamp), []).append((c, (Lam1, Lam2, Lam)))
+    return {k: tuple(v) for k, v in out.items()}
 
 
 class GaussianCovariance:
@@ -31,24 +61,12 @@ class GaussianCovariance:
     L_max     : highest power-spectrum multipole used in the model (even)
     s_max     : maximum separation (default: bounding box of the randoms)
     ds        : step of the s grid used for the radial integrals (Mpc/h)
-    ds_pair   : radial bin width of the pair counts (Mpc/h); Q is smooth, coarse is fine
     shot_noise: include the shot-noise windows S^A
-    n_sub     : randoms per tracer used for the far pairs (s >= s_split; all pairs, cost ~ n_sub^2)
-    n_near    : randoms per tracer used for the near pairs (s < s_split; KD-tree, cost ~ n_near * density)
-    s_split   : separation splitting the two regimes (Mpc/h)
-    min_pairs : s bins with fewer pairs are dropped from the radial spline of Q
-    n_shells, n_mu : resolution of the (r1, s, mu) histogram the pairs are binned into. S is
-                evaluated at each cell's weighted mean, so the result is first-order accurate in the
-                cell size. n_mu must resolve oscillations of order max(Lam1, Lam2) in mu and
-                defaults to 6 x that (None = auto); n_shells controls only the weak s/r1 dependence.
-    backend   : 'auto' (jax if importable, else numpy), 'jax', or 'numpy'. Only the pair-counting
-                step differs; both backends produce the same histogram.
-    n_threads : threads for the pair counts (None: min(16, cpu count)). Window pairs sampled by the
-                same pair of randoms catalogues are counted together, in one pass.
-    smoothing : optional WindowSmoothing (smoothing.py): pair-averaged clustering windows
-                m_A (K_k * m_B) with a xi-based kernel per k-bin instead of the local m_A m_B. Its
-                reference densities and fiducial power must be set; it is built (for the k bins and
-                tracers here) by compute_windows.
+    smoothing : optional WindowSmoothing (smoothing.py): pair-averaged clustering windows m_A (K_k * m_B) with a
+                xi-based kernel per k-bin instead of the local m_A m_B. Its reference densities and fiducial power
+                must be set; it is built (for the k bins and tracers here) by compute_windows.
+    Pair counts (see thecov/defaults.py): ds_pair, n_sub, n_near, s_split, min_pairs, seed, chunk_pairs, n_shells,
+                n_mu; backend 'auto' (jax if importable) / 'jax' / 'numpy' (same histogram); n_threads.
     """
 
     def __init__(self, tracers, k_edges, ells=(0, 2, 4), L_max=4, s_max=None, ds=D.DS, ds_pair=D.DS_PAIR,
@@ -61,39 +79,28 @@ class GaussianCovariance:
         self.ells = tuple(int(l) for l in ells)
         self.Ls = tuple(range(0, int(L_max) + 1, 2))
         self.shot_noise = bool(shot_noise)
-        if s_max is None:
-            s_max = max(t.s_max() for t in tracers)
-        self.s_max = float(s_max)
+        self.s_max = float(s_max if s_max is not None else max(t.s_max() for t in tracers))
         self.s = np.arange(0.5 * ds, self.s_max, ds)
         self.s_weights = self.s ** 2 * ds
-        s_edges = np.arange(0.0, self.s_max + ds_pair, ds_pair)
-        self.windows = WindowLibrary(s_edges, n_sub=n_sub, n_near=n_near, s_split=s_split,
-                                     min_pairs=min_pairs, seed=seed, chunk_pairs=chunk_pairs,
-                                     n_shells=n_shells, n_mu=n_mu,
-                                     backend=backend, n_threads=n_threads)
-        self.coeffs = CouplingCoefficients()
+        self.windows = WindowLibrary(np.arange(0.0, self.s_max + ds_pair, ds_pair), n_sub=n_sub, n_near=n_near,
+                                     s_split=s_split, min_pairs=min_pairs, seed=seed, chunk_pairs=chunk_pairs,
+                                     n_shells=n_shells, n_mu=n_mu, backend=backend, n_threads=n_threads)
+        self.coeffs = _COEFFS
         self.kernels = ShellKernels(self.k_edges, self.s)
         self.model: PowerSpectrumModel | None = None
         self.masked = False
         self.smoothing = smoothing
         self._I = {}
+        self._requested = set()
 
-    # ------------------------------------------------------------------ helpers
+    index_tuples = staticmethod(index_tuples)
+
+    # ------------------------------------------------------------------ the sums of the formula
     def _tracer(self, name) -> Tracer:
         return self.tracers[str(name)]
 
-    def _pairs(self, X, Y):
-        return spectrum_window_pairs(self._tracer(X), self._tracer(Y), self.shot_noise, self.smoothing)
-
-    def _term_pairs(self, AB, CD, term):
-        """(P at x-hat [kernel j, L2], P at x'-hat [kernel i, L1]) for the two Wick terms."""
-        A, B = AB
-        C, D = CD
-        if term == 1:
-            return self._pairs(A, D), self._pairs(C, B)
-        return self._pairs(A, C), self._pairs(D, B)
-
     def _Ls_for(self, spec):
+        """Model multipoles of a window's spectrum: 0 for shot noise, those of the model otherwise."""
         if spec[0] == 'S':
             return (0,)
         if self.model is None:
@@ -101,23 +108,22 @@ class GaussianCovariance:
         avail = self.model.multipoles(spec[1], spec[2])
         return tuple(L for L in self.Ls if L in avail)
 
-    @staticmethod
-    def index_tuples(term, ell1, ell2, L1, L2):
-        """All (lam, lam', Lam1, Lam2, Lam) allowed by the selection rules (Section 5.1)."""
-        for lam in tri(ell1, L1):
-            for lamp in tri(ell2, L2):
-                Lam1s = tri(ell1, L2) if term == 1 else tri_multi((ell1, ell2, L2))
-                Lam2s = tri(L1, ell2) if term == 1 else (L1,)
-                for Lam1 in Lam1s:
-                    for Lam2 in Lam2s:
-                        for Lam in sorted(set(tri(lam, lamp)) & set(tri(Lam1, Lam2))):
-                            yield lam, lamp, Lam1, Lam2, Lam
+    def _wick_terms(self, AB, CD):
+        """(term, omega, spec, omega', spec') for the two Wick terms: (omega, spec) at x^ (kernel of bin j, multipole
+        L2), (omega', spec') at x'^ (bin i, L1); term 1 pairs A with D and C with B, term 2 A with C and D with B."""
+        (A, B), (C, D) = AB, CD
+        pairs = lambda X, Y: spectrum_window_pairs(self._tracer(X), self._tracer(Y), self.shot_noise, self.smoothing)
+        for term, (X, Xp) in ((1, ((A, D), (C, B))), (2, ((A, C), (D, B)))):
+            for omega, spec in pairs(*X):
+                for omega_p, spec_p in pairs(*Xp):
+                    yield term, omega, spec, omega_p, spec_p
 
+    # ------------------------------------------------------------------ normalisation
     def I(self, A, B) -> float:
         """The normalisation of P^AB: int W^AB from the randoms, unless set_normalization was used."""
         key = tuple(sorted((str(A), str(B))))
         if key not in self._I:
-            self._I[key] = Window('W', self._tracer(A), self._tracer(B)).integral()
+            self._I[key] = self.I_local(A, B)
         return self._I[key]
 
     def set_normalization(self, A, B, norm: float):
@@ -152,6 +158,7 @@ class GaussianCovariance:
         return self.I(A, B) / np.interp(k, centres, self.I_k(A, B))
 
     def _kernel(self, spec, L, lam):
+        """pbar^{(i)}_{L lam}(s) for every bin i, (nbins, ns): shot noise, the model, or the masked model."""
         if spec[0] == 'S':
             return self.kernels.average(None, lam, tag=('S',))
         A, B = spec[1], spec[2]
@@ -167,24 +174,18 @@ class GaussianCovariance:
         self.build_smoothing(spectra)            # before the windows are listed (they depend on it)
         for AB in spectra:
             for CD in spectra:
-                for term in (1, 2):
-                    pairsX, pairsXp = self._term_pairs(AB, CD, term)
-                    for (omega, spec) in pairsX:
-                        for (omega_p, spec_p) in pairsXp:
-                            trip = set()
-                            for ell1 in self.ells:
-                                for ell2 in self.ells:
-                                    for L1 in self._Ls_for(spec_p):
-                                        for L2 in self._Ls_for(spec):
-                                            for (_, _, Lam1, Lam2, Lam) in self.index_tuples(term, ell1, ell2, L1, L2):
-                                                trip.add((Lam1, Lam2, Lam))
-                            self.windows.request(omega, omega_p, trip)
+                if (AB, CD, id(self.model)) in self._requested:      # the model sets the multipoles needed
+                    continue
+                for term, omega, spec, omega_p, spec_p in self._wick_terms(AB, CD):
+                    trip = {t[2:] for ell1 in self.ells for ell2 in self.ells for L1 in self._Ls_for(spec_p)
+                            for L2 in self._Ls_for(spec) for t in index_tuples(term, ell1, ell2, L1, L2)}
+                    self.windows.request(omega, omega_p, trip)
+                self._requested.add((AB, CD, id(self.model)))
 
     def build_smoothing(self, spectra, log=print):
         """Build the smoothing (basis, coefficients, smoothed m at the randoms) for the spectra's pairs."""
         if self.smoothing is not None:
-            pairs = [tuple(str(x) for x in sp) for sp in spectra]
-            todo = [p for p in pairs if not self.smoothing.has(*p)]
+            todo = [p for p in (tuple(str(x) for x in sp) for sp in spectra) if not self.smoothing.has(*p)]
             if todo:
                 self.smoothing.build(self.k_edges, self.tracers, todo, log=log)
         return self
@@ -240,44 +241,31 @@ class GaussianCovariance:
         off-diagonal elements.
         """
         if symmetrize:
-            direct = self.block(AB, CD, ell1, ell2, symmetrize=False)
-            mirror = self.block(CD, AB, ell2, ell1, symmetrize=False)
-            return 0.5 * (direct + mirror.T)
+            return 0.5 * (self._block_raw(AB, CD, ell1, ell2) + self._block_raw(CD, AB, ell2, ell1).T)
         return self._block_raw(AB, CD, ell1, ell2)
 
     def _block_raw(self, AB, CD, ell1: int, ell2: int) -> np.ndarray:
+        """sum over Wick terms, window pairs and multipoles of u_i (s^2 ds sum_c c Q) v_j, / (I_AB I_CD)."""
         if self.model is None:
             raise RuntimeError("set_model() first")
-        AB = tuple(str(x) for x in AB)
-        CD = tuple(str(x) for x in CD)
+        AB, CD = tuple(str(x) for x in AB), tuple(str(x) for x in CD)
         self.request_windows([AB, CD])
         if self.windows.missing():          # lazily compute whatever pair counts are missing
             self.windows.compute_all()
         C = np.zeros((self.nbins, self.nbins))
-        for term in (1, 2):
-            pairsX, pairsXp = self._term_pairs(AB, CD, term)
-            for (omega, spec) in pairsX:            # at x-hat, kernel j, multipole L2
-                for (omega_p, spec_p) in pairsXp:   # at x'-hat, kernel i, multipole L1
-                    for L1 in self._Ls_for(spec_p):
-                        for L2 in self._Ls_for(spec):
-                            # group the Lambda sums per (lam, lam'): one matrix product each
-                            qsum = {}
-                            for (lam, lamp, Lam1, Lam2, Lam) in self.index_tuples(term, ell1, ell2, L1, L2):
-                                t = self.coeffs.t(term, ell1, ell2, L1, L2, lam, lamp, Lam1, Lam2, Lam)
-                                if abs(t) < 1e-15:
-                                    continue
-                                c = FOUR_PI ** 4 * (-1) ** ((lam + lamp) // 2) / ((2 * L1 + 1) * (2 * L2 + 1)) * t
-                                Q = self.windows.get(omega, omega_p, Lam1, Lam2, Lam, self.s)
-                                qsum[(lam, lamp)] = qsum.get((lam, lamp), 0.0) + c * Q
-                            ci, cj = omega_p.coeffs_for(self.k_edges), omega.coeffs_for(self.k_edges)   # basis windows
-                            for (lam, lamp), q in qsum.items():
-                                u = self._kernel(spec_p, L1, lam)     # (nbins, ns), bin i
-                                v = self._kernel(spec, L2, lamp)      # (nbins, ns), bin j
-                                if ci is not None:
-                                    u = u * ci[:, None]
-                                if cj is not None:
-                                    v = v * cj[:, None]
-                                C += (u * (self.s_weights * q)) @ v.T
+        for term, omega, spec, omega_p, spec_p in self._wick_terms(AB, CD):
+            ci, cj = omega_p.coeffs_for(self.k_edges), omega.coeffs_for(self.k_edges)   # basis-window coefficients
+            for L1 in self._Ls_for(spec_p):
+                for L2 in self._Ls_for(spec):
+                    for (lam, lamp), group in _couplings(term, ell1, ell2, L1, L2).items():
+                        q = sum(c * self.windows.get(omega, omega_p, *trip, self.s) for c, trip in group)
+                        u = self._kernel(spec_p, L1, lam)     # (nbins, ns), bin i
+                        v = self._kernel(spec, L2, lamp)      # (nbins, ns), bin j
+                        if ci is not None:
+                            u = u * ci[:, None]
+                        if cj is not None:
+                            v = v * cj[:, None]
+                        C += (u * (self.s_weights * q)) @ v.T
         return C / (self.I(*AB) * self.I(*CD))
 
     def covariance(self, spectra, ells=None, symmetrize=True, verbose=False):
@@ -285,20 +273,15 @@ class GaussianCovariance:
 
         Returns (matrix, labels) with labels a list of (A, B, ell, i).
         """
-        if ells is None:
-            ells = self.ells
-        spectra = [tuple(str(x) for x in sp) for sp in spectra]
-        blocks = [(sp, l) for sp in spectra for l in ells]
-        n = len(blocks) * self.nbins
-        C = np.zeros((n, n))
+        ells = self.ells if ells is None else ells
+        blocks = [(tuple(str(x) for x in sp), l) for sp in spectra for l in ells]
         t0 = time.time()
-        for a, (spA, lA) in enumerate(blocks):
-            for b, (spB, lB) in enumerate(blocks):
-                blk = self.block(spA, spB, lA, lB, symmetrize=False)
-                C[a * self.nbins:(a + 1) * self.nbins, b * self.nbins:(b + 1) * self.nbins] = blk
-                if verbose:
-                    print(f"block {spA} l={lA} x {spB} l={lB} done ({time.time() - t0:.1f}s)")
-        if symmetrize:
-            C = 0.5 * (C + C.T)
+
+        def one(a, b):
+            blk = self._block_raw(a[0], b[0], a[1], b[1])
+            if verbose:
+                print(f"block {a[0]} l={a[1]} x {b[0]} l={b[1]} done ({time.time() - t0:.1f}s)")
+            return blk
+        C = np.block([[one(a, b) for b in blocks] for a in blocks])
         labels = [(sp[0], sp[1], l, i) for (sp, l) in blocks for i in range(self.nbins)]
-        return C, labels
+        return (0.5 * (C + C.T) if symmetrize else C), labels
