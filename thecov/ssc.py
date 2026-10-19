@@ -70,6 +70,7 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 from scipy.special import spherical_jn
 
+from . import defaults as D
 from .tracers import Window
 from .windows import WindowLibrary
 from .wigner import wigner_3j, tri, FOUR_PI
@@ -114,8 +115,8 @@ class SuperSampleCovariance:
                   'randoms': {'M': 2.0, 'W': 0.0},        # norm = alpha^2 sum_c R_c^2: realised through alpha only, twice
                   'alpha': {'M': 1.0, 'W': 0.0}}          # norm = alpha x (fixed randoms integral, e.g. sum_r nbar w^2)
 
-    def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, local_average=True, damping=1.0, n_mu=96,
-                 n_near=300000, dilution=None, discreteness=True, p_dressed=None, norm_kind='data-randoms'):
+    def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, local_average=True, damping=1.0, n_mu=D.SSC_N_MU,
+                 n_near=D.SSC_N_NEAR, dilution=None, discreteness=True, p_dressed=None, norm_kind='data-randoms'):
         self.cov = cov
         self.p_dressed = p_dressed
         self.dilution = dilution

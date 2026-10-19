@@ -13,6 +13,7 @@ import time
 
 import numpy as np
 
+from . import defaults as D
 from .kernels import PowerSpectrumModel, ShellKernels
 from .tracers import Tracer, Window, spectrum_window_pairs
 from .wigner import CouplingCoefficients, tri, tri_multi, FOUR_PI
@@ -42,12 +43,6 @@ class GaussianCovariance:
                 defaults to 6 x that (None = auto); n_shells controls only the weak s/r1 dependence.
     backend   : 'auto' (jax if importable, else numpy), 'jax', or 'numpy'. Only the pair-counting
                 step differs; both backends produce the same histogram.
-    cell_means: 'shared' (default) evaluates S in each (r1, s, mu) cell at the cell's unweighted mean,
-                common to all window pairs counted together; 'weighted' uses each window pair's own
-                weighted mean. The binning is bound by scatter-adds, and 'shared' needs K + 4 per pair
-                instead of 4K + 1 for K window pairs. Both are exact to first order in the cell size;
-                on the mock survey they differ by 2e-4 in the covariance (the cell-size error itself
-                is ~1e-3 and the Monte-Carlo noise ~1e-2).
     n_threads : threads for the pair counts (None: min(16, cpu count)). Window pairs sampled by the
                 same pair of randoms catalogues are counted together, in one pass.
     smoothing : optional WindowSmoothing (smoothing.py): pair-averaged clustering windows
@@ -56,10 +51,10 @@ class GaussianCovariance:
                 tracers here) by compute_windows.
     """
 
-    def __init__(self, tracers, k_edges, ells=(0, 2, 4), L_max=4, s_max=None, ds=2.0, ds_pair=10.0,
-                 shot_noise=True, n_sub=5000, n_near=200000, s_split=80.0, min_pairs=20, seed=0,
-                 chunk_pairs=200000, n_shells=16, n_mu=None, backend='auto', n_threads=None,
-                 cell_means='shared', smoothing=None):
+    def __init__(self, tracers, k_edges, ells=(0, 2, 4), L_max=4, s_max=None, ds=D.DS, ds_pair=D.DS_PAIR,
+                 shot_noise=True, n_sub=D.N_SUB, n_near=D.N_NEAR, s_split=D.S_SPLIT, min_pairs=D.MIN_PAIRS,
+                 seed=D.SEED, chunk_pairs=D.CHUNK_PAIRS, n_shells=D.N_SHELLS, n_mu=D.N_MU, backend='auto',
+                 n_threads=None, smoothing=None):
         self.tracers = {t.name: t for t in tracers}
         self.k_edges = np.asarray(k_edges, dtype=float)
         self.nbins = len(self.k_edges) - 1
@@ -75,7 +70,7 @@ class GaussianCovariance:
         self.windows = WindowLibrary(s_edges, n_sub=n_sub, n_near=n_near, s_split=s_split,
                                      min_pairs=min_pairs, seed=seed, chunk_pairs=chunk_pairs,
                                      n_shells=n_shells, n_mu=n_mu,
-                                     backend=backend, n_threads=n_threads, cell_means=cell_means)
+                                     backend=backend, n_threads=n_threads)
         self.coeffs = CouplingCoefficients()
         self.kernels = ShellKernels(self.k_edges, self.s)
         self.model: PowerSpectrumModel | None = None

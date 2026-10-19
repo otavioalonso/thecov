@@ -34,7 +34,6 @@ Sampling
 """
 from __future__ import annotations
 
-import json
 import math
 import time
 
@@ -42,6 +41,7 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 from scipy.spatial import cKDTree
 
+from . import cache, defaults as D
 from .harmonics import tripolar_coplanar
 from .tracers import Window
 from .wigner import FOUR_PI
@@ -68,26 +68,25 @@ def _jax():
 
 
 class PairHistogram:
-    """Weighted pair counts on a grid of (r1, s, mu), with the weighted mean of each cell.
+    """Weighted pair counts on a grid of (r1, s, mu), with the mean (r1, s, mu) of each cell.
 
     `ncol` weight columns share one set of pairs (window pairs sampled by the same randoms differ
-    only in their weights); the unweighted count is common to all columns.
+    only in their weights). The cell means are unweighted and common to all columns: K + 4 sums per
+    pair for K columns instead of 4K + 1 with per-column weighted means, and the two agree to first
+    order in the cell size (2e-4 in the covariance on the mock survey, cell-size error ~1e-3).
     """
 
-    def __init__(self, r_edges, s_edges, mu_edges, ncol: int = 1, shared: bool = False):
+    def __init__(self, r_edges, s_edges, mu_edges, ncol: int = 1):
         self.r_edges = np.asarray(r_edges, dtype=float)
         self.s_edges = np.asarray(s_edges, dtype=float)
         self.mu_edges = np.asarray(mu_edges, dtype=float)
         self.shape = (len(self.r_edges) - 1, len(self.s_edges) - 1, len(self.mu_edges) - 1)
         self.ncol = int(ncol)
-        # shared: the cell means of (r1, s, mu) are unweighted and common to all columns
-        self.shared = bool(shared)
         n = int(np.prod(self.shape))
-        mshape = (n,) if self.shared else (self.ncol, n)
-        self.w = np.zeros((self.ncol, n))      # sum of pair weights
-        self.wr = np.zeros(mshape)             # sum of w * r1   (shared: of r1)
-        self.ws = np.zeros(mshape)             # sum of w * s    (shared: of s)
-        self.wmu = np.zeros(mshape)            # sum of w * mu   (shared: of mu)
+        self.w = np.zeros((self.ncol, n))      # sum of pair weights, per column
+        self.wr = np.zeros(n)                  # sum of r1 (unweighted: the cell means are common to all columns)
+        self.ws = np.zeros(n)                  # sum of s
+        self.wmu = np.zeros(n)                 # sum of mu
         self.n = np.zeros(n)                   # unweighted count
 
     def add(self, x1, r1, d, w):
@@ -111,16 +110,10 @@ class PairHistogram:
         ln = self.n.size
         rg, sg, mg = r1[good], s[good], mu[good]
         for c in range(self.ncol):
-            ww = w[good, c]
-            self.w[c] += np.bincount(idx, weights=ww, minlength=ln)
-            if not self.shared:
-                self.wr[c] += np.bincount(idx, weights=ww * rg, minlength=ln)
-                self.ws[c] += np.bincount(idx, weights=ww * sg, minlength=ln)
-                self.wmu[c] += np.bincount(idx, weights=ww * mg, minlength=ln)
-        if self.shared:
-            self.wr += np.bincount(idx, weights=rg, minlength=ln)
-            self.ws += np.bincount(idx, weights=sg, minlength=ln)
-            self.wmu += np.bincount(idx, weights=mg, minlength=ln)
+            self.w[c] += np.bincount(idx, weights=w[good, c], minlength=ln)
+        self.wr += np.bincount(idx, weights=rg, minlength=ln)
+        self.ws += np.bincount(idx, weights=sg, minlength=ln)
+        self.wmu += np.bincount(idx, weights=mg, minlength=ln)
         self.n += np.bincount(idx, minlength=ln)
 
     def add_arrays(self, w, wr, ws, wmu, n):
@@ -142,13 +135,8 @@ class PairHistogram:
         if len(nz) == 0:
             return out, wsum, nsum
         w = wc[nz]
-        if self.shared:
-            nn = self.n[nz]
-            r1, s, mu = self.wr[nz] / nn, self.ws[nz] / nn, self.wmu[nz] / nn
-        else:
-            r1 = self.wr[col][nz] / w
-            s = self.ws[col][nz] / w
-            mu = self.wmu[col][nz] / w
+        nn = self.n[nz]
+        r1, s, mu = self.wr[nz] / nn, self.ws[nz] / nn, self.wmu[nz] / nn
         S = tripolar_coplanar(triples, r1, s, mu)               # (n_triples, n_cells)
         ib = (nz // self.shape[2]) % nb
         for n, t in enumerate(triples):
@@ -228,11 +216,11 @@ class _Counter:
                 else:
                     p1, ww1, rr = pos1[i0:i1], w1[i0:i1], r1all[i0:i1]
                 return jb.far_block(jnp.asarray(p1), jnp.asarray(ww1), jnp.asarray(rr), p2, ww2, *edges,
-                                    hist.shape, ncell, float(s_lo), float(s_hi), uni, hist.shared)
+                                    hist.shape, ncell, float(s_lo), float(s_hi), uni)
         else:
             def one(b):
                 i0, i1 = b
-                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol, hist.shared)
+                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol)
                 d = pos2[None, :, :] - pos1[i0:i1, None, :]
                 s = np.linalg.norm(d, axis=-1)
                 keep = (s >= s_lo) & (s < s_hi)
@@ -278,7 +266,7 @@ class _Counter:
             if len(i) == 0:
                 return None
             if jb is None:
-                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol, hist.shared)
+                h = PairHistogram(hist.r_edges, hist.s_edges, hist.mu_edges, hist.ncol)
                 h.add(pos1[i], r1all[i], pos2[j] - pos1[i], w1[i] * w2[j])
                 return (h.w, h.wr, h.ws, h.wmu, h.n)
             acc = None                           # summed on the device
@@ -294,7 +282,7 @@ class _Counter:
                     w = np.vstack([w, np.zeros((pad, w.shape[1]))])
                 valid = jnp.arange(C) < nv
                 out = jb.flat_pairs(jnp.asarray(x1), jnp.asarray(r1), jnp.asarray(d), jnp.asarray(w),
-                                    *edges, hist.shape, ncell, valid, uni, hist.shared)
+                                    *edges, hist.shape, ncell, valid, uni)
                 acc = out if acc is None else tuple(a + o for a, o in zip(acc, out))
             return acc
         t0 = time.time()
@@ -320,14 +308,13 @@ class _Counter:
         mu_edges = np.linspace(-1.0, 1.0, max(tw.n_mu for tw in self.tws) + 1)
         K = len(self.tws)
         near = tw0.s_edges[1:] <= split + 1e-9
-        shared = tw0.cell_means == 'shared'
-        far = PairHistogram(r_edges, tw0.s_edges, mu_edges, K, shared)
+        far = PairHistogram(r_edges, tw0.s_edges, mu_edges, K)
         norm_f = self.far(far, tw0.n_sub, split, tw0.s_edges[-1], verbose)
         nearh, norm_n = None, None
         if np.any(near):
             # near pairs only fall in the s bins below the split: a histogram over those alone is
             # ~15x smaller (exact; a small gain in the scatter-bound binning)
-            nearh = PairHistogram(r_edges, tw0.s_edges[:int(np.count_nonzero(near)) + 1], mu_edges, K, shared)
+            nearh = PairHistogram(r_edges, tw0.s_edges[:int(np.count_nonzero(near)) + 1], mu_edges, K)
             norm_n = self.near(nearh, tw0.n_near, split, verbose)
         for c, tw in enumerate(self.tws):
             tw._finish(split, far, norm_f, nearh, norm_n, col=c)
@@ -337,10 +324,9 @@ class TripolarWindow:
     """Pair-count estimate of Q^{omega omega'}_{Lam1 Lam2 Lam}(s) for a set of triples."""
 
     def __init__(self, omega: Window, omega_p: Window, triples, s_edges: np.ndarray,
-                 n_sub: int = 5000, n_near: int = 200000, s_split: float = 80.0,
-                 seed: int = 0, chunk_pairs: int = 200000, min_pairs: int = 20,
-                 n_shells: int = 16, n_mu=None, backend: str = 'auto', n_threads=None,
-                 cell_means: str = 'shared'):
+                 n_sub: int = D.N_SUB, n_near: int = D.N_NEAR, s_split: float = D.S_SPLIT,
+                 seed: int = D.SEED, chunk_pairs: int = D.CHUNK_PAIRS, min_pairs: int = D.MIN_PAIRS,
+                 n_shells: int = D.N_SHELLS, n_mu=D.N_MU, backend: str = 'auto', n_threads=None):
         self.omega = omega
         self.omega_p = omega_p
         self.triples = sorted(set(tuple(int(x) for x in t) for t in triples))
@@ -360,9 +346,6 @@ class TripolarWindow:
         self.n_mu = int(n_mu) if n_mu is not None else max(24, 6 * lam_max)
         self.backend = _resolve_backend(backend)
         self.n_threads = n_threads
-        if cell_means not in ('weighted', 'shared'):
-            raise ValueError("cell_means must be 'weighted' or 'shared'")
-        self.cell_means = cell_means
         self.Q = None          # dict triple -> array over s bins
         self.npairs = None     # unweighted pairs per s bin actually used
         self.Q0 = None         # exact value at s = 0
@@ -439,13 +422,13 @@ class WindowLibrary:
     (even multipoles) so that each unordered pair of windows is counted once.
     """
 
-    def __init__(self, s_edges, n_sub=5000, n_near=200000, s_split=80.0, seed=0, chunk_pairs=200000,
-                 min_pairs=20, n_shells=16, n_mu=None, backend='auto', n_threads=None,
-                 cell_means='shared'):
+    def __init__(self, s_edges, n_sub=D.N_SUB, n_near=D.N_NEAR, s_split=D.S_SPLIT, seed=D.SEED,
+                 chunk_pairs=D.CHUNK_PAIRS, min_pairs=D.MIN_PAIRS, n_shells=D.N_SHELLS, n_mu=D.N_MU,
+                 backend='auto', n_threads=None):
         self.s_edges = np.asarray(s_edges, dtype=float)
         self.opts = dict(n_sub=n_sub, n_near=n_near, s_split=s_split, seed=seed,
                          chunk_pairs=chunk_pairs, min_pairs=min_pairs, n_shells=n_shells,
-                         n_mu=n_mu, backend=backend, n_threads=n_threads, cell_means=cell_means)
+                         n_mu=n_mu, backend=backend, n_threads=n_threads)
         self._requests = {}
         self._windows = {}
         self._interp_cache = {}
@@ -511,24 +494,22 @@ class WindowLibrary:
                 meta.append({'key': [list(k) for k in key], 'trip': [int(x) for x in trip],
                              'q': q_name, 'npairs': np_name,
                              'q0': float(tw.Q0[trip]) if tw.Q0 is not None else 0.0})
-        data['meta'] = np.array(json.dumps(meta))
-        np.savez(path, **data)
+        cache.save(path, data, meta)
 
     def load(self, path):
         """Load pair-count results saved with save(); windows are matched by their names."""
-        with np.load(path) as f:
-            if len(f['s_edges']) != len(self.s_edges) or not np.allclose(f['s_edges'], self.s_edges):
-                raise ValueError("s_edges of the stored windows differ from the current ones")
-            meta = json.loads(str(f['meta'].item()))
-            groups, q0s, npairs = {}, {}, {}
-            for rec in meta:
-                key = tuple(tuple(k) for k in rec['key'])
-                trip = tuple(rec['trip'])
-                groups.setdefault(key, {})[trip] = f[rec['q']]
-                q0s.setdefault(key, {})[trip] = rec['q0']
-                if key not in npairs:
-                    arr = f[rec['npairs']]
-                    npairs[key] = arr if arr.size else None
+        f, meta = cache.load(path)
+        if len(f['s_edges']) != len(self.s_edges) or not np.allclose(f['s_edges'], self.s_edges):
+            raise ValueError("s_edges of the stored windows differ from the current ones")
+        groups, q0s, npairs = {}, {}, {}
+        for rec in meta:
+            key = tuple(tuple(k) for k in rec['key'])
+            trip = tuple(rec['trip'])
+            groups.setdefault(key, {})[trip] = f[rec['q']]
+            q0s.setdefault(key, {})[trip] = rec['q0']
+            if key not in npairs:
+                arr = f[rec['npairs']]
+                npairs[key] = arr if arr.size else None
         for key, Qs in groups.items():
             tw = TripolarWindow(None, None, list(Qs), self.s_edges, **self.opts)
             tw.Q, tw.Q0, tw.npairs = Qs, q0s[key], npairs.get(key)

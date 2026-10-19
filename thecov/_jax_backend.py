@@ -50,12 +50,12 @@ def _bin_index(r1, s, mu, r_edges, s_edges, mu_edges, shape, uni):
     return (ia * nb + ib) * nm + im, inside
 
 
-def _scatter(idx, w, r1, s, mu, keep, n_cells, shared=False):
+def _scatter(idx, w, r1, s, mu, keep, n_cells):
     """The accumulations, as segment sums over the flattened cell index.
 
     `w` has one column per window pair sharing these pairs (shape (n, K)); the unweighted count is
-    common. With `shared`, the cell-mean sums of r1, s and mu are UNWEIGHTED and common to all
-    columns (K + 4 scatter-adds per pair instead of 4K + 1 -- the binning is scatter-bound).
+    common, and so are the (unweighted) cell-mean sums of r1, s and mu: K + 4 scatter-adds per pair
+    (the binning is scatter-bound).
     The pairwise arithmetic may run in float32, but the sums are accumulated in float64: ~1e8
     additions into ~1e5 cells would lose several digits otherwise.
     """
@@ -65,14 +65,11 @@ def _scatter(idx, w, r1, s, mu, keep, n_cells, shared=False):
     cnt = jnp.where(keep, 1.0, 0.0)
     seg = partial(jax.ops.segment_sum, segment_ids=idx, num_segments=n_cells,
                   indices_are_sorted=False, unique_indices=False)
-    if shared:
-        return (seg(ww).T, seg(cnt * r1), seg(cnt * s), seg(cnt * mu), seg(cnt))
-    # (n_cells, K) -> (K, n_cells)
-    return (seg(ww).T, seg(ww * r1[:, None]).T, seg(ww * s[:, None]).T, seg(ww * mu[:, None]).T, seg(cnt))
+    return (seg(ww).T, seg(cnt * r1), seg(cnt * s), seg(cnt * mu), seg(cnt))
 
 
-@partial(jax.jit, static_argnums=(8, 9, 12, 13))
-def far_block(p1, w1, r1, p2, w2, r_edges, s_edges, mu_edges, shape, n_cells, s_lo, s_hi, uni, shared=False):
+@partial(jax.jit, static_argnums=(8, 9, 12))
+def far_block(p1, w1, r1, p2, w2, r_edges, s_edges, mu_edges, shape, n_cells, s_lo, s_hi, uni):
     """All pairs between the primaries p1 (a block) and every secondary p2, with s in [s_lo, s_hi).
     w1 (b, K) and w2 (n2, K) hold one weight column per window pair."""
     d = p2[None, :, :] - p1[:, None, :]
@@ -85,18 +82,18 @@ def far_block(p1, w1, r1, p2, w2, r_edges, s_edges, mu_edges, shape, n_cells, s_
     keep = (s >= s_lo) & (s < s_hi) & (s > 0) & (r1b > 0)
     idx, inside = _bin_index(r1b.ravel(), s.ravel(), mu.ravel(), r_edges, s_edges, mu_edges, shape, uni)
     return _scatter(idx, w, r1b.ravel(), s.ravel(), mu.ravel(),
-                    (keep & inside.reshape(s.shape)).ravel(), n_cells, shared)
+                    (keep & inside.reshape(s.shape)).ravel(), n_cells)
 
 
-@partial(jax.jit, static_argnums=(7, 8, 10, 11))
-def flat_pairs(x1, r1, d, w, r_edges, s_edges, mu_edges, shape, n_cells, valid, uni, shared=False):
+@partial(jax.jit, static_argnums=(7, 8, 10))
+def flat_pairs(x1, r1, d, w, r_edges, s_edges, mu_edges, shape, n_cells, valid, uni):
     """An explicit list of pairs: x1 the primary positions, d the separation vectors, w (n, K)."""
     s = jnp.sqrt(jnp.sum(d * d, axis=-1))
     safe = jnp.where(s > 0, s, 1.0)
     mu = jnp.clip(jnp.sum(x1 * d, axis=-1) / (jnp.where(r1 > 0, r1, 1.0) * safe), -1.0, 1.0)
     idx, inside = _bin_index(r1, s, mu, r_edges, s_edges, mu_edges, shape, uni)
     keep = valid & inside & (s > 0) & (r1 > 0)
-    return _scatter(idx, w, r1, s, mu, keep, n_cells, shared)
+    return _scatter(idx, w, r1, s, mu, keep, n_cells)
 
 
 def available() -> bool:

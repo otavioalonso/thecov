@@ -38,8 +38,6 @@ Usage:
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import time
 
@@ -47,6 +45,8 @@ import numpy as np
 import scipy.fft as sfft
 from scipy.spatial import cKDTree
 from scipy.special import spherical_jn
+
+from . import cache, defaults as D
 
 
 # ----------------------------------------------------------------------------- kernels
@@ -262,8 +262,9 @@ class WindowSmoothing:
     damping  : Gaussian damping [Mpc/h] of the power extrapolated beyond the tabulated k range
     """
 
-    def __init__(self, cell=3.0, r_split=8.0, taper_width=2.0, r_max=200.0, dr=0.25, tol=2e-3,
-                 max_basis=None, max_kernels=48, damping=1.0, workers=None):
+    def __init__(self, cell=D.KERNEL_CELL, r_split=D.KERNEL_R_SPLIT, taper_width=D.KERNEL_TAPER, r_max=D.KERNEL_R_MAX,
+                 dr=D.KERNEL_DR, tol=D.KERNEL_TOL, max_basis=None, max_kernels=D.KERNEL_MAX_KERNELS,
+                 damping=D.KERNEL_DAMPING, workers=None):
         self.cell, self.r_split, self.taper_width = float(cell), float(r_split), float(taper_width)
         self.r_max, self.dr = float(r_max), float(dr)
         self.tol, self.damping = float(tol), float(damping)
@@ -298,9 +299,9 @@ class WindowSmoothing:
         loaded smoothing keeps the tag it was saved with, so that its cached windows are recognised"""
         if getattr(self, '_loaded_tag', None):
             return self._loaded_tag
-        key = repr((self.cell, self.r_split, self.taper_width, self.r_max, self.dr, self.tol, self.max_basis,
-                    self.max_kernels, self.damping, sorted((k, float(np.sum(v[0])), float(np.sum(v[1]))) for k, v in self._power.items())))
-        return hashlib.md5(key.encode()).hexdigest()[:8]
+        return cache.tag(self.cell, self.r_split, self.taper_width, self.r_max, self.dr, self.tol, self.max_basis,
+                         self.max_kernels, self.damping,
+                         sorted((k, float(np.sum(v[0])), float(np.sum(v[1]))) for k, v in self._power.items()))
 
     def has(self, A, B):
         return self.pair_key(A, B) in self._pairs
@@ -441,20 +442,18 @@ class WindowSmoothing:
             data[f'sw_{n}'], data[f'xi_{n}'], data[f'k_edges_{n}'] = p['sw'], p['xi'], p['k_edges']
             meta.append(dict(key=list(key), n=n, err_I=p['err_I'], err_K=p['err_K'], err_IW=p['err_IW'], err_W=p['err_W'],
                              widths=p['widths']))
-        data['meta'] = np.array(json.dumps(dict(pairs=meta, tag=self.tag)))
-        np.savez(path, **data)
+        cache.save(path, data, dict(pairs=meta, tag=self.tag))
 
     def load(self, path):
-        with np.load(path) as f:
-            meta = json.loads(str(f['meta'].item()))
-            self._loaded_tag = meta['tag']
-            for rec in meta['pairs']:
-                n = rec['n']
-                self._pairs[tuple(rec['key'])] = dict(coeffs=f[f'coeffs_{n}'], I_b=f[f'I_b_{n}'], basis=f[f'basis_{n}'],
-                                                      sw=f[f'sw_{n}'], xi=f[f'xi_{n}'], k_edges=f[f'k_edges_{n}'],
-                                                      kcoeffs=f[f'kcoeffs_{n}'], proj=f[f'proj_{n}'],
-                                                      n_basis=int(f[f'coeffs_{n}'].shape[1]),
-                                                      n_kernels=int(f[f'basis_{n}'].shape[0]), err_I=rec['err_I'],
-                                                      err_K=rec['err_K'], err_IW=rec['err_IW'], err_W=rec['err_W'],
-                                                      widths=rec['widths'])
+        f, meta = cache.load(path)
+        self._loaded_tag = meta['tag']
+        for rec in meta['pairs']:
+            n = rec['n']
+            self._pairs[tuple(rec['key'])] = dict(coeffs=f[f'coeffs_{n}'], I_b=f[f'I_b_{n}'], basis=f[f'basis_{n}'],
+                                                  sw=f[f'sw_{n}'], xi=f[f'xi_{n}'], k_edges=f[f'k_edges_{n}'],
+                                                  kcoeffs=f[f'kcoeffs_{n}'], proj=f[f'proj_{n}'],
+                                                  n_basis=int(f[f'coeffs_{n}'].shape[1]),
+                                                  n_kernels=int(f[f'basis_{n}'].shape[0]), err_I=rec['err_I'],
+                                                  err_K=rec['err_K'], err_IW=rec['err_IW'], err_W=rec['err_W'],
+                                                  widths=rec['widths'])
         return self
