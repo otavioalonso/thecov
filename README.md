@@ -95,6 +95,7 @@ What the Gaussian formula does not contain: the integral constraint implied by t
 (it affects the first bin or two, k ~ 1/R_survey), the fluctuation of a realised normalisation
 (the "local average" effect, below 0.1 % of the diagonal for the mock survey), and connected
 terms (trispectrum, super-sample covariance, bispectrum/nbar and P/nbar^2 discreteness terms).
+The bispectrum covariance is developed on the `bispectrum` branch.
 
 `labels[n] = (A, B, ell, i)` for row/column *n*. `covariance(..., symmetrize=True)` averages the
 matrix with its transpose (exact for the first Wick term; the residual asymmetry measures the

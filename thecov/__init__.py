@@ -1,4 +1,6 @@
-"""thecov: Gaussian covariance of windowed power-spectrum multipoles in separation space.
+"""thecov: covariance of windowed power-spectrum multipoles in separation space.
+
+The bispectrum covariance lives on the `bispectrum` branch.
 
 Typical use
 -----------
@@ -22,13 +24,9 @@ from .smoothing import WindowSmoothing, DensityField
 from .ssc import SuperSampleCovariance, response_coefficients
 from .discreteness import DiscretenessCovariance
 from .trispectrum import TrispectrumCovariance, CovarianceTemplates, Bias, galileon_bias, response_split, response_covariance
-from .bispectrum import BispectrumGaussianCovariance, BispectrumShellKernels
-from .bispectrum_algebra import BispectrumCoupling
-from .bispectrum_windows import ThreePointWindowLibrary, AnchoredMoments
 
 __all__ = ['Tracer', 'Window', 'spectrum_window_pairs', 'PowerSpectrumModel', 'ShellKernels',
            'TripolarWindow', 'WindowLibrary', 'PairHistogram', 'wigner_3j', 'gaunt_tensor', 'CouplingCoefficients',
            'tri', 'tri_multi', 'GaussianCovariance', 'WindowSmoothing', 'DensityField',
            'SuperSampleCovariance', 'response_coefficients', 'DiscretenessCovariance',
-           'TrispectrumCovariance', 'CovarianceTemplates', 'Bias', 'galileon_bias', 'response_split', 'response_covariance',
-           'BispectrumGaussianCovariance', 'BispectrumShellKernels', 'BispectrumCoupling', 'ThreePointWindowLibrary', 'AnchoredMoments']
+           'TrispectrumCovariance', 'CovarianceTemplates', 'Bias', 'galileon_bias', 'response_split', 'response_covariance']
