@@ -5,7 +5,8 @@ import pytest
 from scipy.special import sph_harm_y, eval_legendre
 
 from thecov.wigner import wigner_3j, w3j_tensor, gaunt_tensor, tri, tri_multi, CouplingCoefficients, FOUR_PI
-from thecov.harmonics import sph_harm_table, tripolar_direct, tripolar_frame, unit_vectors
+from thecov.harmonics import sph_harm_table, unit_vectors
+from tests.reference import tripolar_direct, tripolar_frame, check_3j_proportional
 from thecov.covariance import GaussianCovariance
 
 
@@ -113,7 +114,7 @@ def test_coupling_3j_proportionality():
     for term in (1, 2):
         for key in GaussianCovariance.index_tuples(term, 2, 4, 2, 4):
             lam, lamp, Lam1, Lam2, Lam = key
-            worst = max(worst, cc.check_3j_proportional(term, 2, 4, 2, 4, lam, lamp, Lam1, Lam2, Lam))
+            worst = max(worst, check_3j_proportional(cc, term, 2, 4, 2, 4, lam, lamp, Lam1, Lam2, Lam))
     assert worst < 1e-12
 
 

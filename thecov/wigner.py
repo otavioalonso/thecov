@@ -156,13 +156,3 @@ class CouplingCoefficients:
             T = self.unprojected(*key)
             self._cache[key] = float(np.sum(T * w3j_tensor(Lam1, Lam2, Lam)))
         return self._cache[key]
-
-    def check_3j_proportional(self, *key) -> float:
-        """Return max |T - t * 3j| / max|T| ; should be ~1e-15 (see Appendix A)."""
-        T = self.unprojected(*key)
-        W = w3j_tensor(*key[-3:])
-        t = float(np.sum(T * W))
-        scale = np.max(np.abs(T))
-        if scale < 1e-13:          # numerically zero tensor: nothing to check
-            return 0.0
-        return float(np.max(np.abs(T - t * W)) / scale)

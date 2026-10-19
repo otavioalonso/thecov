@@ -29,7 +29,8 @@ import numpy as np
 import pytest
 
 from thecov import Tracer
-from thecov.harmonics import tripolar_direct, unit_vectors
+from thecov.harmonics import unit_vectors
+from tests.reference import tripolar_direct
 from thecov.tracers import Window
 from thecov.windows import TripolarWindow
 from thecov.wigner import FOUR_PI
