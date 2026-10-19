@@ -151,7 +151,7 @@ def test_window_save_load_round_trip(tmp_path):
     got = cov2.block(('A', 'A'), ('A', 'A'), 0, 2)
     assert np.array_equal(got, ref)
     # the stored triples must cover what the block needs, i.e. no pair counting was redone
-    assert all(k in cov2.windows._windows for k in cov1.windows._windows)
+    assert all(k in cov2.windows.computed for k in cov1.windows.computed)
 
 
 def test_window_save_load_rejects_wrong_s_grid(tmp_path):

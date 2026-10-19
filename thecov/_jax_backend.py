@@ -5,13 +5,14 @@ product, three bin lookups and a scatter-add per pair -- so it is limited by mem
 numpy, which materialises several (block x n2 x 3) temporaries per chunk. Under XLA the whole chunk
 fuses into a single pass with no intermediates, and the same code runs on a GPU unchanged.
 
-Two entry points, matching the two ways pairs are produced:
+Two entry points, matching the two ways pairs are produced, each wrapped in a binner with the same call
+signature as the numpy one in windows.py:
 
     far_block   all pairs between a block of primaries and every secondary, selected by a mask
                 (jit needs static shapes, so out-of-range pairs are given zero weight rather than
-                being filtered out);
+                being filtered out); far_binner pads the last block to the common size;
     flat_pairs  an explicit list of pairs, as returned by the KD-tree neighbour search, processed
-                in fixed-size padded chunks so that only one kernel is ever compiled.
+                in fixed-size padded chunks so that only one kernel is ever compiled (near_binner).
 
 Both accumulate the same five quantities as the numpy path: sum of the pair weights, of w*r1, w*s,
 w*mu, and the unweighted count. float64 is enabled on import: the tripolar sums cancel heavily and
@@ -22,6 +23,7 @@ from __future__ import annotations
 from functools import partial
 
 import jax
+import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
@@ -98,3 +100,46 @@ def flat_pairs(x1, r1, d, w, r_edges, s_edges, mu_edges, shape, n_cells, valid, 
 
 def available() -> bool:
     return True
+
+
+def _histogram_constants(histogram):
+    edges = tuple(jnp.asarray(e) for e in (histogram.r_edges, histogram.s_edges, histogram.mu_edges))
+    uniform = tuple(is_uniform(e) for e in (histogram.r_edges, histogram.s_edges, histogram.mu_edges))
+    return edges, int(np.prod(histogram.shape)), uniform
+
+
+def far_binner(histogram, positions_xp, weights_xp, block_size, s_lo, s_hi):
+    """bin_block(positions_x, weights_x, radii_x) -> histogram sums of all pairs (block of x) x (every x')."""
+    edges, n_cells, uniform = _histogram_constants(histogram)
+    p2, w2 = jnp.asarray(positions_xp), jnp.asarray(weights_xp)
+
+    def bin_block(positions_x, weights_x, radii_x):
+        pad = block_size - len(positions_x)
+        if pad > 0:                       # pad the last block: one compiled shape only
+            positions_x = np.vstack([positions_x, np.zeros((pad, 3))])
+            weights_x = np.vstack([weights_x, np.zeros((pad, weights_x.shape[1]))])
+            radii_x = np.concatenate([radii_x, np.zeros(pad)])
+        return far_block(jnp.asarray(positions_x), jnp.asarray(weights_x), jnp.asarray(radii_x), p2, w2, *edges,
+                         histogram.shape, n_cells, float(s_lo), float(s_hi), uniform)
+    return bin_block
+
+
+def near_binner(histogram, chunk):
+    """bin_pairs(x1, r1, d, w) -> histogram sums of an explicit list of pairs, in padded chunks summed on device."""
+    edges, n_cells, uniform = _histogram_constants(histogram)
+
+    def bin_pairs(x1, r1, d, w):
+        total = None
+        for c0 in range(0, len(r1), chunk):
+            x, r, dd, ww = x1[c0:c0 + chunk], r1[c0:c0 + chunk], d[c0:c0 + chunk], w[c0:c0 + chunk]
+            n_valid, pad = len(r), chunk - len(r)
+            if pad > 0:                   # padding pairs: s = sqrt(3), r1 = 1, zero weight, masked out
+                x = np.vstack([x, np.zeros((pad, 3))])
+                dd = np.vstack([dd, np.ones((pad, 3))])
+                r = np.concatenate([r, np.ones(pad)])
+                ww = np.vstack([ww, np.zeros((pad, ww.shape[1]))])
+            out = flat_pairs(jnp.asarray(x), jnp.asarray(r), jnp.asarray(dd), jnp.asarray(ww), *edges, histogram.shape,
+                             n_cells, jnp.arange(chunk) < n_valid, uniform)
+            total = out if total is None else tuple(a + o for a, o in zip(total, out))
+        return total
+    return bin_pairs
