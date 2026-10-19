@@ -460,6 +460,7 @@ class BispectrumGaussianCovariance:
         self.windows = ThreePointWindowLibrary(r_edges, n_anchor=n_anchor, n_sub=n_sub, n_near=n_near,
                                                s_split=s_split, seed=seed)
         self.model = None
+        self._long_mesh = {}
         self._I3 = None
         self._blocks = {}
 
@@ -561,7 +562,7 @@ class BispectrumGaussianCovariance:
         symmetrised combination."""
         ell, ellp = tuple(ell), tuple(ellp)
         if terms is None:
-            terms = ('class1', 'class2') if self.class2 else ('class1',)
+            terms = ('class1', 'class2', 'k3') if self.class2 else ('class1', 'k3')
         terms = tuple(terms)
         key = (ell, ellp, terms)
         if key in self._blocks:
@@ -598,6 +599,8 @@ class BispectrumGaussianCovariance:
                         part = part.transpose(1, 0, 2, 3)
                     C += pref * part
         C /= self.I3() ** 2
+        if 'k3' in terms:
+            C += self.k3_zero_block(ell, ellp)
         self._blocks[key] = C
         return C
 
@@ -652,10 +655,160 @@ class BispectrumGaussianCovariance:
         labels = [m + e for m in multipoles for e in els[m]]
         return C, labels
 
-    # ------------------------------------------------------------------------------------------ not implemented
-    def k3_zero_block(self, ell, ellp):
-        """The pairing (1 2)(1' 2')(3 3') on the (i i; i' i') elements: the long-mode variance of the W-weighted field
-        (guide sec. 'The k3 ~ 0 term'); zero for uniform omega, tens of per cent of the (i, i) variance for a radially
-        varying omega.  Needs <F(x) F(x')>_IC, i.e. the integral-constraint-corrected long-mode correlation, which the
-        super-sample machinery (thecov.ssc) can provide."""
-        raise NotImplementedError("the k3 ~ 0 term is not implemented yet; see the guide sec. 'The k3 ~ 0 term'")
+    # ------------------------------------------------------------------------------------------ k3 ~ 0 term
+    @staticmethod
+    def k3_coefficient(ell):
+        """kappa_ell = (-1)^l2 (2 l1 + 1)(2 l2 + 1) H_{l1 l2 L}^2: the local product << conj(S~_ell)(q^, -q^, x^) P(q; x^) >>_i
+        of the two legs of one estimator equals kappa_ell Pbar_{L, i} W(x) / V_i (1 for 000 and 202)."""
+        l1, l2, L = ell
+        return (-1) ** l2 * (2 * l1 + 1) * (2 * l2 + 1) * H(l1, l2, L) ** 2
+
+    def long_mode_mesh(self, n_mesh=128, pad=2.0):
+        """Weighted random meshes for the long-mode variance: returns dict with the FFT box, the k grid and the
+        per-random coefficient arrays (u_W = w m^2 -> int omega^3, u_S = (1 + alpha) w^2 m -> int S omega,
+        u_M = w -> int omega) gridded by nearest cell, plus the Poisson shot-noise sums."""
+        key = (int(n_mesh), float(pad))
+        if key in self._long_mesh:
+            return self._long_mesh[key]
+        T = self.tracer
+        pos = T.pos
+        lo, hi = pos.min(0), pos.max(0)
+        centre, span = 0.5 * (lo + hi), float(np.max(hi - lo)) * pad
+        L = span
+        n = int(n_mesh)
+        cell = L / n
+        idx = np.floor((pos - centre) / cell + n / 2).astype(int)
+        idx = np.clip(idx, 0, n - 1)
+        flat = np.ravel_multi_index((idx[:, 0], idx[:, 1], idx[:, 2]), (n, n, n))
+        kf = 2 * math.pi / L
+        k1 = np.fft.fftfreq(n, d=1.0 / n) * kf
+        kx, ky, kz = np.meshgrid(k1, k1, k1, indexing='ij')
+        kk = np.sqrt(kx ** 2 + ky ** 2 + kz ** 2)
+        u = {'W': T.w * T.mw ** 2, 'S': (1 + T.alpha) * T.w ** 2 * T.mw, 'M': T.w}
+        out = {'L': L, 'n': n, 'cell': cell, 'k': kk, 'flat': flat, 'u': u, 'alpha': T.alpha}
+        self._long_mesh[key] = out
+        return out
+
+    def shell_overlap(self, i, j, eps, P=None, n_q=64):
+        """M_ij(eps) = (1 / (V_i V_j)) int_i d^3q/(2pi)^3 P(q) 1[|q - eps| in shell j]: the P-weighted overlap of shell i
+        with shell j displaced by eps (M_ii(0) = Pbar_i / V_i, M_ij(0) = 0 for i != j).  The local product
+        << F_i(x) F_j(x) >> of the two legs of one estimator has Fourier transform W~(eps) M_ij(eps): a window of width
+        k_w loses the pairs (q, -q + eps) that leave the shell and gains pairs across a shared edge, O(k_w / dk)
+        effects (30 % of the k3 term and a few per cent on the adjacent (i, i+1) elements for k_w / dk = 0.2)."""
+        lo, hi = self.k_edges[i], self.k_edges[i + 1]
+        lo_j, hi_j = self.k_edges[j], self.k_edges[j + 1]
+        x, w = np.polynomial.legendre.leggauss(int(n_q))
+        q = 0.5 * (hi - lo) * x + 0.5 * (hi + lo)
+        wq = 0.5 * (hi - lo) * w * q ** 2
+        Pq = np.ones_like(q) if P is None else P(q)
+        eps = np.atleast_1d(np.asarray(eps, dtype=float))
+        E = np.where(eps > 0, eps, 1e-30)[:, None]
+        Q = q[None, :]
+        mu_hi = (Q ** 2 + E ** 2 - lo_j ** 2) / (2 * Q * E)      # |q - eps| = lo_j  (upper mu bound)
+        mu_lo = (Q ** 2 + E ** 2 - hi_j ** 2) / (2 * Q * E)      # |q - eps| = hi_j  (lower mu bound)
+        frac = 0.5 * (np.clip(mu_hi, -1, 1) - np.clip(mu_lo, -1, 1))
+        frac = np.where(eps[:, None] > 0, frac, 1.0 if i == j else 0.0)
+        Vi = (hi ** 3 - lo ** 3) / 3.0 / (2 * math.pi ** 2)
+        Vj = (hi_j ** 3 - lo_j ** 3) / 3.0 / (2 * math.pi ** 2)
+        return np.sum(wq * Pq * frac, axis=1) / (2 * math.pi ** 2) / (Vi * Vj)
+
+    def k3_zero_block(self, ell, ellp, n_mesh=128, pad=2.0, overlap=True, smooth_cells=0.0, diagonal_only=False) -> np.ndarray:
+        """The pairing (1 2)(1' 2')(3 3') (guide sec. 'The k3 ~ 0 term'):
+
+            C^{k3}_{ell ell'}(i j; i' j') = kappa kappa' / I_3^2 Cov[ int A_ij F, int A'_i'j' F ],
+            A~_ij(eps) = W~(eps) M_ij(eps) + delta_{L 0} S~(eps) M^S_ij(eps),   F = omega (delta - delta_bar) + shot,
+
+        with M_ij the P_L-weighted shell overlap (shell_overlap).  At leading order in k_w / dk only the (i i; i' i')
+        elements survive (overlap=False: M_ij(eps) = delta_ij Pbar_i / V_i, A_ii = W Pbar_i / V_i); the eps dependence
+        of M_ij reduces them by O(k_w / dk) and switches on the other elements through the shared shell edges
+        (diagonal_only=True skips the latter).  The alpha step removes the omega-weighted mean, so
+        int A F = int (A - c) F_raw with c = int A omega / I_1, and Cov = int d^3k/(2pi)^3 g~ g~'* P_0(k)
+        + int (A - c)(A' - c') S with g = (A - c) omega.  Everything is gridded from the randoms (nearest cell on a
+        padded FFT box of n_mesh^3 cells, random shot noise subtracted, A read back at the randoms without each
+        random's own contribution; smooth_cells > 0 smooths A by a Gaussian of that many cells) and the long modes are
+        weighted with the model monopole.  Zero for a uniform omega at leading order (g = 0); for a smooth, radially
+        varying omega the (i, i) terms are comparable to the Gaussian variance and correlate all (i, i) elements."""
+        ell, ellp = tuple(ell), tuple(ellp)
+        if self.model is None:
+            raise RuntimeError("set_model() first")
+        nb = self.nbins
+        C = np.zeros((nb, nb, nb, nb))
+        if ell[2] not in self.Ls or ellp[2] not in self.Ls:
+            return C
+        M = self.long_mode_mesh(n_mesh, pad)
+        A = self.tracer.name
+        avail = self.model.multipoles(A, A)
+        kk = M['k']
+        P0 = extrapolated_power(self.model, A, A, 0) if 0 in avail else (lambda k: np.zeros_like(k))
+        Pk = P0(np.where(kk > 0, kk, 1e-10))
+        Pk[kk == 0] = 0.0
+        u, flat, n, alpha = M['u'], M['flat'], M['n'], M['alpha']
+        I1 = alpha * np.sum(u['M'])
+        kf3 = (2 * math.pi / M['L']) ** 3
+        sigma_cell = np.sum(Pk) * kf3 / (2 * math.pi) ** 3                # sum_k P(k) of the mesh, per unit white power
+
+        def gridfft(g):
+            mesh = np.bincount(flat, weights=g, minlength=n ** 3).reshape(n, n, n) * alpha
+            return np.fft.fftn(mesh)
+
+        T = self.tracer
+        smooth = np.exp(-0.5 * (kk * smooth_cells * M['cell']) ** 2) if smooth_cells > 0 else 1.0
+        Wt = gridfft(T.w * T.mw) * smooth
+        St = gridfft((1 + T.alpha) * T.w ** 2) * smooth if self.shot_noise else None
+        cell_vol = M['cell'] ** 3
+        pairs = [(i, j) for i in range(nb) for j in range(nb) if (i == j or not diagonal_only)]
+        kabs = kk.ravel()
+
+        def local_products(e):
+            """A_ij at the randoms for each shell pair (dict (i, j) -> (nran,)) for estimator e."""
+            kap = self.k3_coefficient(e)
+            P = extrapolated_power(self.model, A, A, e[2]) if e[2] in avail else None
+            shot = (e[2] == 0) and self.shot_noise
+            out = {}
+            for (i, j) in pairs:
+                if j < i:
+                    out[(i, j)] = out[(j, i)]
+                    continue
+                if P is None and not shot:
+                    out[(i, j)] = np.zeros(T.size)
+                    continue
+                if not overlap and i != j:
+                    out[(i, j)] = np.zeros(T.size)
+                    continue
+                acc = np.zeros(T.size)
+                if P is not None:
+                    Mi = self.shell_overlap(i, j, kabs, P).reshape(kk.shape) if overlap else self.shell_overlap(i, i, 0.0, P)[0]
+                    Ai = np.fft.ifftn(Wt * Mi).real / cell_vol
+                    acc += Ai.ravel()[flat] - alpha * T.w * T.mw * np.mean(Mi * smooth) / cell_vol
+                if shot:
+                    MSi = self.shell_overlap(i, j, kabs).reshape(kk.shape) if overlap else self.shell_overlap(i, i, 0.0)[0]
+                    ASi = np.fft.ifftn(St * MSi).real / cell_vol
+                    acc += ASi.ravel()[flat] - alpha * (1 + T.alpha) * T.w ** 2 * np.mean(MSi * smooth) / cell_vol
+                out[(i, j)] = kap * acc
+            return out
+
+        def coefs(e):
+            a = local_products(e)
+            g = {}
+            for key, val in a.items():
+                aw = val * T.w                                      # A omega / nbar at the randoms
+                c = alpha * aw.sum() / I1                           # int A omega / I_1
+                g[key] = aw - c * u['M']
+            return g
+
+        ga = coefs(ell)
+        gb = ga if ell == ellp else coefs(ellp)
+        Ga = {key: gridfft(g) for key, g in ga.items() if key[0] <= key[1]}
+        Gb = Ga if ell == ellp else {key: gridfft(g) for key, g in gb.items() if key[0] <= key[1]}
+        for (i, j) in pairs:
+            a_key = (min(i, j), max(i, j))
+            for (ip, jp) in pairs:
+                b_key = (min(ip, jp), max(ip, jp))
+                cross = np.sum((Ga[a_key] * np.conj(Gb[b_key])).real * Pk) * kf3 / (2 * math.pi) ** 3
+                cross -= alpha ** 2 * np.sum(ga[a_key] * gb[b_key]) * sigma_cell      # random (Poisson) shot noise, white
+                if self.shot_noise:
+                    # int (A - c)(A' - c') S = alpha sum_r (A - c)(A' - c')(x_r) (1 + alpha) w_r^2 with (A - c) w = g
+                    cross += alpha * (1 + alpha) * np.sum(ga[a_key] * gb[b_key])
+                C[i, j, ip, jp] = cross
+        return C / self.I3() ** 2
+

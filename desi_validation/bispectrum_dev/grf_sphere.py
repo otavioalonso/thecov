@@ -74,20 +74,20 @@ class Mesh:
         """Real Gaussian field delta(x) with power P (variance per mode P/L^3 in the dV-normalised FT convention)."""
         rng = np.random.default_rng(seed)
         white = rng.normal(size=(self.N,) * 3)
-        wk = sfft.fftn(white, workers=2) / self.N ** 1.5                 # unit variance per mode
+        wk = sfft.fftn(white, workers=1) / self.N ** 1.5                 # unit variance per mode
         # convention: delta_k = dV sum_x delta e^{-ikx} = dV fftn(delta), <|delta_k|^2> = L^3 P(k); with
         # delta = ifftn(d_k): <|d_k|^2> = P N^6 / L^3, and sigma^2 = sum_k P / L^3 = int d^3k/(2pi)^3 P
         dk = wk * np.sqrt(P_model(np.where(self.k > 0, self.k, 1e-10))) * self.N ** 3 / self.L ** 1.5
         dk[self.k == 0] = 0.0
-        return sfft.ifftn(dk, workers=2).real
+        return sfft.ifftn(dk, workers=1).real
 
     def measure(self, F, I3):
         """B_000 and B_202 for all (i, j) (i <= j for 000, all for 202); returns dict ell -> array."""
-        Fk = sfft.fftn(F, workers=2) * self.dV                             # F(q)
+        Fk = sfft.fftn(F, workers=1) * self.dV                             # F(q)
         nb = len(self.shells)
         # F_i(x) = (1/V_i) (1/L^3) sum_{q in i} e^{iqx} F(q);  ifftn = (1/N^3) sum -> (1/L^3) sum = ifftn * N^3 / L^3;
         # V_i = nmodes / L^3  ->  F_i = ifftn * N^3 / nmodes
-        Fi = [sfft.ifftn(Fk * s, workers=2).real * self.N ** 3 / self.nmodes[i] for i, s in enumerate(self.shells)]
+        Fi = [sfft.ifftn(Fk * s, workers=1).real * self.N ** 3 / self.nmodes[i] for i, s in enumerate(self.shells)]
         out = {}
         b000 = np.zeros((nb, nb))
         for i in range(nb):
@@ -98,7 +98,7 @@ class Mesh:
         for i, s in enumerate(self.shells):
             G = np.zeros(F.shape)
             for m in range(5):
-                Fim = sfft.ifftn(Fk * s * np.conj(self.Y2q[m]), workers=2) * self.N ** 3 / self.nmodes[i]
+                Fim = sfft.ifftn(Fk * s * np.conj(self.Y2q[m]), workers=1) * self.N ** 3 / self.nmodes[i]
                 G += (self.Y2x[m] * Fim).real
             for j in range(nb):
                 b202[i, j] = 4 * np.pi * self.dV * np.sum(F * G * Fi[j]) / I3
@@ -125,6 +125,13 @@ def _one(args):
     if kind == 'box':
         F = nbar * d
         I3 = nbar ** 3 * m.L ** 3
+    elif kind == 'smooth':
+        # Gaussian window omega = exp(-r^2 / 2 sigma^2) cut at r < R (sigma = R / 3); alpha step removes the
+        # omega-weighted mean (int F = 0)
+        om = np.where(m.r < R, np.exp(-m.r ** 2 / (2 * (R / 3.0) ** 2)), 0.0)
+        d = d - np.sum(om * d) / np.sum(om)
+        F = nbar * om * d
+        I3 = nbar ** 3 * np.sum(om ** 3) * m.dV
     else:
         mask = m.r < R
         d = d - d[mask].mean()
@@ -135,7 +142,7 @@ def _one(args):
 
 
 def run(kind, n_real, nbar, R, eps=0.0, seed0=0, workers=None, L=L_BOX, N=N_MESH):
-    workers = workers or max(1, (os.cpu_count() or 2) - 1)
+    workers = workers or int(os.environ.get('BISPEC_WORKERS', '3'))   # CPU cap: 3 single-threaded workers by default
     with Pool(workers, initializer=_init, initargs=(L, N)) as pool:
         rows = pool.map(_one, [(seed0 + s, kind, nbar, R, eps) for s in range(n_real)], chunksize=4)
     return np.array(rows)

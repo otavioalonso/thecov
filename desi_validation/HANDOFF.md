@@ -646,9 +646,11 @@ vertices, radial assembly exact against independent quadrature; window invariant
 structure. On a sphere centred on the observer (R = 500 and 1000, dk = 0.04) class 2 fixes the off-diagonal
 correlations and most of the diagonal, but a +8-10 % B000 offset that does not scale with R remains (numerics and
 pair-sum noise excluded), and a B202 excess on the low-k quadrupole elements that halves from R = 500 to 1000 (the local
-line-of-sight approximation). A thin-shell run (dk = 0.02, k = 0.10-0.20, R = 800) removes the B202 excess (1.01 +- 0.02
-paired with the box) but keeps the B000 offset (+5-8 %, independent of R, dk and k_w/dk, so not the k3 ~ 0 term);
-box theory for any shell set: grf_box_theory.py. See report/bispectrum_implementation.md section 4 for the candidates.
+line-of-sight approximation). The B000 offset is now understood (report section 4.1): (a) the mesh did not resolve the
+sharp window (k_f = 2.4 k_w; the same sphere in a 2000 Mpc/h box agrees to 1 +- 3 %), (b) the pair sums at 3000 anchors
+carry a coherent 2.5-4 % Q0 noise (use >= 10 000), (c) uniform anchor sampling is badly biased for non-uniform
+weights (now weight-proportional). A Gaussian-window GRF (4000+4000 realisations) agrees with the theory to 2 %
+including the new k3 ~ 0 term (k3_zero_block, validated against an exact lattice Wick sum: exact_mesh_gaussian2.py).
 Corrections to the notes found on the way: none to the physics; Q_n^box = V sqrt(N/4pi) H as the guide says.
 
 ### Update 2026-10-15 (c): R_l(k_L), survey-mean response resolved as a cancellation

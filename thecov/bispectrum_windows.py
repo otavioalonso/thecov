@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import math
+import zlib
 import time
 
 import numpy as np
@@ -111,21 +112,35 @@ class AnchoredMoments:
         self.npairs = None   # unweighted pairs per r bin (anchor-neighbour), diagnostics
 
     # ------------------------------------------------------------------------------------------ sampling
-    def _anchors(self):
+    def _sample(self, windows, n, seed):
+        """Poisson sample of ~n host randoms with inclusion probability pi_r ∝ |w~_r| of the first window (W),
+        weights divided by pi_r: unbiased for alpha sum_r w~_r f(x_r) with the sampling effort where the window
+        is, which matters for non-uniform weights (a uniform subsample of a Gaussian-weighted catalogue puts
+        < 5 % of its points where the weight is).  n >= size keeps every random (pi = 1)."""
         A = self.host
-        idx = A.subsample_indices(self.n_anchor, self.seed + 7919)
-        pos = A.pos[idx]
-        w = np.stack([aw.tilde_weights()[idx] for aw in self.anchor_windows], axis=1)   # (n_anchor, n_akinds)
-        alpha = A.alpha * A.size / len(idx)
-        return pos, w, alpha
+        wt = np.stack([w.tilde_weights() for w in windows], axis=1)                     # (size, n_kinds)
+        if n >= A.size:
+            return A.pos, wt, A.alpha
+        ref = np.abs(wt[:, 0])
+        if not np.any(ref > 0):
+            ref = np.ones(A.size)
+        pi = np.minimum(1.0, n * ref / ref.sum())
+        # iterate so that the expected count is n despite the capping at 1
+        for _ in range(8):
+            short = n - pi.sum()
+            free = pi < 1
+            if short < 1e-9 * n or not np.any(free):
+                break
+            pi[free] = np.minimum(1.0, pi[free] * (1 + short / pi[free].sum()))
+        rng = np.random.default_rng(seed + zlib.crc32(A.name.encode()) % 10000)
+        keep = rng.random(A.size) < pi
+        return A.pos[keep], wt[keep] / pi[keep, None], A.alpha
+
+    def _anchors(self):
+        return self._sample(self.anchor_windows, self.n_anchor, self.seed + 7919)
 
     def _neighbours(self, n):
-        A = self.host
-        idx = A.subsample_indices(n, self.seed)
-        pos = A.pos[idx]
-        w = np.stack([lw.tilde_weights()[idx] for lw in self.leg_windows], axis=1)       # (n, n_lkinds)
-        alpha = A.alpha * A.size / len(idx)
-        return pos, w, alpha
+        return self._sample(self.leg_windows, n, self.seed)
 
     # ------------------------------------------------------------------------------------------ moments
     def _accumulate(self, labels: MomentLabels, xpos, R, i_pair, d, wl, alpha_l, bins, A, SP, groups):

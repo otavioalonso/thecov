@@ -18,6 +18,20 @@ def sphere_tracer(n_ran=200000, seed=0, R=R_SPHERE):
     return T, nbar, V
 
 
+def smooth_tracer(n_ran=200000, seed=0, R=600.0, sigma=None):
+    """Gaussian window omega(x) = nbar exp(-r^2 / 2 sigma^2) inside r < R (sigma = R / 3 by default), as random
+    weights on a uniform catalogue."""
+    sigma = R / 3.0 if sigma is None else sigma
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(-R, R, size=(3 * n_ran, 3))
+    x = x[np.sum(x * x, 1) < R ** 2][:n_ran]
+    V = 4 / 3 * np.pi * R ** 3
+    nbar = ALPHA * len(x) / V
+    w = np.exp(-np.sum(x * x, 1) / (2 * sigma ** 2))
+    T = Tracer('S', {'POSITION': x, 'WEIGHT': w, 'NZ': np.full(len(x), nbar)}, alpha=ALPHA)
+    return T, nbar, V
+
+
 def mc_reference(n, r1, r2, nbar, n_mc=400000, seed=1, kinds=('W', 'W', 'W'), alpha=ALPHA):
     """int d^3x dOmega1 dOmega2 W_a(x) W_1(x + r1) W_2(x + r2) Phi_n by Monte Carlo (x uniform in the sphere)."""
     rng = np.random.default_rng(seed)

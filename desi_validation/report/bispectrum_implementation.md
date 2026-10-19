@@ -115,6 +115,61 @@ GRF/theory excess is the omitted class 2 plus a residual.
   next discriminating test is a GRF run with thinner shells at higher k (Δk = 0.02, k ≥ 0.1, L = 2600, N = 256), where
   both Δk/k and k_w/k are small and the class-2 share is ≈ 10 %.
 
+
+### 4.1 Where the sphere offset came from: an exact mode-coupling reference, the k3 term, and the pair-sum noise
+
+Three things were built to settle the +5–10 % B_000 offset (all in `bispectrum_dev/`):
+
+* **An exact Gaussian reference on the mesh** (`exact_mesh_gaussian2.py`, cross-checked by `exact_mesh_gaussian3.py`,
+  `wick_block_test.py`, `single_mode_test.py`): the windowed estimator on the lattice is cubic in the exactly Gaussian
+  modes F(a) = Σ_k m̃(a−k) δ(k), so its covariance is the Wick sum over the seven surviving pairings of products of
+  the exact two-point function G(a, b) = L⁻³ Σ_k P(k) m̃(a−k) m̃(b+k). With K_s(a) ≡ G(a, s−a) evaluated per sampled
+  (q1, q2) over the compact support of m̃ (Gaussian window) and the offsets s summed exactly, the lattice sums over
+  (p1, p2) are done without any local approximation. Validation: the periodic box to 1–2 %; the Wick sum over 5³ × 5³
+  mode blocks against 16 000 realisations, 1.000 ± 0.011 (class 1 only) and 0.983 ± 0.011 (42 % class 2); a
+  single-leg-mode estimator with one full shell, 0.991 ± 0.011. **Caveat found the hard way**: the u-support of
+  K_s must extend to s_max/2 + 3 σ_k (u_max = 3 with s_max = 5 lattice units biased every class-1 term low by 4.7 %,
+  and coincidentally matched the pair-sum theory of the time).
+* **The k3 ≈ 0 term** (`BispectrumGaussianCovariance.k3_zero_block`, section 6 item 2 is now implemented): the
+  pairing (1 2)(1' 2')(3 3') is κ_ℓ κ_ℓ' / I₃² Cov[∫A_ij F, ∫A'_i'j' F] with the local leg product
+  Ã_ij(ε) = W̃(ε) M_ij(ε) + δ_L0 S̃(ε) M^S_ij(ε), M_ij the P_L-weighted shell overlap displaced by ε
+  (`shell_overlap`; M_ii(0) = P̄_i/V_i, κ_000 = κ_202 = 1), the α step as the constant shift c = ∫Aω/I₁ and the
+  long modes gridded from the randoms (nearest cell, random shot noise subtracted, the random's own contribution
+  removed when A is read back at its position). For the Gaussian window (σ = 200, cut at 600) the term is 0.5–3.6
+  times the Gaussian (i, i) variance; the ε dependence of M_ii (a window of width k_w loses the pairs (q, −q+ε) that
+  leave the shell, k_w/Δk = 0.18 here) reduces it by 25–30 %, and the result agrees with the exact reference to
+  1–2 % and with the GRF to 2 %. The adjacent-shell terms (shared edge) are 1–4 % of the (i, i+1) elements. For a
+  sharp uniform sphere the leading term vanishes (∫WF = 0) and the edge-driven ε dependence leaves 1–5 % on (i, i).
+* **The pair sums**: (i) uniform sampling of anchors and far neighbours puts < 5 % of the points where a Gaussian
+  window has its weight; `AnchoredMoments` now Poisson-samples with inclusion probability ∝ |w̃| (weights divided by
+  the inclusion probability), which took Q₀ of the Gaussian window from 1.17 × to 1.00–1.035 × the closed form
+  Q₀(r1, r2) = n̄⁶ (4π)^{-5/2} (πσ²/3)^{3/2} (4π)² e^{−2(r1²+r2²)/3σ²} sinh(a)/a, a = 2 r1 r2/3σ². (ii) At
+  3000 anchors / 6000 far neighbours Q₀ carries a **coherent 2.5–4 % realisation scatter** (sphere, four seeds against
+  the exact lens-formula Q₀: 0.988, 1.032, 1.012, 0.983; 12 000 / 24 000: 1.003; the 1 M-random Gaussian run used
+  for the theory: 0.9625). Since the isotropic B_000 theory (class 1 and class 2) depends on Q₀ alone, this is a
+  direct 2.5–4 % error on the covariance. **Use ≥ 10 000 anchors for production.**
+
+With the closed-form Q₀ in place of the pair sums, the Gaussian window is closed: var(GRF)/theory = 1.019 (N = 128,
+800 realisations), 1.023 and 1.014 (N = 96, two independent sets of 4000) on the i ≠ j elements and 1.01–1.02 on the
+(i, i) elements with the k3 term; the exact reference agrees with the theory to 1–2 % per element and class (the
+local-approximation Fourier formula Σ W̃(s1) W̃(s2) W̃(−s1−s2) P(p1) P(p2) P(P) agrees with the exact mode coupling per
+triangle to 0.1–0.9 % for the Gaussian and to 0.2–1 % for the sharp sphere, `sphere_exact_vs_local.py`). The
+window-convolution of P (P_conv/P = 1.0005 at k = 0.06 for σ = 200) is irrelevant.
+
+For the sharp sphere R = 500 the closed-form Q₀ theory is 1.5–2 % above the pair-sum one and the GRF excess on the
+i ≠ j elements remains 1.083 ± 0.03 (i = i: 0.98 with the k3 edge terms), i.e. ~2.5 σ. The lattice-exact class 1
+agrees with the continuum theory on the two elements sampled (1.012 ± 0.035, 1.015 ± 0.043), so what is left is
+the lattice itself: the mesh only samples the sphere's oscillatory W̃(s) at k_f = 2.4 k_w (the Gaussian window is
+smooth on that scale). **The same R = 500 sphere in a 2000 Mpc/h box (192³, k_f = 1.6 k_w, 400 realisations) gives
+1.010 ± 0.031 on the i ≠ j elements and 1.05 on (i, i)** — the offset was the mesh, not the theory. All the earlier
+sphere runs had k_f ≈ 2.4–2.5 k_w (L ≈ 2.6 R). Consequence for real measurements: an FFT box of ~2× the survey
+extent does not resolve a sharp window, and the measured bispectrum covariance then differs from the continuum
+theory at the 5–10 % level on the lattice alone; either use a box with k_f ≲ 1.5 k_w or compare with a lattice-exact
+reference for the actual box (`exact_mesh_gaussian2.py` is such a reference for Gaussian-like windows; sharp
+windows need the FFT-grid version `exact_mesh_gaussian3.py`, 3 s per sampled triangle).
+
+![GRF test closed: Gaussian window and sphere](bispectrum_dev/bispectrum_grf_closed.png)
+
 ![GRF test, class 1 + 2](bispectrum_dev/bispectrum_grf_c12.png)
 
 ## 5. Costs (8 cores of this sandbox, numpy)
@@ -127,21 +182,11 @@ GRF/theory excess is the omitted class 2 plus a residual.
 
 ## 6. What remains, in order
 
-1. **Understand the sphere residual** (section 4): thinner-shell GRF run; test the A1/A2 approximations by a GRF with
-   a uniform-weight footprint far from the observer (global line of sight) to separate the two.
-2. **The k3 ≈ 0 term** (`k3_zero_block`), pairing (1 2)(1' 2')(3 3'): zero for uniform `ω` only for the exact zero
-   mode; the mean subtraction removes k3 = 0 but leaves the long modes |k3| ≲ k_w = 1/R, which the third-leg window
-   W(k3) still admits. Design: (a) the (1 2)(1' 2') part is a two-point object on legs 1, 2 — the product of the
-   two P-weighted leg kernels already in `BispectrumShellKernels.leg`, bin-averaged over shells (i, j) and (i', j')
-   with the Y_{ℓ1}Y_{ℓ2} Sugiyama weights collapsing to the (ℓ1 = ℓ2, L = 0) or local-LOS equivalent; (b) the
-   (3 3') part is the long-mode variance σ²_L = ∫ d³q/(2π)³ |W̃(q)|² P(q) of the W-weighted field with the integral
-   constraint subtracted (|W̃(q) − W̃(0) ρ̃(q)/ρ̃(0)|² with ρ the mean-subtraction weight), i.e. the quantity the SSC
-   module already computes for `W`; (c) the term is then an outer product of (a) over (i j) × (i' j') scaled by (b),
-   diagonal in neither shell index, which is the signature to look for in the GRF: a floor common to all elements of
-   the same multipole. Order of magnitude on the R = 500 sphere: σ²_L ∼ P(k_w)/V ∼ 10⁻² of the shell variance per
-   unit k_w/Δk, so a few per cent at Δk = 0.04 and more for thinner shells — the thin-shell run (Δk = 0.02) tests
-   exactly this scaling. For a radially varying `ω` the k3 = 0 mode itself survives and the term can reach tens of
-   per cent of the (i, i) variance.
+1. **Sphere residual: closed** (section 4.1) — the mesh did not resolve the sharp window (k_f = 2.4 k_w); in a
+   2000 Mpc/h box the sphere agrees to 1 ± 3 %. Remaining: B_202 needs the far-footprint (global LOS) test for A2;
+   production runs need ≥ 10 000 anchors (2.5–4 % coherent Q₀ noise at 3000).
+2. **The k3 ≈ 0 term**: implemented and validated (section 4.1); the anisotropic case uses P̄_L of the model and the
+   long-mode monopole; shot noise is included; `terms=('class1', 'class2', 'k3')` is the default.
 3. **Non-Gaussian terms** `P B`, `B B`, `P T`: each reduces to the power-spectrum master formula with two-point windows of weights `(ω³, W)`, `(ω³, ω³)`, `(ω⁴, W)` and effective spectra `β`, `β^u β^p`, `τ` (guide sec. 'Non-Gaussian terms'); `WindowLibrary` can count the new weight pairs, the kernels need `B_{ℓ''}` on two-magnitude grids and `T` on general quadrilaterals.
 4. **Pair-averaged (smoothed) windows** and `masked=True` models, as for the power spectrum.
 5. **Performance**: jax backend for the pair sums; disk cache of the coupling numbers.
