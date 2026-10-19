@@ -727,7 +727,10 @@ class BispectrumGaussianCovariance:
         padded FFT box of n_mesh^3 cells, random shot noise subtracted, A read back at the randoms without each
         random's own contribution; smooth_cells > 0 smooths A by a Gaussian of that many cells) and the long modes are
         weighted with the model monopole.  Zero for a uniform omega at leading order (g = 0); for a smooth, radially
-        varying omega the (i, i) terms are comparable to the Gaussian variance and correlate all (i, i) elements."""
+        varying omega the (i, i) terms are comparable to the Gaussian variance and correlate all (i, i) elements.
+        Noise floor: the leading term inherits the Poisson noise of the random mesh (g is a difference of quantities
+        built from the same randoms); for a uniform window, where it should vanish, it is 0.7-4.7 % of the (i, i)
+        Gaussian variance with 1M randoms (n_mesh = 64), scaling roughly as 1/n_ran -- use dense randoms."""
         ell, ellp = tuple(ell), tuple(ellp)
         if self.model is None:
             raise RuntimeError("set_model() first")
