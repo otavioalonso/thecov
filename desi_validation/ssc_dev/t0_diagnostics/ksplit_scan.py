@@ -1,8 +1,10 @@
 import sys, numpy as np
 sys.path.insert(0, '/home/user/thecov')
-from thecov.trispectrum import TrispectrumCovariance, Bias
-from thecov import response_split, CovarianceTemplates
-from thecov.covariance_tools import window_convolve
+from thecov.tree.trispectrum import TrispectrumCovariance, Bias
+from thecov.tree.response_approach import collapsed_covariance  # noqa: E402
+from thecov import response_split
+from desi_validation.templates import CovarianceTemplates
+from thecov.tree.windowing import window_convolve
 from desi_validation.compare_kernel import get, chi2
 def main():
     D, label, b = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -28,7 +30,7 @@ def main():
         print(f'== {b} {r}: -2 dlnL vs Gaussian (unfitted), chi2/n')
         row('SSC + disc (recommended)', ssc + disc)
         for ks in (0.04, 0.06, 0.08, 0.10, 0.12):
-            coll = window_convolve(t0.collapsed([('T', 'T')], ks), C)
+            coll = window_convolve(collapsed_covariance(t0, [('T', 'T')], ks), C)
             p = response_split(Ct, k, ks, base - C, C_collapsed=coll)
             print(f'  k_split {ks}:')
             row('+ tree LL (both k < k_split)', ssc + disc + p['LL'])

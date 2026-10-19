@@ -343,7 +343,7 @@ def run_thecov(args):
                                               f'{res["I_k_over_norm"][-1]:.4f}'))
         if label == 'true' and g.get('poisson', 0) and float(g['poisson']) > 0:
             try:                                                      # discreteness (SN-NG) terms for the Poisson variant
-                from thecov.discreteness import DiscretenessCovariance
+                from thecov.tree.discreteness import DiscretenessCovariance
                 kk = np.concatenate([[g['k_edges'][0] / 4], g['k'], [g['k_edges'][-1]]])
                 pl_ = kk, np.concatenate([[g['box_mean'][0]], g['box_mean'], [g['box_mean'][-1]]]) * rho ** 2
                 D = DiscretenessCovariance(cov, pl_, b1=1.0, f=0.0)

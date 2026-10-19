@@ -1,11 +1,12 @@
-"""Tree-level trispectrum (T0) covariance (thecov.trispectrum)."""
+"""Tree-level trispectrum (T0) covariance (thecov.tree.trispectrum)."""
 import numpy as np
 import pytest
 
-from thecov import Tracer, GaussianCovariance, TrispectrumCovariance, CovarianceTemplates, DiscretenessCovariance
-from thecov.trispectrum import (FG3, Z2, Z3, Bias, galileon_bias, trispectrum, parallelogram, multipoles, response_split,
-                                LinearPower)
-from thecov.ssc import _Z2
+from thecov import Tracer, GaussianCovariance, TrispectrumCovariance, DiscretenessCovariance
+from desi_validation.templates import CovarianceTemplates
+from thecov.tree.trispectrum import (FG3, Z2, Z3, Bias, galileon_bias, trispectrum, parallelogram, multipoles, LinearPower)
+from thecov.tree.response_approach import response_split
+from thecov.tree.responses import _Z2
 
 
 def p_lin():
@@ -145,7 +146,7 @@ def test_collapsed_part():
         tot = full['snake'][key] + full['star'][key]
         assert np.isclose(full['collapsed_tree'][key], tot, rtol=1e-12) and abs(none['collapsed_tree'][key]) < 1e-12 * abs(tot)
     # response-approach collapsed term: zero for |k1 - k2| >= k_split, positive monopole, linear in the long power
-    from thecov.trispectrum import collapsed_multipoles
+    from thecov.tree.response_approach import collapsed_multipoles
     assert collapsed_multipoles(0.1, 0.2, P, BIAS, 0.7, 0.05)[(0, 0)] == 0.0
     c = collapsed_multipoles(0.15, 0.152, P, BIAS, 0.7, 0.05, ells=(0, 2))
     c2 = collapsed_multipoles(0.15, 0.152, P, BIAS, 0.7, 0.05, ells=(0, 2), P_long=lambda q: 2 * P(q))

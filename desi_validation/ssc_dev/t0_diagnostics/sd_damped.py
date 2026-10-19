@@ -2,9 +2,9 @@
 fingers-of-God damping; compared with the mocks."""
 import numpy as np, sys, ast, time
 sys.path.insert(0, '/home/user/thecov')
-from thecov.ssc import response_multipoles
-from thecov.power import Dressed, no_wiggle, ir_damped
-from thecov.discreteness import DiscretenessCovariance
+from thecov.tree.responses import response_multipoles
+from thecov.tree.power import Dressed, no_wiggle, ir_damped
+from thecov.tree.discreteness import DiscretenessCovariance
 from desi_validation.compare_kernel import get
 from desi_validation.ssc_check import summarize
 S = '/tmp/claude-0/-home-user-thecov/90e4caa1-064c-5b2e-b2e3-4ff61a970c03/scratchpad'

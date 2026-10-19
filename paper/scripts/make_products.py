@@ -61,7 +61,7 @@ def find(dirs, name, require=()):
 
 
 def window_convolve(C_local, C_gauss):
-    """thecov.covariance_tools.window_convolve, inlined so that this script has no package dependency"""
+    """thecov.tree.windowing.window_convolve, inlined so that this script has no package dependency"""
     d = np.sqrt(np.diag(C_gauss))
     w, v = np.linalg.eigh(C_gauss / np.outer(d, d))
     K = (v * np.sqrt(np.clip(w, 0, None))) @ v.T

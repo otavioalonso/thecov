@@ -104,8 +104,8 @@ def test_dressed_responses_reduce_to_tree_level():
     """response_multipoles with the undamped P_lin equals a P + c dP/dlnk; FoG damping lowers the high-k
     quadrupole response and keeps the nu^4 response zero"""
     from scipy.interpolate import CubicSpline
-    from thecov.ssc import response_multipoles, response_coefficients
-    from thecov.power import Dressed
+    from thecov.tree.responses import response_multipoles, response_coefficients
+    from thecov.tree.power import Dressed
     k = np.logspace(-4, 1, 3000)
     P = 2e4 * (k / 0.02) / (1 + (k / 0.02) ** 2.6)
     b1, f, b2, bs2 = 2.2, 0.76, 0.3, -0.7
@@ -122,7 +122,7 @@ def test_dressed_responses_reduce_to_tree_level():
 
 
 def test_no_wiggle():
-    from thecov.power import no_wiggle, eh_nowiggle, ir_damped
+    from thecov.tree.power import no_wiggle, eh_nowiggle, ir_damped
     k = np.logspace(-4, 1, 3000)
     h, om, fb = 0.6766, 0.1424, 0.157
     smooth = eh_nowiggle(k, h, om, fb, n_s=0.965)

@@ -4,15 +4,16 @@
 
 1. the tree-level LRG1 response numbers and what they imply for the P_hat_0 - delta_norm regression slope
    under each normalisation convention (the sign test of the local-average term);
-2. thecov.ssc.response_coefficients against thecov.trispectrum.squeezed_response (independent kernels, finite q);
+2. thecov.ssc.response_coefficients against thecov.tree.response_approach.squeezed_response (independent kernels, finite q);
 3. the IR (k1 -> 0) limit of the T0 parallelogram: snake and star diverge as 1/k1^2 and cancel;
 4. the real-space snake + star assembly against an independent one.
 """
 import numpy as np
 from scipy.interpolate import CubicSpline
 
-from thecov.ssc import response_coefficients
-from thecov.trispectrum import squeezed_response, galileon_bias, parallelogram, LinearPower, Bias, FG3
+from thecov.tree.responses import response_coefficients
+from thecov.tree.trispectrum import galileon_bias, parallelogram, LinearPower, Bias, FG3
+from thecov.tree.response_approach import squeezed_response
 
 
 def p_lin():

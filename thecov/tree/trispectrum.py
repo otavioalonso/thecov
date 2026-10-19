@@ -35,7 +35,8 @@ Differences from PowerSpecCovFFT (the fixes):
   * k-bin averages (Gauss-Legendre in |k|, `n_k` nodes per bin, k^2-weighted).
 
 The snake and star parts are returned separately (`components`, with d star / d b3) so that their amplitudes
-can be fitted (e.g. to subvolumes of the data) with thecov.CovarianceTemplates.
+can be fitted (e.g. to subvolumes of the data; desi_validation/templates.py). The response approach
+(collapsed term, long/hard split) is in thecov.tree.response_approach.
 """
 from __future__ import annotations
 
@@ -372,54 +373,6 @@ def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None,
                    for l1 in ells for l2 in ells} for part, Tp in T.items()}
 
 
-def squeezed_response(k, q, P, bias, f):
-    """R(k, q) P(k) = B_ggm(k, -k + q, -q) / P_L(q) at tree level for vectors k (hard) and q (soft), n^ = z^:
-    2 Z2(k, -q) Z1(k) P(k) + 2 Z2(-k + q, -q) Z1(-k + q) P(|k - q|), evaluated at finite q (its bulk-flow 1/q terms
-    cancel between the two terms, so it is finite as q -> 0; for q -> 0 it is the SSC response). P: callable of |k|."""
-    kb = -k + q
-    return (2 * Z2(k, -q, bias, f) * Z1(k, bias, f) * P(np.sqrt(np.sum(k * k, 0)))
-            + 2 * Z2(kb, -q, bias, f) * Z1(kb, bias, f) * P(np.sqrt(np.sum(kb * kb, 0))))
-
-
-def collapsed_multipoles(k1, k2, P, bias, f, k_split, ells=(0, 2, 4), n_mu=20, n_psi=40, n_q=32, sigma_fog=0.0,
-                         P_long=None):
-    """Response-approach collapsed term: for |k1 -+ k2| = p < k_split the four-point function factorises into two
-    squeezed bispectra, T ~ B(k1, -k2, -p) B(-k1, k2, p) / P_L(p) = R(k1, p)^2 P(k1)^2 P_L(p), plus the same for
-    p = k1 + k2 (equal by parity for even l): T_coll = 2 [R(k1, p) P(k1)]^2 P_L(p). IR safe (each factor is),
-    positive configuration by configuration. Returns {(l1, l2): (2 l1 + 1)(2 l2 + 1) < L L T_coll >} with the
-    same normalisation as multipoles (the mu12 average restricted to p < k_split, done in ln p).
-    P: the hard power (e.g. normalised, BAO-damped), P_long: the long-mode power (default P)."""
-    P_long = P if P_long is None else P_long
-    out = {(l1, l2): 0.0 for l1 in ells for l2 in ells}
-    pmin = max(abs(k1 - k2), 1e-5)
-    if pmin >= k_split:
-        return out
-    t, wt = np.polynomial.legendre.leggauss(n_q)
-    lo, hi = np.log(pmin), np.log(k_split)
-    pq = np.exp(0.5 * (hi - lo) * t + 0.5 * (hi + lo))
-    wq = 0.5 * (hi - lo) * wt * pq ** 2 / (2 * k1 * k2)            # dmu12 / 2 = p dp / (2 k1 k2)
-    mu = np.clip((k1 ** 2 + k2 ** 2 - pq ** 2) / (2 * k1 * k2), -1, 1)
-    xg, wg = np.polynomial.legendre.leggauss(n_mu)
-    psi = 2 * np.pi * (np.arange(n_psi) + 0.5) / n_psi
-    M, C1, PS = np.meshgrid(mu, xg, psi, indexing='ij')
-    W = np.meshgrid(wq, wg / 2, np.full(n_psi, 1 / n_psi), indexing='ij')
-    W = W[0] * W[1] * W[2]
-    S1 = np.sqrt(1 - C1 ** 2)
-    SM = np.sqrt(np.clip(1 - M ** 2, 0, None))
-    e1 = np.stack([S1, np.zeros_like(S1), C1])
-    ea = np.stack([C1, np.zeros_like(C1), -S1])
-    eb = np.stack([np.zeros_like(C1), np.ones_like(C1), np.zeros_like(C1)])
-    e2 = M * e1 + SM * (np.cos(PS) * ea + np.sin(PS) * eb)
-    kv1, kv2 = k1 * e1, k2 * e2
-    pv = kv1 - kv2
-    T = 2 * squeezed_response(kv1, pv, P, bias, f) ** 2 * P_long(np.sqrt(np.sum(pv * pv, 0)))
-    if sigma_fog:
-        T = T * np.exp(-(kv1[2] * sigma_fog) ** 2 - (kv2[2] * sigma_fog) ** 2)
-    mu1, mu2 = C1, e2[2]
-    L = {l: (np.polynomial.legendre.Legendre.basis(l)(mu1), np.polynomial.legendre.Legendre.basis(l)(mu2)) for l in ells}
-    return {(l1, l2): (2 * l1 + 1) * (2 * l2 + 1) * float(np.sum(W * L[l1][0] * L[l2][1] * T)) for l1 in ells for l2 in ells}
-
-
 # ----------------------------------------------------------------------------- covariance
 class LinearPower:
     """P_lin(k) from a table (cubic spline in ln k; 0 outside the table, in particular at k = 0); picklable"""
@@ -536,158 +489,8 @@ class TrispectrumCovariance:
                             out[p][b * nb + j, a * nb + i] = v
         return out
 
-    def collapsed(self, spectra, k_split, ells=None):
-        """Response-approach collapsed term (collapsed_multipoles) for all bin pairs with |k_i - k_j| < k_split,
-        window factor J4, same layout as components(); k-bin average with the n_k nodes."""
-        cov = self.cov
-        ells = cov.ells if ells is None else tuple(ells)
-        A = str(spectra[0][0])
-        J4 = self.window_integral(A)
-        kn, kw = self._nodes()
-        nb, nl = len(kn), len(ells)
-        out = np.zeros((nl * nb, nl * nb))
-        for i in range(nb):
-            for j in range(i, nb):
-                acc = {key: 0.0 for key in ((l1, l2) for l1 in ells for l2 in ells)}
-                for wa, ka in zip(kw[i], kn[i]):
-                    for wb, kb in zip(kw[j], kn[j]):
-                        if abs(ka - kb) >= k_split:
-                            continue
-                        m = collapsed_multipoles(ka, kb, self.P, self.bias, self.f, k_split, ells=ells,
-                                                 n_mu=max(self.n_mu, 16), n_psi=max(self.n_psi, 32), sigma_fog=self.sigma_fog)
-                        for key, v in m.items():
-                            acc[key] += wa * wb * v
-                for a, l1 in enumerate(ells):
-                    for b, l2 in enumerate(ells):
-                        out[a * nb + i, b * nb + j] = out[b * nb + j, a * nb + i] = J4 * acc[(l1, l2)]
-        return out
-
     def covariance(self, spectra, ells=None, verbose=False):
         comps = self.components(spectra, ells=ells, verbose=verbose)
         ells = self.cov.ells if ells is None else tuple(ells)
         A = str(spectra[0][0])
         return comps['snake'] + comps['star'], [(A, A, l, i) for l in ells for i in range(len(self.cov.k_edges) - 1)]
-
-
-# ----------------------------------------------------------------------------- response-based split
-def response_split(C_T, k, k_split, C_base, ells=(0, 2, 4), C_collapsed=None):
-    """Split a trispectrum covariance into the response-approach pieces at the scale k_split.
-
-    Bins with k < k_split are 'long' (L), the others 'hard' (H). Returns
-      LL : both long (tree level is valid there),
-      LH : long x hard, the squeezed couplings X (the hard power responds to the realised long-mode power),
-      HH : both hard (tree level; dropped by the response approach),
-      HH_collapsed : with C_collapsed (TrispectrumCovariance.collapsed), its HH block,
-      completion : the hard-hard variance implied by the squeezed couplings. Model the hard power as
-           P_H = P_H0 + J (P_L - <P_L>), with (P_L, P_H0) distributed as the rest of the model
-           [[A, B0], [B0^T, D0]] (A = (C_base + LL)_LL, B0 = (C_base)_LH): then Cov(P_L, P_H) = B0 + A J^T = B0 + X
-           gives J = X^T A^-1 and the extra hard-hard covariance X^T A^-1 X + X^T A^-1 B0 + B0^T A^-1 X.
-           It is O(P^4) (beyond tree level) and makes the total positive whenever the rest of the model is.
-    C_base: the rest of the covariance model (Gaussian + SSC + discreteness), full matrix in (ell, bin) order.
-    LL + LH + HH = C_T."""
-    k = np.asarray(k, float)
-    L = np.tile(k < k_split, len(ells))
-    H = ~L
-    LL, HH = np.outer(L, L), np.outer(H, H)
-    out = {'LL': np.where(LL, C_T, 0.0), 'HH': np.where(HH, C_T, 0.0), 'LH': np.where(~(LL | HH), C_T, 0.0)}
-    if C_collapsed is not None:
-        out['HH_collapsed'] = np.where(HH, C_collapsed, 0.0)
-    comp = np.zeros_like(C_T)
-    if L.any() and H.any():
-        C_base = np.asarray(C_base)
-        A = (C_base + out['LL'])[np.ix_(L, L)]
-        X, B0 = C_T[np.ix_(L, H)], C_base[np.ix_(L, H)]
-        AiX = np.linalg.solve(A, X)
-        cross = B0.T @ AiX
-        comp[np.ix_(H, H)] = X.T @ AiX + cross + cross.T
-    out['completion'] = comp
-    return out
-
-
-def response_covariance(parts, hard=False):
-    """The response-based T0 covariance from response_split's parts: long-long (tree level) + squeezed couplings +
-    their completion + the collapsed term (+ the tree-level hard-hard block if hard=True, for diagnostics; the
-    response approach drops it)."""
-    C = parts['LL'] + parts['LH'] + parts['completion'] + parts.get('HH_collapsed', 0.0)
-    return C + parts['HH'] if (hard or 'HH_collapsed' not in parts) else C
-
-
-# ----------------------------------------------------------------------------- templates
-class CovarianceTemplates:
-    """C(amplitudes) = C_fixed + sum_i A_i C_i: the container for fitting the amplitudes of non-Gaussian
-    terms (e.g. to subvolumes of the data). Templates are added by name; unspecified amplitudes are 1."""
-
-    def __init__(self, fixed=None):
-        self.fixed = fixed
-        self.templates = {}
-
-    def add(self, name, C):
-        self.templates[str(name)] = np.asarray(C, float)
-        return self
-
-    def update(self, comps, prefix=''):
-        for name, C in comps.items():
-            self.add(prefix + name, C)
-        return self
-
-    @property
-    def names(self):
-        return list(self.templates)
-
-    def __call__(self, **amplitudes):
-        unknown = set(amplitudes) - set(self.templates)
-        if unknown:
-            raise KeyError(f'unknown templates {sorted(unknown)}; have {self.names}')
-        C = 0.0 if self.fixed is None else np.array(self.fixed, float)
-        for name, T in self.templates.items():
-            C = C + amplitudes.get(name, 1.0) * T
-        return C
-
-    def loglike(self, S, n_samples, **amplitudes):
-        """-2 ln L (up to a constant) of a sample covariance S of n_samples vectors under C(amplitudes)
-        (Wishart: n [tr(C^-1 S) + ln det C]); +inf if C is not positive definite."""
-        C = self(**amplitudes)
-        try:
-            L = np.linalg.cholesky(C)
-        except np.linalg.LinAlgError:
-            return np.inf
-        Li = np.linalg.inv(L)
-        return float(n_samples * (np.sum((Li @ np.asarray(S) @ Li.T).diagonal()) + 2 * np.sum(np.log(np.diag(L)))))
-
-    def fit(self, S, n_samples, free=None, start=None, fixed=None, restarts=3):
-        """Maximum-likelihood amplitudes of the templates `free` (default: all) for a sample covariance S
-        (e.g. of mocks or of sub-volumes); the others are held at `fixed` (default 1).
-        Returns (amplitudes dict, -2 ln L)."""
-        from scipy.optimize import minimize
-        free = self.names if free is None else list(free)
-        base = {n: 1.0 for n in self.names}
-        base.update(fixed or {})
-        x0 = np.array([(start or {}).get(n, base[n]) for n in free], float)
-
-        def f(x):
-            amps = dict(base, **dict(zip(free, x)))
-            v = self.loglike(S, n_samples, **amps)
-            return v if np.isfinite(v) else 1e300
-        if f(x0) >= 1e300:                                     # start not positive definite: start small
-            x0 = np.full_like(x0, 0.1)
-        best = None
-        for i in range(max(1, restarts)):
-            r = minimize(f, x0 if i == 0 else x0 * (1 + 0.3 * i) + 0.1 * i, method='Powell',
-                         options=dict(maxiter=20000, xtol=1e-4, ftol=1e-8))
-            if best is None or r.fun < best.fun:
-                best = r
-        amps = dict(base, **dict(zip(free, np.atleast_1d(best.x))))
-        return amps, float(best.fun)
-
-    def save(self, fn):
-        np.savez(fn, fixed=np.asarray(self.fixed if self.fixed is not None else np.nan), names=np.array(self.names),
-                 **{f't_{n}': T for n, T in self.templates.items()})
-
-    @classmethod
-    def load(cls, fn):
-        with np.load(fn) as z:
-            fixed = z['fixed']
-            out = cls(None if fixed.ndim == 0 else fixed)
-            for n in z['names']:
-                out.add(str(n), z[f't_{n}'])
-        return out

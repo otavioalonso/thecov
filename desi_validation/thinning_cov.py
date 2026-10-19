@@ -173,7 +173,7 @@ def thecov_stage(args):
     log(f'  done in {time.time() - t0:.0f} s')
     res = dict(C_G=C, sn=sn, n_near=n_near)
     try:                                                                    # tree-level discreteness terms (proxy inputs)
-        from thecov.discreteness import DiscretenessCovariance
+        from thecov.tree.discreteness import DiscretenessCovariance
         nb = len(spec['k'])
         P0 = spec['vectors'][:, :nb].mean(0) * g['norm'] / cov.I_randoms
         kk = np.concatenate([[spec['k_edges'][0] / 4], spec['k'], [spec['k_edges'][-1]]])

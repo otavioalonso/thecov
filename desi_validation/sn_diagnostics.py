@@ -97,7 +97,7 @@ def main():
     args = ap.parse_args()
 
     from thecov import GaussianCovariance, PowerSpectrumModel, SuperSampleCovariance, DiscretenessCovariance
-    from thecov.power import Dressed
+    from thecov.tree.power import Dressed
     from scipy.spatial import cKDTree
     b, r = args.bin, args.cap
     res = {}

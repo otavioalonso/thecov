@@ -19,11 +19,11 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from thecov.ssc import response_multipoles  # noqa: E402
-from thecov.power import Dressed, no_wiggle, ir_damped  # noqa: E402
-from thecov.discreteness import DiscretenessCovariance  # noqa: E402
-from thecov.covariance_tools import window_convolve  # noqa: E402
-from thecov import CovarianceTemplates  # noqa: E402
+from thecov.tree.responses import response_multipoles  # noqa: E402
+from thecov.tree.power import Dressed, no_wiggle, ir_damped  # noqa: E402
+from thecov.tree.discreteness import DiscretenessCovariance  # noqa: E402
+from thecov.tree.windowing import window_convolve  # noqa: E402
+from desi_validation.templates import CovarianceTemplates  # noqa: E402
 from desi_validation.compare_kernel import get, chi2  # noqa: E402
 from desi_validation.ssc_check import summarize, fit_sigma_v, fit_amplitude  # noqa: E402
 

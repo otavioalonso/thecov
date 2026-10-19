@@ -1,7 +1,7 @@
 import numpy as np, sys, io, contextlib, time
 sys.path.insert(0,'/home/user/thecov'); sys.path.insert(0,'/home/user/thecov/tests')
 from test_discreteness import p_lin
-from thecov.trispectrum import multipoles, Bias
+from thecov.tree.trispectrum import multipoles, Bias
 from scipy.interpolate import CubicSpline, InterpolatedUnivariateSpline
 with contextlib.redirect_stdout(io.StringIO()):
     from powercovfft import PowerSpecCovFFT

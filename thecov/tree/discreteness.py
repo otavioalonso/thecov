@@ -28,7 +28,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.interpolate import CubicSpline
 
-from .ssc import _Z1, _Z2
+from .responses import _Z1, _Z2
 
 
 class DiscretenessCovariance:

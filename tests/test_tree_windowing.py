@@ -1,7 +1,7 @@
-"""window_convolve (thecov.covariance_tools)."""
+"""window_convolve (thecov.tree.windowing)."""
 import numpy as np
 
-from thecov.covariance_tools import window_convolve, mixing_kernel
+from thecov.tree.windowing import window_convolve, mixing_kernel
 
 
 def test_window_convolve():

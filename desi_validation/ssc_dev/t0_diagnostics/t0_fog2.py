@@ -1,6 +1,6 @@
 import numpy as np, sys, time
 sys.path.insert(0, '/home/user/thecov')
-from thecov.trispectrum import TrispectrumCovariance, Bias
+from thecov.tree.trispectrum import TrispectrumCovariance, Bias
 S = '/tmp/claude-0/-home-user-thecov/90e4caa1-064c-5b2e-b2e3-4ff61a970c03/scratchpad'
 def main():
     r, sig = sys.argv[1], float(sys.argv[2])

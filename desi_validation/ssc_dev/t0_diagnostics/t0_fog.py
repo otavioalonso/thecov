@@ -1,7 +1,7 @@
 import numpy as np, sys, time
 sys.path.insert(0, '/home/user/thecov')
 from scipy.optimize import least_squares
-from thecov.trispectrum import TrispectrumCovariance, Bias
+from thecov.tree.trispectrum import TrispectrumCovariance, Bias
 from desi_validation.compare_kernel import get, chi2
 S = '/tmp/claude-0/-home-user-thecov/90e4caa1-064c-5b2e-b2e3-4ff61a970c03/scratchpad'
 D = S + '/t0run'

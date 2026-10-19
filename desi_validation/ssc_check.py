@@ -18,13 +18,13 @@ bGamma3 = 23/42 (b1 - 1); --no-t0 to skip; --workers processes), with their comp
 
 Recommended non-Gaussian covariance (saved as <cap>/C_nongauss, nothing fitted): SSC (with the local average) +
 discreteness 4-point terms, both built from A P_lin (A: the mock amplitude, fit_amplitude), BAO- and FoG-damped,
-the discreteness terms window-convolved (thecov.covariance_tools.window_convolve; --no-window-local to skip).
+the discreteness terms window-convolved (thecov.tree.windowing.window_convolve; --no-window-local to skip).
 The response-based T0 (tree level for k < --k-split, squeezed couplings + their completion, IR-safe collapsed term)
 is computed and reported as a diagnostic (<cap>/C_T0_*); -2 dlnL tables against the mocks for every variant;
 --fit-templates adds maximum-likelihood template amplitudes (diagnostic). All inputs are saved for local rebuilds
 (desi_validation/ssc_dev/local_rebuild.py); bundle with desi_validation/export_bundle.sh.
 
-Damping (default; --no-damping for the old tree level): BAO damping of P_lin (thecov.power.ir_damped,
+Damping (default; --no-damping for the old tree level): BAO damping of P_lin (thecov.tree.power.ir_damped,
 --ir-sigma) and Gaussian fingers-of-God sigma_v fitted to the mock-mean P2/P0 (--sigma-fog to fix it), applied to
 the SSC responses (p_dressed), the discreteness B and P and T0.
 
@@ -110,7 +110,7 @@ TEMPLATE_CASES = [  # (name, templates held at 1, templates fitted); the rest ar
 
 def loglike_table(tag, V, C, variants):
     """-2 Delta ln L (Wishart, mocks) of each covariance variant against the Gaussian covariance alone; nothing fitted"""
-    from thecov import CovarianceTemplates
+    from desi_validation.templates import CovarianceTemplates
     S, N = np.cov(V.T), len(V)
     ref = CovarianceTemplates(C).loglike(S, N)
     print(f'  {tag}: -2 dlnL vs the Gaussian covariance (mocks, nothing fitted; lower is better)')
@@ -122,7 +122,7 @@ def loglike_table(tag, V, C, variants):
 def template_table(tag, V, C, comps, k, nb):
     """Wishart maximum-likelihood amplitudes of the non-Gaussian templates for the mock covariance, and
     -2 Delta ln L against the Gaussian covariance alone (what the sub-volume fit will do on the data)."""
-    from thecov import CovarianceTemplates
+    from desi_validation.templates import CovarianceTemplates
     comps = dict(comps)
     if 'disc_B' in comps and 'disc' not in comps:
         comps['disc'] = comps['disc_B'] + comps['disc_P']
@@ -295,7 +295,8 @@ def main():
     from scipy.interpolate import CubicSpline
     from thecov import (GaussianCovariance, PowerSpectrumModel, SuperSampleCovariance, DiscretenessCovariance,
                         TrispectrumCovariance, galileon_bias, response_split, response_covariance)
-    from thecov.covariance_tools import window_convolve
+    from thecov.tree.response_approach import collapsed_covariance
+    from thecov.tree.windowing import window_convolve
 
     paths = dc.Paths(kind='holi_v3', mock=args.mock)
     paths.loader = 'auto'
@@ -312,7 +313,7 @@ def main():
     plin_k = lambda k: plin(np.log(k))
     f = args.f if args.f is not None else float(cosmo.growth_rate(zeff))
     log(f'{b}: z_eff {zeff}, f {f:.3f}, P_lin from cosmoprimo DESI fiducial')
-    from thecov.power import no_wiggle, ir_damped, Dressed
+    from thecov.tree.power import no_wiggle, ir_damped, Dressed
     try:
         h, om, fb, ns = cosmo.h, cosmo.Omega0_m * cosmo.h ** 2, cosmo.Omega0_b / cosmo.Omega0_m, cosmo.n_s
     except Exception:                                           # Planck 2018 / DESI fiducial
@@ -437,7 +438,7 @@ def main():
                                        **(dict(n_mu=20, n_psi=40) if sigma_v else {}))
             tt = time.time()
             tc = t0.components([(tr.name, tr.name)], ells=(0, 2, 4))
-            Ccoll = t0.collapsed([(tr.name, tr.name)], args.k_split, ells=(0, 2, 4))
+            Ccoll = collapsed_covariance(t0, [(tr.name, tr.name)], args.k_split, ells=(0, 2, 4))
             J4 = t0.window_integral(tr.name)
             Ct = tc['snake'] + tc['star']
             log(f'{r}: T0 ({gb}, J4 {J4:.3e}, {time.time() - tt:.0f} s with {args.workers} processes); '

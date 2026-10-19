@@ -5,7 +5,7 @@ It mirrors what our standard runs do, with the same arguments:
   * SSC           : desi_validation.ssc_check (local-window GaussianCovariance as container, LA + Poisson,
                     norm_kind variants, dilution from the kernel I_k);
   * discreteness  : DiscretenessCovariance.components, window_convolve with the Gaussian C;
-  * T0            : TrispectrumCovariance.components + collapsed, response_split / response_covariance.
+  * T0            : TrispectrumCovariance.components + collapsed_covariance, response_split / response_covariance.
 
     python tests/regression/standard_run.py write    # store the reference (run on the pre-refactoring version)
     python tests/regression/standard_run.py check    # recompute and compare with the stored reference
@@ -24,7 +24,8 @@ sys.path.insert(0, os.path.join(HERE, '..', '..'))
 from thecov import (Tracer, PowerSpectrumModel, GaussianCovariance, WindowSmoothing,  # noqa: E402
                     SuperSampleCovariance, DiscretenessCovariance, TrispectrumCovariance,
                     galileon_bias, response_split, response_covariance)
-from thecov.covariance_tools import window_convolve  # noqa: E402
+from thecov.tree.windowing import window_convolve  # noqa: E402
+from thecov.tree.response_approach import collapsed_covariance  # noqa: E402
 
 REF = os.path.join(HERE, 'standard_run_reference.npz')
 CENTER = np.array([0.0, 0.0, 1200.0])        # close enough for the line of sight to vary across the survey
@@ -133,7 +134,7 @@ def run():
     for key, M in tc.items():
         out[f'C_T0_{key}'] = M
     k_split = 0.07
-    Ccoll = t0c.collapsed([('T', 'T')], k_split, ells=(0, 2, 4))
+    Ccoll = collapsed_covariance(t0c, [('T', 'T')], k_split, ells=(0, 2, 4))
     out['C_T0_collapsed'] = Ccoll
     out['J4'] = np.array(t0c.window_integral('T'))
     Ct = tc['snake'] + tc['star']

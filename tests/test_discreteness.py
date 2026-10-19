@@ -1,4 +1,4 @@
-"""Poisson non-Gaussian terms (thecov.discreteness)."""
+"""Poisson non-Gaussian terms (thecov.tree.discreteness)."""
 import numpy as np
 import pytest
 

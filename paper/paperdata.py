@@ -372,7 +372,7 @@ def _rebin_matrix(nmodes, factor):
 
 def _add_nongauss(s, sim, tracer, cap, dk):
     """the non-Gaussian terms of ssc_check, computed at dk = 0.005 and averaged over bins for wider dk"""
-    from thecov.covariance_tools import window_convolve
+    from thecov.tree.windowing import window_convolve
     ng = np.load(_nongauss_file(sim, tracer))
     factor = int(round(dk / 0.005))
     R = np.eye(len(ng[f'{cap}/C'])) if factor == 1 else _rebin_matrix(_spectra(sim, tracer, cap)['nmodes0.005'], factor)

@@ -21,12 +21,12 @@ from .windows import TripolarWindow, WindowLibrary, PairHistogram
 from .wigner import wigner_3j, gaunt_tensor, CouplingCoefficients, tri, tri_multi
 from .covariance import GaussianCovariance
 from .smoothing import WindowSmoothing, DensityField
-from .ssc import SuperSampleCovariance, response_coefficients
-from .discreteness import DiscretenessCovariance
-from .trispectrum import TrispectrumCovariance, CovarianceTemplates, Bias, galileon_bias, response_split, response_covariance
+from .ssc import SuperSampleCovariance
+from .tree import (response_coefficients, DiscretenessCovariance, TrispectrumCovariance, Bias, galileon_bias,
+                   response_split, response_covariance)
 
 __all__ = ['Tracer', 'Window', 'spectrum_window_pairs', 'PowerSpectrumModel', 'ShellKernels',
            'TripolarWindow', 'WindowLibrary', 'PairHistogram', 'wigner_3j', 'gaunt_tensor', 'CouplingCoefficients',
            'tri', 'tri_multi', 'GaussianCovariance', 'WindowSmoothing', 'DensityField',
            'SuperSampleCovariance', 'response_coefficients', 'DiscretenessCovariance',
-           'TrispectrumCovariance', 'CovarianceTemplates', 'Bias', 'galileon_bias', 'response_split', 'response_covariance']
+           'TrispectrumCovariance', 'Bias', 'galileon_bias', 'response_split', 'response_covariance']
