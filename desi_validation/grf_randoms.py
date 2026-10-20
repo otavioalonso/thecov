@@ -5,6 +5,7 @@
     # 2. thecov for the same window (one job per window mode; reads the field outputs)
     python -u -m desi_validation.grf_randoms thecov --bin LRG1 --region NGC --mode random-density
     python -u -m desi_validation.grf_randoms thecov --bin LRG1 --region NGC --mode kernel
+    python -u -m desi_validation.grf_randoms thecov --bin LRG1 --region NGC --mode none   # own weights, local window
 
 Why. run_gaussian_footprint.py multiplies the field by a window painted on a healpix-512 map with fill-fraction
 dilution, i.e. the veto holes enter as partial coverage of ~2.5 Mpc/h pixels, the same approximation as the
@@ -322,7 +323,8 @@ def run_thecov(args):
     spec_true = spec(np.concatenate([kais[ell] * g['box_mean'] for ell in ells])[None, :] * rho ** 2)
     rc = dc.load_region(paths, b, r, n_random_files=cfg.n_random_files)
     name = f'GRFR_{b}_{r}{tag}_{mode}'
-    tr, _ = dc.build_tracer(name, [rc], nw='random-density', n_randoms_max=cfg.n_randoms_max // 2,
+    nw = 'none' if mode == 'none' else 'random-density'       # 'none': each random's own weight (local window)
+    tr, _ = dc.build_tracer(name, [rc], nw=nw, n_randoms_max=cfg.n_randoms_max // 2,
                             surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn)
     sm = pl.kernel_smoothing(paths, b, r, name, spec_true, cfg, log=log) if mode == 'kernel' else None
     del rc
@@ -381,7 +383,7 @@ def main():
     ap.add_argument('--amp', type=float, default=1.22, help='P_in = mocks mean P0 x amp (~ int m^2 / norm)')
     ap.add_argument('--eps', type=float, default=1e-6, help='NUFFT tolerance')
     ap.add_argument('--max-time', type=float, default=1500.0, help='stop adding realisations after this [s]')
-    ap.add_argument('--mode', default='random-density', choices=['random-density', 'kernel'])
+    ap.add_argument('--mode', default='random-density', choices=['random-density', 'kernel', 'none'])
     ap.add_argument('--n-randoms-max', type=float, default=8e6)
     ap.add_argument('--target-near-pairs', type=float, default=1e10)
     ap.add_argument('--out-dir', default=None)
