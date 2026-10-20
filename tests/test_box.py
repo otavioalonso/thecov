@@ -84,7 +84,7 @@ def box_covariance(boxsize=4000.0, nrandoms=400000, alpha=1.0, P0_flat=1e4, kmax
     model = PowerSpectrumModel()
     model.add(('A', 'A'), {0: (kk, np.full_like(kk, P0_flat))})
     cov = GaussianCovariance([tr], k_edges, ells=ells, L_max=2, ds=2.0, ds_pair=10.0, shot_noise=True,
-                             n_sub=n_sub, n_near=n_near, s_split=80.0, seed=seed)
+                             n_sub=n_sub, n_near=n_near, s_split=80.0, seed=seed, smoothing=None)
     cov.compute_windows([('A', 'A')]).set_model(model)
     blocks = {(l1, l2): cov.block(('A', 'A'), ('A', 'A'), l1, l2) for l1 in ells for l2 in ells}
     Ptot = P0_flat + (1 + alpha) / nbar

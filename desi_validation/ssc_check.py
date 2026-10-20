@@ -359,7 +359,7 @@ def main():
                                 surface_density_deg2=cfg.surface_density, verbose=False)
         del rc
         cov = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, n_sub=cfg.n_sub_far, n_near=args.n_near,
-                                 ds=2.0, ds_pair=10.0, s_split=80.0)
+                                 ds=2.0, ds_pair=10.0, s_split=80.0, smoothing=None)
         cov.set_normalization(tr.name, tr.name, norm)
         model = PowerSpectrumModel()
         model.add((tr.name, tr.name), dc.model_from_mocks(spec))

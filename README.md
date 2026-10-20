@@ -68,10 +68,9 @@ cov = GaussianCovariance([A, B], k_edges=np.arange(0.01, 0.205, 0.01), ells=(0, 
                          ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=5000, n_near=200000, s_split=80.0)
 
 spectra = [('A', 'A'), ('A', 'B'), ('B', 'B')]
-cov.compute_windows(spectra)            # pair counts (geometry) — expensive, once per survey
+cov.set_model(model)                    # cosmology — cheap, repeat at will (its P_0 also shapes the window kernel)
+cov.compute_windows(spectra)            # kernel smoothing + pair counts (geometry) — expensive, once per survey
 cov.save_windows('windows.npz')         # ... and reusable:  cov.load_windows('windows.npz')
-
-cov.set_model(model)                    # cosmology — cheap, repeat at will
 C, labels = cov.covariance(spectra)     # data vector ordered by spectrum, ell, k-bin
 blk = cov.block(('A','A'), ('A','B'), 0, 2)   # a single (nbins x nbins) block
 ```
@@ -113,12 +112,15 @@ theory). With `masked=True` the model is taken to be window-convolved and normal
 estimator (e.g. the mean of mocks): its mean is `P(k) I_k / I`, so thecov multiplies it by
 `I / I_k` (`cov.mask_factor`). Set the estimator's normalisation (`set_normalization`) first.
 
-The clustering terms contain `m(x) m(x + r)` over a correlation length, which the default local
-approximation replaces by `m(x)^2`. Near window structure smaller than a correlation length (veto
+The clustering terms contain `m(x) m(x + r)` over a correlation length, which the local
+approximation (`smoothing=None`) replaces by `m(x)^2`. Near window structure smaller than a correlation length (veto
 holes, footprint edges, completeness patches) this underestimates the Gaussian variance (by ~7% for
 DESI DR2 LRG1). `WindowSmoothing` replaces it by the pair-averaged window
 `W_k = m_A (K_k * m_B)`, `K_k(r) = xi(r) e^{ik.r} / P(k)` (isotropic: `xi_0 j_0(kr) / P_0`), per
-k-bin, with no free smoothing scale; then `I_k = int W_k` per bin:
+k-bin, with no free smoothing scale; then `I_k = int W_k` per bin. This is the default
+(`smoothing='auto'`): the reference density is each tracer's own randoms and the kernel shape the model's
+`P_0` at the bin centres, so `set_model` comes before `compute_windows`. With denser reference randoms
+(recommended for DESI footprints) build the smoothing explicitly:
 
     sm = WindowSmoothing()                                  # cell, r_split, r_max, tol: numerical only
     sm.add_density('LRG', ref_pos, ref_w, ref_alpha)        # dense reference randoms (several files)

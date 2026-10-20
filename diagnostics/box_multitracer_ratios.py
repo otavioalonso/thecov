@@ -47,7 +47,7 @@ for pair, mult in spectra_L.items():
 k_edges = np.arange(0.0, 0.205, 0.01)
 t0 = time.time()
 cov = GaussianCovariance(tracers, k_edges, ells=(0, 2), L_max=4, ds=2.0, ds_pair=10.0, shot_noise=True,
-                         n_sub=n_sub, n_near=100000, s_split=80.0, seed=1).set_model(model)
+                         n_sub=n_sub, n_near=100000, s_split=80.0, seed=1, smoothing=None).set_model(model)
 ref = {pair: dict(m) for pair, m in spectra_L.items()}
 for name in ('A', 'B'):
     ref[(name, name)][0] += (1 + alpha[name]) / nb[name]

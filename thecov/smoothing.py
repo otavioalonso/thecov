@@ -308,6 +308,12 @@ class WindowSmoothing:
                          self.max_kernels, self.damping,
                          sorted((k, float(np.sum(v[0])), float(np.sum(v[1]))) for k, v in self._power.items()))
 
+    def has_density(self, name):
+        return str(name) in self._densities
+
+    def has_power(self, A, B):
+        return self.pair_key(A, B) in self._power
+
     # -- results
     def has(self, A, B):
         return self.pair_key(A, B) in self._pairs

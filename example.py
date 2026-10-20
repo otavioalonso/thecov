@@ -69,7 +69,7 @@ if __name__ == "__main__":
     # --- covariance setup
     k_edges = np.arange(0.01, 0.205, 0.01)      # 19 bins
     cov = GaussianCovariance([A, B], k_edges, ells=(0, 2, 4), L_max=4,
-                             ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=2500, seed=0)
+                             ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=2500, seed=0, smoothing=None)
     spectra = [('A', 'A'), ('A', 'B'), ('B', 'B')]
 
     t0 = time.time()

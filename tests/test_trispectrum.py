@@ -72,7 +72,7 @@ def setup():
     pos = x[np.sum(x * x, 1) < R * R][:20000] + [0, 0, 1e5]
     V = 4 / 3 * np.pi * R ** 3
     tr = Tracer('T', {'POSITION': pos, 'WEIGHT': np.ones(len(pos)), 'NZ': np.full(len(pos), nbar)}, nbar * V / len(pos))
-    cov = GaussianCovariance([tr], np.array([0.05, 0.06, 0.15, 0.16]), ells=(0, 2), L_max=0)
+    cov = GaussianCovariance([tr], np.array([0.05, 0.06, 0.15, 0.16]), ells=(0, 2), L_max=0, smoothing=None)
     return cov, V
 
 

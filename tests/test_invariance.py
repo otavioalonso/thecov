@@ -72,8 +72,8 @@ def test_weight_rescaling_invariance():
     c = 3.0
     A1, B1 = two_tracers(np.random.default_rng(21))
     A2, B2 = two_tracers(np.random.default_rng(21), wA=lambda p: np.full(len(p), c))
-    cov1 = GaussianCovariance([A1, B1], K_EDGES, **COV_OPTS).set_model(MODEL)
-    cov2 = GaussianCovariance([A2, B2], K_EDGES, **COV_OPTS).set_model(MODEL)
+    cov1 = GaussianCovariance([A1, B1], K_EDGES, **COV_OPTS, smoothing=None).set_model(MODEL)
+    cov2 = GaussianCovariance([A2, B2], K_EDGES, **COV_OPTS, smoothing=None).set_model(MODEL)
     b1, b2 = blocks_of(cov1), blocks_of(cov2)
     for key in BLOCKS:
         assert np.allclose(b1[key], b2[key], rtol=1e-10, atol=1e-12 * np.max(np.abs(b1[key]))), key
@@ -97,8 +97,8 @@ def test_random_density_rescaling():
     half = Tracer('A', {'POSITION': pos[idx], 'WEIGHT': np.ones(n // 2), 'NZ': np.full(n // 2, nA)},
                   nA * V / (n // 2))
     opts = dict(COV_OPTS, shot_noise=False, n_sub=1200, n_near=10000)
-    c1 = GaussianCovariance([full], K_EDGES, **opts).set_model(MODEL)
-    c2 = GaussianCovariance([half], K_EDGES, **opts).set_model(MODEL)
+    c1 = GaussianCovariance([full], K_EDGES, **opts, smoothing=None).set_model(MODEL)
+    c2 = GaussianCovariance([half], K_EDGES, **opts, smoothing=None).set_model(MODEL)
     assert np.isclose(c1.I('A', 'A'), c2.I('A', 'A'), rtol=0.02)
     for ell in (0, 2):
         d1 = np.diag(c1.block(('A', 'A'), ('A', 'A'), ell, ell))
@@ -124,8 +124,8 @@ def test_rotation_invariance():
     A1, B1 = two_tracers(np.random.default_rng(24))
     Rm = random_rotation(rng)
     rot = lambda t: Tracer(t.name, {'POSITION': t.positions @ Rm.T, 'WEIGHT': t.weights, 'NZ': t.nbar}, t.alpha)
-    cov1 = GaussianCovariance([A1, B1], K_EDGES, **COV_OPTS).set_model(MODEL)
-    cov2 = GaussianCovariance([rot(A1), rot(B1)], K_EDGES, **COV_OPTS).set_model(MODEL)
+    cov1 = GaussianCovariance([A1, B1], K_EDGES, **COV_OPTS, smoothing=None).set_model(MODEL)
+    cov2 = GaussianCovariance([rot(A1), rot(B1)], K_EDGES, **COV_OPTS, smoothing=None).set_model(MODEL)
     b1, b2 = blocks_of(cov1), blocks_of(cov2)
     for key in BLOCKS:
         d1, d2 = np.diag(b1[key]), np.diag(b2[key])
@@ -160,8 +160,8 @@ def test_Lmax_padding_is_exact():
     # level on the off-diagonals). Pin it, so that this test isolates the L sums.
     opts2 = dict(COV_OPTS, L_max=2, n_mu=72)
     opts4 = dict(COV_OPTS, L_max=4, n_mu=72)
-    c2 = GaussianCovariance([A, B], K_EDGES, **opts2).set_model(m2)
-    c4 = GaussianCovariance([A, B], K_EDGES, **opts4).set_model(m4)
+    c2 = GaussianCovariance([A, B], K_EDGES, **opts2, smoothing=None).set_model(m2)
+    c4 = GaussianCovariance([A, B], K_EDGES, **opts4, smoothing=None).set_model(m4)
     for key in BLOCKS:
         x2 = c2.block(key[0], key[1], key[2], key[3])
         x4 = c4.block(key[0], key[1], key[2], key[3])
@@ -198,8 +198,8 @@ def test_split_sample_identity_weighted():
 
     opts = dict(ells=(0, 2), L_max=2, s_max=2 * R, ds=2.0, ds_pair=10.0, shot_noise=True,
                 n_sub=2500, n_near=30000, s_split=80.0, seed=0)
-    single = GaussianCovariance([T], K_EDGES, **opts).set_model(model)
-    multi = GaussianCovariance([A, B], K_EDGES, **opts).set_model(model)
+    single = GaussianCovariance([T], K_EDGES, **opts, smoothing=None).set_model(model)
+    multi = GaussianCovariance([A, B], K_EDGES, **opts, smoothing=None).set_model(model)
     spectra = [('A', 'A'), ('A', 'B'), ('B', 'A'), ('B', 'B')]
     for l1, l2 in [(0, 0), (2, 2), (0, 2)]:
         ref = single.block(('T', 'T'), ('T', 'T'), l1, l2)
@@ -234,7 +234,7 @@ def test_shot_noise_only_limit():
     k_edges = np.arange(0.0, 0.205, 0.02)
     cov = GaussianCovariance([A], k_edges, ells=(0, 2), L_max=0, ds=2.0, ds_pair=10.0,
                              shot_noise=True, n_sub=2500, n_near=80000, s_split=80.0,
-                             seed=1).set_model(model)
+                             seed=1, smoothing=None).set_model(model)
     S = (1 + alpha) / nbar
     Vi = (k_edges[1:] ** 3 - k_edges[:-1] ** 3) / 3.0 / (2 * np.pi ** 2)
     N_modes = L_box ** 3 * Vi

@@ -89,7 +89,7 @@ def run():
 
     # --- local-window container used by the NG terms (ssc_check) ---
     covl = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, n_sub=1500, n_near=8000, ds=2.0, ds_pair=10.0,
-                              s_split=80.0)
+                              s_split=80.0, smoothing=None)
     out['I_local'] = np.array(covl.I('T', 'T'))
     covl.set_normalization('T', 'T', norm)
     covl.set_model(model, masked=True)

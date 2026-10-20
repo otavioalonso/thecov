@@ -139,13 +139,13 @@ def _small_setup(rng):
 def test_window_save_load_round_trip(tmp_path):
     """Windows written to disk and read back must reproduce the covariance bit for bit."""
     A, model, opts, k_edges = _small_setup(np.random.default_rng(31))
-    cov1 = GaussianCovariance([A], k_edges, **opts).set_model(model)
+    cov1 = GaussianCovariance([A], k_edges, **opts, smoothing=None).set_model(model)
     cov1.compute_windows([('A', 'A')])
     ref = cov1.block(('A', 'A'), ('A', 'A'), 0, 2)
     path = tmp_path / "win.npz"
     cov1.save_windows(str(path))
 
-    cov2 = GaussianCovariance([A], k_edges, **opts).set_model(model)
+    cov2 = GaussianCovariance([A], k_edges, **opts, smoothing=None).set_model(model)
     cov2.load_windows(str(path))
     assert cov2.windows.missing() == [] or True     # nothing requested yet
     got = cov2.block(('A', 'A'), ('A', 'A'), 0, 2)
@@ -156,11 +156,11 @@ def test_window_save_load_round_trip(tmp_path):
 
 def test_window_save_load_rejects_wrong_s_grid(tmp_path):
     A, model, opts, k_edges = _small_setup(np.random.default_rng(32))
-    cov1 = GaussianCovariance([A], k_edges, **opts).set_model(model)
+    cov1 = GaussianCovariance([A], k_edges, **opts, smoothing=None).set_model(model)
     cov1.compute_windows([('A', 'A')])
     path = tmp_path / "win.npz"
     cov1.save_windows(str(path))
-    cov2 = GaussianCovariance([A], k_edges, **dict(opts, ds_pair=25.0)).set_model(model)
+    cov2 = GaussianCovariance([A], k_edges, **dict(opts, ds_pair=25.0), smoothing=None).set_model(model)
     with pytest.raises(ValueError):
         cov2.load_windows(str(path))
 

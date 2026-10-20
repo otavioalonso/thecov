@@ -81,7 +81,7 @@ def summary(cov, k_edges, ells):
 
 def run(tracer, model, k_edges, ells, **opts):
     cov = GaussianCovariance([tracer], k_edges, ells=ells, L_max=4, shot_noise=True, seed=0,
-                             **opts).set_model(model)
+                             **opts, smoothing=None).set_model(model)
     t0 = time.time()
     s = summary(cov, k_edges, ells)
     return s, time.time() - t0

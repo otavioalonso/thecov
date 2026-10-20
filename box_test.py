@@ -38,7 +38,7 @@ model.add(('A', 'A'), {0: (kk, np.full_like(kk, P0_flat))})     # P2 = P4 = 0
 ells = tuple(range(0, ellmax + 1, 2))
 t0 = time.time()
 cov = GaussianCovariance([tracer], k_edges, ells=ells, L_max=ellmax, ds=2.0, ds_pair=10.0,
-                         shot_noise=True, n_sub=5000, n_near=200000, s_split=80.0)
+                         shot_noise=True, n_sub=5000, n_near=200000, s_split=80.0, smoothing=None)
 cov.compute_windows([('A', 'A')])
 print(f"window functions: {time.time() - t0:.1f} s")
 cov.set_model(model)

@@ -20,6 +20,7 @@ import numpy as np
 
 from . import defaults as D
 from .kernels import PowerSpectrumModel, ShellKernels
+from .smoothing import WindowSmoothing
 from .tracers import Tracer, Window, spectrum_window_pairs
 from .wigner import CouplingCoefficients, tri, tri_multi, FOUR_PI
 from .windows import WindowLibrary
@@ -62,9 +63,15 @@ class GaussianCovariance:
     s_max     : maximum separation (default: bounding box of the randoms)
     ds        : step of the s grid used for the radial integrals (Mpc/h)
     shot_noise: include the shot-noise windows S^A
-    smoothing : optional WindowSmoothing (smoothing.py): pair-averaged clustering windows m_A (K_k * m_B) with a
-                xi-based kernel per k-bin instead of the local m_A m_B. Its reference densities and fiducial power
-                must be set; it is built (for the k bins and tracers here) by compute_windows.
+    smoothing : the clustering window (smoothing.py):
+                'auto' (default): pair-averaged windows m_A (K_k * m_B) with the xi-based kernel of each k-bin, built
+                    automatically: reference density = each tracer's own randoms, kernel shape = the model's P_0 at
+                    the bin centres (so call set_model before compute_windows). For DESI-like footprints pass a
+                    WindowSmoothing with denser reference randoms instead (the near part of the kernel is a sum
+                    over them);
+                a WindowSmoothing: the same, with its reference densities and fiducial power set by the caller;
+                None: the local window m_A m_B (exact for a box, 7-9 % low on footprints with fine veto masks).
+                The smoothing is built (for the k bins and tracers here) by compute_windows.
     Pair counts (see thecov/defaults.py): ds_pair, n_sub, n_near, s_split, min_pairs, seed, chunk_pairs, n_shells,
                 n_mu; backend 'auto' (jax if importable) / 'jax' / 'numpy' (same histogram); n_threads.
     """
@@ -72,7 +79,7 @@ class GaussianCovariance:
     def __init__(self, tracers, k_edges, ells=(0, 2, 4), L_max=4, s_max=None, ds=D.DS, ds_pair=D.DS_PAIR,
                  shot_noise=True, n_sub=D.N_SUB, n_near=D.N_NEAR, s_split=D.S_SPLIT, min_pairs=D.MIN_PAIRS,
                  seed=D.SEED, chunk_pairs=D.CHUNK_PAIRS, n_shells=D.N_SHELLS, n_mu=D.N_MU, backend='auto',
-                 n_threads=None, smoothing=None):
+                 n_threads=None, smoothing='auto'):
         self.tracers = {t.name: t for t in tracers}
         self.k_edges = np.asarray(k_edges, dtype=float)
         self.nbins = len(self.k_edges) - 1
@@ -89,7 +96,8 @@ class GaussianCovariance:
         self.kernels = ShellKernels(self.k_edges, self.s)
         self.model: PowerSpectrumModel | None = None
         self.masked = False
-        self.smoothing = smoothing
+        self.automatic_smoothing = isinstance(smoothing, str) and smoothing == 'auto'
+        self.smoothing = WindowSmoothing() if self.automatic_smoothing else smoothing
         self._I = {}
         self._requested = set()
 
@@ -192,9 +200,25 @@ class GaussianCovariance:
         """Build the smoothing (basis, coefficients, smoothed m at the randoms) for the spectra's pairs."""
         if self.smoothing is not None:
             todo = [p for p in (tuple(str(x) for x in sp) for sp in spectra) if not self.smoothing.has(*p)]
+            if todo and self.automatic_smoothing:
+                self._set_automatic_smoothing_inputs(todo)
             if todo:
                 self.smoothing.build(self.k_edges, self.tracers, todo, log=log)
         return self
+
+    def _set_automatic_smoothing_inputs(self, pairs):
+        """smoothing='auto': each tracer's randoms as its reference density, the model's P_0 as the kernel shape."""
+        for A, B in pairs:
+            for name in (A, B):
+                if not self.smoothing.has_density(name):
+                    T = self._tracer(name)
+                    self.smoothing.add_density(name, T.positions, T.weights, T.alpha)
+            if not self.smoothing.has_power(A, B):
+                if self.model is None or 0 not in self.model.multipoles(A, B):
+                    raise RuntimeError("smoothing='auto' takes the kernel shape from the model's P_0: call set_model "
+                                       "before compute_windows (or pass smoothing=None for the local window)")
+                centres = 0.5 * (self.k_edges[1:] + self.k_edges[:-1])
+                self.smoothing.set_power(A, B, centres, self.model(A, B, 0, centres))
 
     def compute_windows(self, spectra, verbose=False):
         """Pair counts for everything needed by `spectra` (a list of (A, B) tracer-name pairs)."""

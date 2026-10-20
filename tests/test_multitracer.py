@@ -61,8 +61,8 @@ def test_split_sample_identity():
     k_edges = np.arange(0.02, 0.13, 0.02)
     opts = dict(ells=(0, 2), L_max=2, s_max=2 * R, ds=2.0, ds_pair=10.0, shot_noise=True,
                 n_sub=2000, n_near=40000, s_split=80.0, seed=0)
-    single = GaussianCovariance([T], k_edges, **opts).set_model(model)
-    multi = GaussianCovariance([A, B], k_edges, **opts).set_model(model)
+    single = GaussianCovariance([T], k_edges, **opts, smoothing=None).set_model(model)
+    multi = GaussianCovariance([A, B], k_edges, **opts, smoothing=None).set_model(model)
     spectra = [('A', 'A'), ('A', 'B'), ('B', 'A'), ('B', 'B')]
     for l1 in (0, 2):
         for l2 in (0, 2):
@@ -113,7 +113,7 @@ def test_box_multitracer_ratios():
         model.add(pair, {L: (k, np.full_like(k, v)) for L, v in mult.items()})
     k_edges = np.arange(0.0, 0.205, 0.01)
     cov = GaussianCovariance(tracers, k_edges, ells=(0, 2), L_max=4, ds=2.0, ds_pair=10.0, shot_noise=True,
-                             n_sub=3000, n_near=100000, s_split=80.0, seed=1).set_model(model)
+                             n_sub=3000, n_near=100000, s_split=80.0, seed=1, smoothing=None).set_model(model)
     # shot noise (autos only) enters the periodic reference through the monopole
     ref_spectra = {pair: dict(m) for pair, m in spectra_L.items()}
     for name in ('A', 'B'):
@@ -212,7 +212,7 @@ def test_two_footprints_vs_bruteforce():
         model.add(pair, {0: (k, a * shape)})
     k_edges = np.arange(0.02, 0.13, 0.02)
     cov = GaussianCovariance([A, B], k_edges, ells=(0,), L_max=0, s_max=2 * RA, ds=2.0, ds_pair=10.0,
-                             shot_noise=True, n_sub=3000, n_near=200000, s_split=80.0, seed=2).set_model(model)
+                             shot_noise=True, n_sub=3000, n_near=200000, s_split=80.0, seed=2, smoothing=None).set_model(model)
 
     # analytic window transforms (real, isotropic)
     sph = lambda R: (lambda q: 4 * np.pi * R ** 3 * np.where(q > 0, spherical_jn(1, q * R) / np.where(q > 0, q * R, 1), 1 / 3))
@@ -263,7 +263,7 @@ def test_full_matrix_positive_definite():
     model.add(('A', 'B'), {L: (k, v) for L, v in kaiser_cross(P, 2.0, 1.2, 0.8).items()})
     k_edges = np.arange(0.02, 0.17, 0.02)
     cov = GaussianCovariance([A, B], k_edges, ells=(0, 2), L_max=4, s_max=2 * R, ds=2.0, ds_pair=10.0,
-                             n_sub=2500, n_near=20000, seed=4).set_model(model)
+                             n_sub=2500, n_near=20000, seed=4, smoothing=None).set_model(model)
     C, labels = cov.covariance([('A', 'A'), ('A', 'B'), ('B', 'B')])
     ev = np.linalg.eigvalsh(C)
     assert ev[0] > 0 and len(labels) == C.shape[0]

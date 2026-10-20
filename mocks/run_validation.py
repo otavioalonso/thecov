@@ -173,7 +173,7 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
     for pair, m in mult.items():
         model.add(pair, {L: (k, v) for L, v in m.items()})
     cov = GaussianCovariance(tracers, k_edges, ells=ells, L_max=4, ds=ds, ds_pair=ds_pair,
-                             shot_noise=True, n_sub=n_sub, n_near=n_near, s_split=80.0, seed=0)
+                             shot_noise=True, n_sub=n_sub, n_near=n_near, s_split=80.0, seed=0, smoothing=None)
     t0 = time.time()
     if windows_path is not None and os.path.exists(windows_path):
         cov.load_windows(windows_path)

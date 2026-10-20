@@ -85,7 +85,7 @@ def test_monopole_vs_bruteforce():
     model.add(('T', 'T'), {0: (k, P0)})
     k_edges = np.arange(0.02, 0.13, 0.02)
     cov = GaussianCovariance([tr], k_edges, ells=(0,), L_max=0, s_max=2 * R, ds=2.0, ds_pair=10.0,
-                             shot_noise=False, n_sub=3000)
+                             shot_noise=False, n_sub=3000, smoothing=None)
     cov.compute_windows([('T', 'T')]).set_model(model)
     C = cov.block(('T', 'T'), ('T', 'T'), 0, 0)
     Cb = bruteforce_monopole(R, k_edges, lambda kk: np.interp(kk, k, P0))
@@ -116,7 +116,7 @@ def test_far_sphere_multipole_ratios():
     model.add(('T', 'T'), {0: (k, P0), 2: (k, P2), 4: (k, P4)})
     k_edges = np.array([0.06, 0.08, 0.10])
     cov = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, s_max=2 * R, ds=2.0, ds_pair=10.0,
-                             shot_noise=False, n_sub=2500)
+                             shot_noise=False, n_sub=2500, smoothing=None)
     cov.compute_windows([('T', 'T')]).set_model(model)
     kc = 0.5 * (k_edges[:-1] + k_edges[1:])
     PL = {0: np.interp(kc, k, P0), 2: np.interp(kc, k, P2), 4: np.interp(kc, k, P4)}

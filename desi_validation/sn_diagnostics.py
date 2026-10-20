@@ -195,7 +195,7 @@ def main():
     norm = float(np.mean(res['hi/norm']))
     nb = len(k)
     cov = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, n_sub=cfg.n_sub_far, n_near=args.n_near,
-                             ds=2.0, ds_pair=10.0, s_split=80.0)
+                             ds=2.0, ds_pair=10.0, s_split=80.0, smoothing=None)
     cov.set_normalization(tr.name, tr.name, norm)
     mean = V.mean(0)
     kk = np.r_[0.0, k, k_edges[-1]]

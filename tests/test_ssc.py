@@ -47,7 +47,7 @@ def sphere_ssc():
     tr = Tracer('T', {'POSITION': pos, 'WEIGHT': np.ones(len(pos)), 'NZ': np.full(len(pos), nbar)}, nbar * V / len(pos))
     k, P = p_lin()
     cov = GaussianCovariance([tr], np.arange(0.02, 0.2001, 0.02), ells=(0, 2), L_max=2, n_sub=6000, n_near=30000,
-                             ds_pair=10.0)
+                             ds_pair=10.0, smoothing=None)
     model = PowerSpectrumModel()
     model.add(('T', 'T'), {0: (k, 4.0 * P), 2: (k, 1.0 * P)})
     cov.set_model(model)

@@ -119,7 +119,7 @@ def test_masked_model_equals_rescaled_model(small_cov_setup):
     tr, model, k, p, nbar, V = small_cov_setup
     k_edges = np.arange(0.04, 0.17, 0.04)
     kw = dict(ells=(0,), L_max=0, n_sub=1500, n_near=8000)
-    cov = GaussianCovariance([tr], k_edges, **kw)
+    cov = GaussianCovariance([tr], k_edges, **kw, smoothing=None)
     cov.compute_windows([('T', 'T')])
     norm = 0.9 * cov.I('T', 'T')
     cov.set_normalization('T', 'T', norm)
@@ -140,7 +140,7 @@ def test_smoothed_covariance_close_to_local_in_hole_free_window(small_cov_setup)
     sm.set_power('T', 'T', k, p)
     k_edges = np.arange(0.06, 0.17, 0.05)
     kw = dict(ells=(0,), L_max=0, n_sub=1500, n_near=8000)
-    c0 = GaussianCovariance([tr], k_edges, **kw).set_model(model)
+    c0 = GaussianCovariance([tr], k_edges, **kw, smoothing=None).set_model(model)
     c1 = GaussianCovariance([tr], k_edges, smoothing=sm, **kw).set_model(model)
     C0, _ = c0.covariance([('T', 'T')])
     C1, _ = c1.covariance([('T', 'T')])
@@ -148,3 +148,28 @@ def test_smoothed_covariance_close_to_local_in_hole_free_window(small_cov_setup)
     # no holes: only the edge layer (kernel width / R) differs; the smoothed window is slightly smaller
     assert np.all(d1 < d0 * 1.01) and np.all(d1 > d0 * 0.85)
     assert sm.n_basis('T', 'T') >= 1
+
+
+def test_automatic_smoothing_is_the_explicit_one(small_cov_setup):
+    """smoothing='auto' (the default) = a WindowSmoothing with the tracer's own randoms and the model's P_0 at the
+    bin centres, built by hand."""
+    tr, model, k, p, nbar, V = small_cov_setup
+    k_edges = np.arange(0.04, 0.17, 0.04)
+    kw = dict(ells=(0,), L_max=0, n_sub=1500, n_near=8000)
+    auto = GaussianCovariance([tr], k_edges, **kw).set_model(model)
+    auto.compute_windows([('T', 'T')])
+    sm = WindowSmoothing()
+    sm.add_density('T', tr.positions, tr.weights, tr.alpha)
+    centres = 0.5 * (k_edges[1:] + k_edges[:-1])
+    sm.set_power('T', 'T', centres, model('T', 'T', 0, centres))
+    explicit = GaussianCovariance([tr], k_edges, smoothing=sm, **kw).set_model(model)
+    explicit.compute_windows([('T', 'T')])
+    assert np.allclose(auto.I_k('T', 'T'), explicit.I_k('T', 'T'), rtol=1e-12)
+    assert np.allclose(auto.covariance([('T', 'T')])[0], explicit.covariance([('T', 'T')])[0], rtol=1e-12)
+
+
+def test_automatic_smoothing_needs_the_model_first(small_cov_setup):
+    tr, model, k, p, nbar, V = small_cov_setup
+    cov = GaussianCovariance([tr], np.arange(0.04, 0.17, 0.04), ells=(0,), L_max=0, n_sub=1500, n_near=8000)
+    with pytest.raises(RuntimeError, match='set_model'):
+        cov.compute_windows([('T', 'T')])
