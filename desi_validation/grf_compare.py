@@ -8,8 +8,8 @@ Reads the fields (fields_<bin>_<cap><tag>_task*.npz) and the thecov outputs of t
   fields/<l1l2>         diagonal of the fields' sample covariance block (00, 22, 02, ...);
   fields/00x22          diag(S00) diag(S22) (for the error of the cross-correlation coefficient);
   <mode>/<input>/<l1l2> the same diagonals of thecov's covariance (input: true or masked);
-  <mode>/<input>/chi2n  mean chi2/n of the fields under the full covariance (fields' own mean subtracted);
-  <mode>/<input>/wishart  Wishart deviance per dof, (tr(C^-1 S) - ln det(C^-1 S) - n) / n;
+  <mode>/<input>/<sub>_k<kmax>/{chi2n,wishart,n}  for sub in l0, l02, all and kmax 0.2, 0.3: mean chi2/n of the fields
+                        (own mean subtracted) and the Wishart deviance per dof (tr(C^-1 S) - ln det(C^-1 S) - n) / n;
   <mode>/I_k_over_norm, <mode>/I_local_over_norm.
 """
 from __future__ import annotations
@@ -39,7 +39,11 @@ def reduce_set(directory, b, r, tag):
         out[f'fields/{ells[a]}{ells[b_]}'] = blk(S, a, b_)
     if len(ells) > 1:
         out['fields/00x22'] = blk(S, 0, 0) * blk(S, 1, 1)
-    n = S.shape[0]
+    subsets = {'l0': (0,)}
+    if 2 in ells:
+        subsets['l02'] = (0, 2)
+    if len(ells) > 2:
+        subsets['all'] = ells
     for mode in MODES:
         fn = os.path.join(directory, f'thecov_{b}_{r}{tag}_{mode}.npz')
         if not os.path.exists(fn):
@@ -56,10 +60,17 @@ def reduce_set(directory, b, r, tag):
             assert C.shape == S.shape, (fn, C.shape, S.shape)
             for a, b_ in pairs:
                 out[f'{mode}/{inp}/{ells[a]}{ells[b_]}'] = blk(C, a, b_)
-            Ci = np.linalg.inv(C)
-            out[f'{mode}/{inp}/chi2n'] = np.array(np.einsum('mi,ij,mj->m', d, Ci, d).mean() / n)
-            M = Ci @ S
-            out[f'{mode}/{inp}/wishart'] = np.array((np.trace(M) - np.linalg.slogdet(M)[1] - n) / n)
+            for sub, sel_ells in subsets.items():
+                idx = np.concatenate([np.arange(nb) + ells.index(e) * nb for e in sel_ells])
+                for kmax in (0.2, 0.3):
+                    ii = idx[g['k'][idx % nb] <= kmax + 1e-9]
+                    Cs, Ss, ds_ = C[np.ix_(ii, ii)], S[np.ix_(ii, ii)], d[:, ii]
+                    Ci = np.linalg.inv(Cs)
+                    tag_ = f'{mode}/{inp}/{sub}_k{kmax}'
+                    out[tag_ + '/chi2n'] = np.array(np.einsum('mi,ij,mj->m', ds_, Ci, ds_).mean() / len(ii))
+                    M = Ci @ Ss
+                    out[tag_ + '/wishart'] = np.array((np.trace(M) - np.linalg.slogdet(M)[1] - len(ii)) / len(ii))
+                    out[tag_ + '/n'] = np.array(len(ii))
     return out
 
 
