@@ -4,7 +4,7 @@ Typical use
 -----------
     from thecov import Tracer, PowerSpectrum, GaussianCovariance
 
-    lrg = Tracer('LRG', randoms_lrg, alpha=alpha_lrg)          # randoms: {'POSITION', 'WEIGHT'[, 'NZ']}
+    lrg = Tracer('LRG', positions, weights, alpha)            # nbar='auto', window_weighting='nearest'
     power = PowerSpectrum({0: (k, P0), 2: (k, P2), 4: (k, P4)}, kedges=np.arange(0.0, 0.31, 0.01))
     # measured spectra: PowerSpectrum.from_estimator(files), window-convolved, with the estimator's norm and shot noise
 

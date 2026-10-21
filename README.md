@@ -59,8 +59,8 @@ the multipoles given are the L of the formula, and the ells of the data vector d
 import numpy as np
 from thecov import Tracer, PowerSpectrum, GaussianCovariance
 
-A = Tracer('A', randoms_A, alpha=alpha_A)
-B = Tracer('B', randoms_B, alpha=alpha_B)
+A = Tracer('A', positions_A, weights_A, alpha_A)     # nbar='auto', window_weighting='nearest'
+B = Tracer('B', positions_B, weights_B, alpha_B, nbar=nbar_B)   # nbar: array (N,) when known
 
 kedges = np.arange(0.01, 0.205, 0.01)
 power = {('A', 'A'): PowerSpectrum({0: (k, P0_AA), 2: (k, P2_AA), 4: (k, P4_AA)}, kedges=kedges),
@@ -77,6 +77,14 @@ cov.save_windows('windows.npz')         # ... and reusable:  cov.load_windows('w
 C, labels = cov.covariance(spectra)     # data vector ordered by spectrum, ell, k-bin
 blk = cov.block(('A','A'), ('A','B'), 0, 2)   # a single (nbins x nbins) block
 ```
+
+`Tracer(name, positions, weights, alpha, nbar='auto', window_weighting='nearest', k_nearest=32)`: the windows need the
+mean weighted density W = nbar <w> at each random. `nbar='auto'` takes alpha x the randoms' density from the
+angular-radial split (shell counts over the footprint solid angle, measured from the randoms on an equal-area sky grid;
+veto holes smaller than its ~30-random cells are counted as footprint: pass `nbar` when it is known). `window_weighting`
+chooses <w>: `'nearest'`, the mean weight of the k nearest randoms (needed when weights vary from object to object), or
+`'own'`, each random's own weight. The pair-averaged window is a separate switch, `GaussianCovariance(smoothing='auto' | None)`.
+The former `Tracer(name, {'POSITION', 'WEIGHT', 'NZ', 'NW'}, alpha)` still works (deprecated, same results).
 
 ### Using it with pypower / jaxpower
 
