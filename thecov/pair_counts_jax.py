@@ -6,7 +6,7 @@ numpy, which materialises several (block x n2 x 3) temporaries per chunk. Under 
 fuses into a single pass with no intermediates, and the same code runs on a GPU unchanged.
 
 Two entry points, matching the two ways pairs are produced, each wrapped in a binner with the same call
-signature as the numpy one in windows.py:
+signature as the numpy one in pair_counts.py:
 
     far_block   all pairs between a block of primaries and every secondary, selected by a mask
                 (jit needs static shapes, so out-of-range pairs are given zero weight rather than

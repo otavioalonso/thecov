@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from scipy.special import eval_legendre
 
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrum, GaussianCovariance
 
 
 # --------------------------------------------------------------------------- reference formulae
@@ -81,11 +81,10 @@ def box_covariance(boxsize=4000.0, nrandoms=400000, alpha=1.0, P0_flat=1e4, kmax
     tr = Tracer('A', randoms, alpha)
     k_edges = np.arange(0.0, kmax + dk / 2, dk)
     kk = np.linspace(0.0, 1.0, 50)
-    model = PowerSpectrumModel()
-    model.add(('A', 'A'), {0: (kk, np.full_like(kk, P0_flat))})
-    cov = GaussianCovariance([tr], k_edges, ells=ells, L_max=2, ds=2.0, ds_pair=10.0, shot_noise=True,
+    power = PowerSpectrum({0: (kk, np.full_like(kk, P0_flat))}, kedges=k_edges, ells=ells)
+    cov = GaussianCovariance([tr], power, ds=2.0, ds_pair=10.0, shot_noise=True,
                              n_sub=n_sub, n_near=n_near, s_split=80.0, seed=seed, smoothing=None)
-    cov.compute_windows([('A', 'A')]).set_model(model)
+    cov.compute_windows([('A', 'A')])
     blocks = {(l1, l2): cov.block(('A', 'A'), ('A', 'A'), l1, l2) for l1 in ells for l2 in ells}
     Ptot = P0_flat + (1 + alpha) / nbar
     PL = {0: np.full(len(k_edges) - 1, Ptot)}

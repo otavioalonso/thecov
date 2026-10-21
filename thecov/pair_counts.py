@@ -25,7 +25,7 @@ Sampling
 * s_split is snapped to a bin edge -- a bin straddling it would receive near pairs only below and far pairs only
   above while being normalised by its whole volume.
 
-Backends: 'numpy' (reference) or 'jax' (the same arithmetic fused under XLA, GPU-ready; _jax_backend.py); 'auto'
+Backends: 'numpy' (reference) or 'jax' (the same arithmetic fused under XLA, GPU-ready; pair_counts_jax.py); 'auto'
 prefers jax when it imports. Both provide the same two binners (far: a block of x against every x'; near: a list of
 pairs) and produce the same histogram.
 """
@@ -34,6 +34,7 @@ from __future__ import annotations
 import math
 import os
 import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -42,7 +43,10 @@ from scipy.spatial import cKDTree
 
 from . import cache, defaults as D
 from .harmonics import tripolar_coplanar
-from .tracers import Window
+from .tracers import Window, SHOT_NOISE
+
+# 2: shot-noise windows at unit scale (the estimator's shot noise is applied by the covariance)
+WINDOW_FILE_FORMAT = 2
 from .wigner import FOUR_PI
 
 S000 = FOUR_PI ** -1.5
@@ -53,7 +57,7 @@ def resolve_backend(name: str) -> str:
     if name == 'numpy':
         return 'numpy'
     try:
-        from . import _jax_backend  # noqa: F401
+        from . import pair_counts_jax  # noqa: F401
     except Exception:
         if name == 'jax':
             raise
@@ -161,8 +165,8 @@ def _numpy_near_binner(histogram, chunk):
 
 def _binners(backend):
     if backend == 'jax':
-        from . import _jax_backend
-        return _jax_backend.far_binner, _jax_backend.near_binner
+        from . import pair_counts_jax
+        return pair_counts_jax.far_binner, pair_counts_jax.near_binner
     return _numpy_far_binner, _numpy_near_binner
 
 
@@ -427,11 +431,19 @@ class WindowLibrary:
                 data[q_name] = np.asarray(Q)
                 meta.append({'key': [list(k) for k in key], 'trip': [int(x) for x in triple], 'q': q_name,
                              'npairs': npairs_name, 'q0': float(pw.Q0[triple]) if pw.Q0 is not None else 0.0})
-        cache.save(path, data, meta)
+        cache.save(path, data, {'format': WINDOW_FILE_FORMAT, 'windows': meta})
 
     def load(self, path):
         """Load pair-count results saved with save(); windows are matched by their names."""
         arrays, meta = cache.load(path)
+        if isinstance(meta, list):          # format 1: shot-noise windows were stored with the tracer's shot-noise scale
+            n_meta = len(meta)
+            meta = [rec for rec in meta if not any(k[0] == SHOT_NOISE for k in rec['key'])]
+            if len(meta) < n_meta:
+                warnings.warn(f"{path}: written before the shot-noise windows were stored at unit scale; their pair "
+                              "counts are dropped and will be recomputed (the clustering windows are kept)")
+        else:
+            meta = meta['windows']
         if len(arrays['s_edges']) != len(self.s_edges) or not np.allclose(arrays['s_edges'], self.s_edges):
             raise ValueError("s_edges of the stored windows differ from the current ones")
         Qs, Q0s, npairs = {}, {}, {}

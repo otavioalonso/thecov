@@ -6,16 +6,16 @@ REALISED shot noise (sum_g w^2 + alpha^2 sum_r w^2, as pypower / jaxpower do), i
 DISTINCT pairs: coincidences inside one P_hat are excluded (no sum w^4 / n^3 constant, no triple terms).
 What remains are coincidences between the two spectra:
 
-  one shared galaxy (4 ways)          (1/n) 2 [B(k1, k2, -k1-k2) + B(k1, -k2, k2-k1)],   window int S m^2,
+  one shared galaxy (4 ways)          (1/n) 2 [B(k1, k2, -k1-k2) + B(k1, -k2, k2-k1)],   window int S W^2,
   two shared galaxies (2 ways)        (1/n^2) [P(|k1 + k2|) + P(|k1 - k2|)],             window int S^2,
 
 with S = nbar <w^2> the data's own shot-noise density (randoms do not cluster with the data, so their
-coincidences do not contribute) and m = nbar <w>. In the narrow-window (local) approximation, with the local
+coincidences do not contribute) and W = nbar <w>. In the narrow-window (local) approximation, with the local
 line of sight n^ for both spectra,
 
   C^{disc}_{l1 l2}(k1, k2) = (2 l1 + 1)(2 l2 + 1) < L_l1(k1^.n^) L_l2(k2^.n^)
-        [ 2 J_Smm (B(k1, k2, -k1-k2) + B(k1, -k2, k2-k1)) + J_SS (P_s(k1+k2) + P_s(k1-k2)) ] >_{k1^, k2^, shells},
-  J_Smm = int S m^2 / norm^2,   J_SS = int S^2 / norm^2,
+        [ 2 J_SWW (B(k1, k2, -k1-k2) + B(k1, -k2, k2-k1)) + J_SS (P_s(k1+k2) + P_s(k1-k2)) ] >_{k1^, k2^, shells},
+  J_SWW = int S W^2 / norm^2,   J_SS = int S^2 / norm^2,
 
 which for a uniform window and unit weights is (1/V)[(2/n)(B + B) + (1/n^2)(P + P)] (Smith 2009; Meiksin &
 White 1999). B and P_s are tree-level redshift-space (SCF99 Z1, Z2; b1, b2, bs2, f) from P_lin; the angular
@@ -49,22 +49,22 @@ class DiscretenessCovariance:
         self.sigma_fog = float(sigma_fog)
 
     def window_integrals(self, A):
-        """(J_Smm, J_SS) = (int S m^2, int S^2) / norm^2 from the host randoms (S = data's nbar <w^2>)."""
+        """(J_SWW, J_SS) = (int S W^2, int S^2) / norm^2 from the host randoms (S = data's nbar <w^2>)."""
         T = self.cov._tracer(A)
-        a, w, m = T.alpha, np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
+        a, w, W = T.alpha, np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
         # sum_g w^2 g(x_g) = alpha sum_r scale w_r^2 g(x_r): the density S = nbar <w^2> sampled by the randoms
         # as alpha * scale * w_r^2 / (random density) -> int S g = alpha sum_r scale w_r^2 g(x_r) / ... with
-        # g = m^2: int S m^2 = alpha sum_r scale w_r^2 m_r^2 / ... (one random per random-density volume);
-        # for S^2 the second factor is the local value S(x_r) = scale w_r m_r (nbar <w^2> = m <w^2>/<w>).
-        sc = T.shotnoise_scale
+        # g = W^2: int S W^2 = alpha sum_r scale w_r^2 W_r^2 / ... (one random per random-density volume);
+        # for S^2 the second factor is the local value S(x_r) = scale w_r W_r (nbar <w^2> = W <w^2>/<w>).
+        sc = self.cov.shotnoise_scale(A)
         norm = self.cov.I(A, A)
         # int S g = alpha sum_r scale w_r^2 g(x_r) (the data's sum w^2 g, as for the shot-noise window);
-        # the local value S(x) = scale nbar <w^2> = scale m <w^2>/<w> (global weight ratio, so that per-object
+        # the local value S(x) = scale nbar <w^2> = scale W <w^2>/<w> (global weight ratio, so that per-object
         # weight scatter does not turn <w^2>^2 into <w^3><w>)
         r = np.sum(w ** 2) / np.sum(w)
-        J_Smm = a * np.sum(sc * w ** 2 * m ** 2) / norm ** 2
-        J_SS = a * np.sum(sc * w ** 2 * sc * r * m) / norm ** 2
-        return J_Smm, J_SS
+        J_SWW = a * np.sum(sc * w ** 2 * W ** 2) / norm ** 2
+        J_SS = a * np.sum(sc * w ** 2 * sc * r * W) / norm ** 2
+        return J_SWW, J_SS
 
     def _B(self, k1, k2):
         """tree-level redshift-space galaxy bispectrum B(k1, k2, -k1-k2); vectors (3, ...), n^ = z^"""
@@ -103,8 +103,8 @@ class DiscretenessCovariance:
         if len(spectra) != 1 or spectra[0][0] != spectra[0][1]:
             raise NotImplementedError('discreteness terms: auto-spectrum of one tracer')
         A = spectra[0][0]
-        J_Smm, J_SS = self.window_integrals(A)
-        kn, kw = shell_nodes(cov.k_edges, self.n_k)
+        J_SWW, J_SS = self.window_integrals(A)
+        kn, kw = shell_nodes(cov.kedges, self.n_k)
         nb = len(kn)
         xm, wm = np.polynomial.legendre.leggauss(self.n_mu)
         phi = 2 * np.pi * (np.arange(self.n_phi) + 0.5) / self.n_phi
@@ -121,7 +121,7 @@ class DiscretenessCovariance:
                 for a_, ka in zip(kw[i], kn[i]):
                     for b_, kb in zip(kw[j], kn[j]):
                         k1, k2 = ka * u1, kb * u2
-                        F = {'B': 2 * J_Smm * (self._B(k1, k2) + self._B(k1, -k2)),
+                        F = {'B': 2 * J_SWW * (self._B(k1, k2) + self._B(k1, -k2)),
                              'P': J_SS * (self._Ps(k1 + k2) + self._Ps(k1 - k2))}
                         for t in out:
                             for l1 in ells:

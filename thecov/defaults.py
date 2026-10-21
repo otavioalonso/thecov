@@ -1,6 +1,6 @@
 """Numerical defaults, in one place. Every class takes these as keyword defaults; change them per call, not here.
 
-Pair counts of the windows (windows.py, covariance.py, ssc.py)
+Pair counts of the windows (pair_counts.py, covariance.py, ssc.py)
     N_SUB        randoms per window for the far pairs (s >= S_SPLIT): all pairs, cost ~ N_SUB^2
     N_NEAR       randoms per window for the near pairs (s < S_SPLIT): KD-tree, cost ~ N_NEAR x density
     S_SPLIT      separation [Mpc/h] between the two regimes (snapped to a pair-count bin edge)
@@ -19,7 +19,7 @@ SSC (ssc.py): its own pair counts weight the Lambda = 4 window components more, 
 
 Kernel smoothing of the clustering window (smoothing.py)
     KERNEL_CELL, KERNEL_R_SPLIT, KERNEL_TAPER, KERNEL_R_MAX, KERNEL_DR, KERNEL_TOL, KERNEL_MAX_KERNELS,
-    KERNEL_DAMPING: see WindowSmoothing
+    KERNEL_DAMPING, KERNEL_K_MAX, KERNEL_LOW_SLOPE: see WindowSmoothing
 """
 N_SUB = 5000
 N_NEAR = 200_000
@@ -44,3 +44,5 @@ KERNEL_DR = 0.25
 KERNEL_TOL = 2e-3
 KERNEL_MAX_KERNELS = 48
 KERNEL_DAMPING = 1.0
+KERNEL_K_MAX = 5.0
+KERNEL_LOW_SLOPE = 1.0

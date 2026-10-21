@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 from scipy.special import spherical_jn, eval_legendre
 
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrum, GaussianCovariance
 from thecov.tracers import Window
-from thecov.windows import TripolarWindow
+from thecov.pair_counts import TripolarWindow
 from thecov.wigner import FOUR_PI
 
 
@@ -81,12 +81,10 @@ def test_monopole_vs_bruteforce():
     rnd, alpha = sphere_randoms(R, n, nbar=nbar)
     tr = Tracer('T', rnd, alpha)
     k, P0 = pk_model()
-    model = PowerSpectrumModel()
-    model.add(('T', 'T'), {0: (k, P0)})
     k_edges = np.arange(0.02, 0.13, 0.02)
-    cov = GaussianCovariance([tr], k_edges, ells=(0,), L_max=0, s_max=2 * R, ds=2.0, ds_pair=10.0,
+    cov = GaussianCovariance([tr], PowerSpectrum({0: (k, P0)}, kedges=k_edges), s_max=2 * R, ds=2.0, ds_pair=10.0,
                              shot_noise=False, n_sub=3000, smoothing=None)
-    cov.compute_windows([('T', 'T')]).set_model(model)
+    cov.compute_windows([('T', 'T')])
     C = cov.block(('T', 'T'), ('T', 'T'), 0, 0)
     Cb = bruteforce_monopole(R, k_edges, lambda kk: np.interp(kk, k, P0))
     d = np.diag(C) / np.diag(Cb) - 1
@@ -112,12 +110,11 @@ def test_far_sphere_multipole_ratios():
     # Kaiser multipoles
     P2 = P0 * (4 * beta / 3 + 4 * beta ** 2 / 7) / (1 + 2 * beta / 3 + beta ** 2 / 5)
     P4 = P0 * (8 * beta ** 2 / 35) / (1 + 2 * beta / 3 + beta ** 2 / 5)
-    model = PowerSpectrumModel()
-    model.add(('T', 'T'), {0: (k, P0), 2: (k, P2), 4: (k, P4)})
     k_edges = np.array([0.06, 0.08, 0.10])
-    cov = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, s_max=2 * R, ds=2.0, ds_pair=10.0,
-                             shot_noise=False, n_sub=2500, smoothing=None)
-    cov.compute_windows([('T', 'T')]).set_model(model)
+    power = PowerSpectrum({0: (k, P0), 2: (k, P2), 4: (k, P4)}, kedges=k_edges)
+    cov = GaussianCovariance([tr], power, s_max=2 * R, ds=2.0, ds_pair=10.0, shot_noise=False, n_sub=2500,
+                             smoothing=None)
+    cov.compute_windows([('T', 'T')])
     kc = 0.5 * (k_edges[:-1] + k_edges[1:])
     PL = {0: np.interp(kc, k, P0), 2: np.interp(kc, k, P2), 4: np.interp(kc, k, P4)}
     C = {(l1, l2): cov.block(('T', 'T'), ('T', 'T'), l1, l2) for l1 in (0, 2, 4) for l2 in (0, 2, 4)}

@@ -4,31 +4,31 @@ A tracer is described by its random catalogue: a dict with keys
     'POSITION' : (N, 3) comoving Cartesian coordinates with the observer at the origin,
     'WEIGHT'   : (N,)   total weight w(x) applied to the density field (FKP x completeness ...),
     'NZ'       : (N,)   optional, mean density nbar(x) at each random,
-    'NW'       : (N,)   optional, the mean WEIGHTED galaxy density m(x) = E[sum_g w_g delta_D(x - x_g)]
+    'NW'       : (N,)   optional, the mean WEIGHTED galaxy density W(x) = E[sum_g w_g delta_D(x - x_g)]
                         at each random, a smooth function of position;
 plus alpha = (weighted number of galaxies) / (weighted number of randoms), i.e. the weighted random
 catalogue samples the weighted galaxy density.
 
-Per-object weights. The clustering window is W^{AB}(x) = m_A(x) m_B(x). When the weight is a smooth
-function of position, m = nbar w and 'NZ' suffices. When it varies from object to object (survey
+Per-object weights. The clustering window is W^{AB}(x) = W_A(x) W_B(x). When the weight is a smooth
+function of position, W = nbar w and 'NZ' suffices. When it varies from object to object (survey
 completeness, imaging-systematics and redshift-failure weights, as in DESI, where each random also
 inherits the weight of a random data object), nbar(x_r) w_r evaluated with a random's OWN weight
 gives the auto window ~ <w^2> instead of <w>^2, too large by 1 + var(w)/<w>^2. Pass the smooth 'NW'
 then; the windows use it in place of NZ * WEIGHT, while every random still carries its own weight as
-a sampling weight (sum_r w_r f(x_r) ~ int m f / alpha) and in the shot-noise window.
-`shotnoise` sets the integral of the shot-noise window, int S = sum_g w_g^2 + alpha^2 sum_r w_r^2 as the estimator
-subtracts it (pypower / jaxpower `num_shotnoise`), when the random weights do not reproduce the distribution of the
-data weights; by default it is the randoms' own (1 + alpha) alpha sum_r w_r^2.
+a sampling weight (sum_r w_r f(x_r) ~ int W f / alpha) and in the shot-noise window.
+The shot-noise window has the randoms' own integral, int S = (1 + alpha) alpha sum_r w_r^2; when the estimator
+subtracted a different one (PowerSpectrum.shotnoise, pypower / jaxpower `num_shotnoise`), the covariance scales it
+(GaussianCovariance.shotnoise_scale).
 
-Cross windows W^{AB} are sampled by the randoms of A, with m_B taken from the nearest random of B and set to
+Cross windows W^{AB} are sampled by the randoms of A, with W_B taken from the nearest random of B and set to
 zero when that random is farther than `mask_factor` x the LOCAL spacing of B's randoms, so that B's footprint is
 respected. The footprint edge is therefore resolved to a few inter-random spacings: use dense random catalogues
 for cross windows, and check I_AB against an independent estimate (it is exposed as GaussianCovariance.I).
 
 Windows (eq. windows of the note), each sampled by the randoms of its host (the first tracer):
-    W^{AB}(x) = m_A m_B                  (clustering; or m_A (K_b * m_B) with kernel smoothing)
-    S^{A}(x)  = (1 + alpha_A) m_A w_A    (shot noise)
-    M^{A}(x)  = m_A                      (mean weighted density; used by the super-sample covariance)
+    W^{AB}(x) = W_A W_B                  (clustering; or W_A (K_b * W_B) with kernel smoothing)
+    S^{A}(x)  = (1 + alpha_A) W_A w_A    (shot noise)
+    M^{A}(x)  = W_A                      (mean weighted density; used by the super-sample covariance)
 """
 from __future__ import annotations
 
@@ -44,28 +44,25 @@ CLUSTERING, SHOT_NOISE, MEAN_DENSITY = 'W', 'S', 'M'      # window kinds (the le
 class Tracer:
     """A tracer's random catalogue with its weights, mean densities and footprint (see the module docstring).
 
-    Attributes: positions (N, 3), weights w (N,), alpha, nbar (N,), weighted_density m (N,) (= NW, or nbar w),
-    shotnoise_scale (S window scale giving the requested int S), random_spacing (local, for the footprint mask).
+    Attributes: positions (N, 3), weights w (N,), alpha, nbar (N,), weighted_density W (N,) (= NW, or nbar w),
+    random_spacing (local, for the footprint mask).
     `nbar` may be given (array or callable of positions) instead of 'NZ'; without NZ, NW or nbar it is estimated
     from a k-nearest-neighbour density of the randoms (`knn`).
     """
 
     def __init__(self, name: str, randoms: dict, alpha: float, nbar=None, knn: int = 64,
-                 mask_factor: float = 2.5, mask_knn: int = 8, shotnoise=None):
+                 mask_factor: float = 2.5, mask_knn: int = 8):
         self.name = str(name)
         self.positions = np.ascontiguousarray(randoms['POSITION'], dtype=float)
         if self.positions.ndim != 2 or self.positions.shape[1] != 3:
             raise ValueError("randoms['POSITION'] must have shape (N, 3)")
         self.weights = np.asarray(randoms['WEIGHT'], dtype=float)
         self.alpha = float(alpha)
-        # the S window is (1 + alpha) w^2 at the randoms, scaled to the requested int S
-        self.shotnoise_scale = 1.0 if shotnoise is None else float(shotnoise) / (
-            (1.0 + self.alpha) * self.alpha * float(np.sum(self.weights ** 2)))
         self._tree = None
         self._subsamples = {}
         nw = randoms.get('NW', None)
         self.nbar = self._mean_density(randoms.get('NZ', None) if nbar is None else nbar, nw, knn)
-        # m(x): the mean weighted galaxy density entering the clustering windows
+        # W(x): the mean weighted galaxy density entering the clustering windows
         self.has_weighted_density = nw is not None
         self.weighted_density = np.asarray(nw, dtype=float) if self.has_weighted_density else self.nbar * self.weights
         if self.weighted_density.shape != (self.size,):
@@ -105,7 +102,7 @@ class Tracer:
         The randoms must sample nbar / alpha: the pair counts use alpha and the randoms, the s = 0 anchor and cross
         windows use NZ, and an inconsistent (alpha, NZ) would mis-normalise them relative to each other. The k-NN
         density averages over a sphere of ~(k / n_ran)^(1/3) (~20 Mpc/h for DESI randoms), so it includes the veto
-        holes inside it while m is the density between them: for a footprint with fine veto masks the ratio is
+        holes inside it while W is the density between them: for a footprint with fine veto masks the ratio is
         ~1 / (unvetoed fraction at that scale), e.g. 1.2 for DESI LRG, without anything being wrong.
         """
         # a random subsample: catalogues are often sorted (by z or sky position), and the first randoms then sit at
@@ -114,7 +111,7 @@ class Tracer:
         sub = np.sort(rng.choice(self.size, size=min(self.size, 20000), replace=False))
         d, idx = self.tree.query(self.positions[sub], k=knn + 1)
         n_randoms = knn / (4.0 / 3.0 * np.pi * d[:, -1] ** 3)
-        if self.has_weighted_density:      # m / (n_ran <w>_k), <w>_k the mean weight of the neighbours
+        if self.has_weighted_density:      # W / (n_ran <w>_k), <w>_k the mean weight of the neighbours
             implied = np.median(self.weighted_density[sub] / (n_randoms * self.weights[idx[:, 1:]].mean(axis=1)))
         else:
             implied = np.median(self.nbar[sub] / n_randoms)
@@ -151,7 +148,7 @@ class Tracer:
         return self._subsamples[(n, seed)]
 
     def density_and_weight_at(self, positions: np.ndarray):
-        """(m(x), w(x)) at arbitrary positions: the smooth mean weighted density and the weight of the nearest random
+        """(W(x), w(x)) at arbitrary positions: the smooth mean weighted density and the weight of the nearest random
         (both zero outside the footprint)."""
         if positions is self.positions:
             return self.weighted_density, self.weights
@@ -175,7 +172,7 @@ class Window:
 
     kind CLUSTERING ('W', two tracers), SHOT_NOISE ('S') or MEAN_DENSITY ('M', one tracer); see the module docstring.
     With `smoothing` (a WindowSmoothing) and `basis` b, the clustering window is the pair-averaged
-    W_b^{AB}(x) = m_A(x) (K_b * m_B)(x) instead of m_A m_B (see smoothing.py); `coeffs_for` then gives the per-k-bin
+    W_b^{AB}(x) = W_A(x) (K_b * W_B)(x) instead of W_A W_B (see smoothing.py); `coeffs_for` then gives the per-k-bin
     coefficients c_ib of K_{k_i} = sum_b c_ib K_b.
     """
 
@@ -198,20 +195,20 @@ class Window:
     def __repr__(self):
         return "Window" + str(self.key)
 
-    def coeffs_for(self, k_edges):
+    def coeffs_for(self, kedges):
         """(nbins,) coefficients of this basis window in each k-bin (None for an unsmoothed window)."""
         if self.basis is None:
             return None
         A, B = self.tracers
-        return self.smoothing.coeffs(A.name, B.name, k_edges)[:, self.basis]
+        return self.smoothing.coeffs(A.name, B.name, kedges)[:, self.basis]
 
     def sampling_weights(self) -> np.ndarray:
         """The weight with which each host random samples omega, so that alpha sum_r (.) f(x_r) -> int omega f
         (cached on the host: a cross window needs a nearest-random lookup of the other tracer at every host random).
 
-            W^{AB}: w_r m_B(x_r)              (m_A at the random is carried by the sampling itself)
-            W_b^{AB}: w_r (K_b * m_B)(x_r)
-            S^A:    scale (1 + alpha) w_r^2   (each random with its OWN weight: the shot noise is <w^2>)
+            W^{AB}: w_r W_B(x_r)              (W_A at the random is carried by the sampling itself)
+            W_b^{AB}: w_r (K_b * W_B)(x_r)
+            S^A:    (1 + alpha) w_r^2         (each random with its OWN weight: the shot noise is <w^2>)
             M^A:    w_r
         """
         A = self.host
@@ -224,27 +221,27 @@ class Window:
             elif self.kind == MEAN_DENSITY:
                 cache[self.key] = np.asarray(A.weights, float).copy()
             else:
-                cache[self.key] = A.shotnoise_scale * (1.0 + A.alpha) * A.weights ** 2
+                cache[self.key] = (1.0 + A.alpha) * A.weights ** 2
         return cache[self.key]
 
     def values_at_randoms_of(self, T: Tracer) -> np.ndarray:
         """omega(x) at the randoms of T (nearest-random interpolation of the other tracers; cached on T).
 
-        For S the nearest random's weight stands in for w(x): (1 + alpha) m w, whose average is exact for a smooth
+        For S the nearest random's weight stands in for w(x): (1 + alpha) W w, whose average is exact for a smooth
         weight and ~<w>^2/<w^2> low with per-object weights; it only enters the s = 0 anchor of window pairs with S.
         """
         cache = T.__dict__.setdefault('_window_values', {})
         if self.key not in cache:
-            m_host, w_host = self.host.density_and_weight_at_randoms_of(T)
+            W_host, w_host = self.host.density_and_weight_at_randoms_of(T)
             if self.kind == CLUSTERING and self.basis is not None:
                 A, B = self.tracers
-                cache[self.key] = m_host * self.smoothing.values(A.name, B.name, self.basis, T.name)
+                cache[self.key] = W_host * self.smoothing.values(A.name, B.name, self.basis, T.name)
             elif self.kind == CLUSTERING:
-                cache[self.key] = m_host * self.tracers[1].density_and_weight_at_randoms_of(T)[0]
+                cache[self.key] = W_host * self.tracers[1].density_and_weight_at_randoms_of(T)[0]
             elif self.kind == MEAN_DENSITY:
-                cache[self.key] = m_host
+                cache[self.key] = W_host
             else:
-                cache[self.key] = self.host.shotnoise_scale * (1.0 + self.host.alpha) * m_host * w_host
+                cache[self.key] = (1.0 + self.host.alpha) * W_host * w_host
         return cache[self.key]
 
     def integral(self) -> float:
@@ -264,18 +261,18 @@ class Window:
 
 
 def spectrum_window_pairs(A: Tracer, B: Tracer, shot_noise: bool = True, smoothing=None):
-    """The set P^{AB} of (window, power) pairs of one correlator, eq. pairs of the note.
+    """The set P^{AB} of (window, spectrum) pairs of one correlator, eq. pairs of the note.
 
-    power labels: ('P', nameA, nameB) for the clustering multipoles and ('S', nameA) for shot noise (p_L = delta_L0).
+    spectrum labels: ('P', nameA, nameB) for the clustering multipoles and ('S', nameA) for shot noise (p_L = delta_L0).
     With a built `smoothing` for (A, B), the clustering window is replaced by its pair-averaged basis windows (each
     with its per-k-bin coefficients).
     """
-    power = ('P',) + tuple(sorted((A.name, B.name)))
+    spectrum = ('P',) + tuple(sorted((A.name, B.name)))
     if smoothing is not None and smoothing.has(A.name, B.name):
-        pairs = [(Window(CLUSTERING, A, B, smoothing=smoothing, basis=b), power)
+        pairs = [(Window(CLUSTERING, A, B, smoothing=smoothing, basis=b), spectrum)
                  for b in range(smoothing.n_basis(A.name, B.name))]
     else:
-        pairs = [(Window(CLUSTERING, A, B), power)]
+        pairs = [(Window(CLUSTERING, A, B), spectrum)]
     if shot_noise and A.name == B.name:
         pairs.append((Window(SHOT_NOISE, A), ('S', A.name)))
     return pairs

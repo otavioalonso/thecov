@@ -22,14 +22,14 @@ its own data. A long mode then gives, to first order,
 
     Delta P_hat_ell(k) = d_k sum_n R_ell^(n)(k) D^W_n  -  P_hat_ell(k) sum_n g_n (D^W_n + D^M_n),
 
-    D^w_n = int w(x) delta_n(x) d^3x / int w,     W = m_A m_B (pairs),  M = m_A (alpha's average),
+    D^w_n = int w(x) delta_n(x) d^3x / int w,     W = W_A W_B (pairs),  M = W_A (alpha's average),
     g_0 = b1 + f/3, g_2 = 2 f / 3  (the observed long mode (b1 + f nu^2) delta_L in Legendre components),
-    d_k = I_k / norm (the window's dilution of the measured spectrum; I_k = int m^2 without smoothing).
-The first term is BC (weighted by the clustering window); the second is LA: alpha absorbs the m-weighted
-mean density and the data in `norm` the m^2-weighted one (for a uniform window and an isotropic long
+    d_k = I_k / norm (the window's dilution of the measured spectrum; I_k = int W_A^2 without smoothing).
+The first term is BC (weighted by the clustering window); the second is LA: alpha absorbs the W-weighted
+mean density and the data in `norm` the W^2-weighted one (for a uniform window and an isotropic long
 mode: R - 2, the usual local-average effect). Set local_average=False for a normalisation fixed in
-advance. P_hat_ell is the measured (window-diluted) spectrum: the model itself when the covariance's
-model is masked, model x d_k otherwise.
+advance. P_hat_ell is the measured (window-diluted) spectrum: the covariance's power spectrum itself when it
+is window-convolved, the spectrum x d_k otherwise.
 
 Long-mode variances from thecov's window pair counts (exact for the local line of sight):
 
@@ -38,7 +38,7 @@ Long-mode variances from thecov's window pair counts (exact for the local line o
          int s^2 ds xi_lam(s) Q^{w w'}_{n n' lam}(s),
     xi_lam(s) = int q^2 dq / (2 pi^2) P_lin(q) j_lam(q s),
 
-with Q the tripolar window function of windows.py (S_{n n' lam}(x^, x'^, s^), s = x' - x). For n = n' = 0
+with Q the tripolar window function of pair_counts.py (S_{n n' lam}(x^, x'^, s^), s = x' - x). For n = n' = 0
 this is sigma_b^2 = int d^3s xi(s) Q_WW(s) / I^2. The covariance is
 
     C^SSC_{l1 l2}(i, j) = sum_{X, Y} c^X_{l1}(k_i) c^Y_{l2}(k_j) sigma^2_{XY},
@@ -46,19 +46,19 @@ this is sigma_b^2 = int d^3s xi(s) Q_WW(s) / I^2. The covariance is
 with c^{(W, n)}_l = d_k R_l^(n) - P_hat_l g_n and c^{(M, n)}_l = - P_hat_l g_n.
 
 Discreteness of the local average. alpha and norm are sums over galaxies, so they also fluctuate by
-Poisson noise, eps_N = eps_alpha + eps_D with weights u_alpha = w / int m and u_D = w m / int m^2 per galaxy.
+Poisson noise, eps_N = eps_alpha + eps_D with weights u_alpha = w / int W and u_D = w W / int W^2 per galaxy.
 With P_hat = P_raw (1 - eps_N), the covariance gains
     - P_hat_l2 T_l1 - P_hat_l1 T_l2 + P_hat_l1 P_hat_l2 Var_P(eps_N),
     Var_P(eps_N) = sum_g w^2 (u_alpha + u_D)^2 / w^2,
     T_l(k) = <P_raw_l eps_N> = 2 P_l^true(k) [J_alpha + J_D] / norm + B_c,l(k) [J3_alpha + J3_D] / norm,
-J_alpha = int nbar<w^2> m / int m, J_D = int nbar<w^2> m^2 / int m^2 (a galaxy counted in eps_N and in the
-pair), J3_alpha = int m^3 / int m, J3_D = int m^4 / int m^2 (the collapsed tree-level bispectrum
+J_alpha = int nbar<w^2> W / int W, J_D = int nbar<w^2> W^2 / int W^2 (a galaxy counted in eps_N and in the
+pair), J3_alpha = int W^3 / int W, J3_D = int W^4 / int W^2 (the collapsed tree-level bispectrum
 B_c = 2 Z2(k, -k) Z1^2 P_lin^2, Z2(k, -k) = b2/2 + bs2/3). For a uniform window, unit weights and alpha
 only this is WS20's -2/N, -2/N, +1/N (their eq. 44 discreteness terms); with jaxpower's norm, -8/N + 4/N.
-Galaxy sums use the randoms: sum_g w^2 g = alpha sum_r scale w_r^2 g (scale = Tracer.shotnoise_scale).
+Galaxy sums use the randoms: sum_g w^2 g = alpha sum_r scale w_r^2 g (scale = GaussianCovariance.shotnoise_scale).
 
 Scope: auto-spectra of one tracer (cross spectra need the responses of two tracers; not implemented).
-The local window m_A m_B is used for the long-mode shape (long modes do not resolve veto holes); its
+The local window W_A W_B is used for the long-mode shape (long modes do not resolve veto holes); its
 normalisation enters through d_k = I_k / norm, so with a pair-averaged window (WindowSmoothing) the
 amplitude is that of the smoothed window.
 """
@@ -72,7 +72,7 @@ from scipy.special import spherical_jn
 
 from . import defaults as D
 from .tracers import Window
-from .windows import WindowLibrary
+from .pair_counts import WindowLibrary
 from .wigner import wigner_3j, tri, FOUR_PI
 from .tree.responses import ELLS, response_coefficients, response_multipoles
 
@@ -83,15 +83,15 @@ class SuperSampleCovariance:
 
     Parameters
     ----------
-    cov    : GaussianCovariance (its windows, normalisation and model are used; set_model and, for
-             DESI-like spectra, set_normalization first)
+    cov    : GaussianCovariance (its windows, normalisation and power spectrum are used: set its power first, with
+             the estimator's norm for DESI-like spectra)
     p_lin  : (k, P) linear matter power spectrum at the effective redshift [(Mpc/h)^3], wide k range
              (e.g. 1e-4 - 10 h/Mpc)
     b1, f  : linear bias and growth rate; b2 (default 0) and bs2 (default -4/7 (b1 - 1), local
              Lagrangian) enter the responses
     local_average : include the LA term of a per-realisation alpha and norm (pypower / jaxpower)
     norm_kind : which averages of the long mode the realised normalisation contains: 'data-randoms'
-             (norm = alpha sum_c D_c R_c: alpha's m-weighted mean AND the data's m^2-weighted mean, the
+             (norm = alpha sum_c D_c R_c: alpha's W-weighted mean AND the data's W^2-weighted mean, the
              module docstring), 'randoms' (norm = alpha^2 sum_c R_c^2: alpha twice), 'alpha' (norm = alpha x a
              fixed randoms integral: alpha once). The net P_0 response changes sign between the first and the
              last for b1 ~ 2 (BC - 2 g_0 P vs BC - g_0 P); `local_average_statistics` gives the sigma(delta_norm)
@@ -107,11 +107,11 @@ class SuperSampleCovariance:
              this dressed power (e.g. thecov.tree.power.Dressed: IR-damped P_lin and fingers-of-God damping)
              instead of the tree-level a P_lin + c dP_lin/dlnk
     dilution: d_k = I_k / norm of the BC term, scalar or per k-bin (default cov.I_k / cov.I, i.e.
-             int m^2 / norm for a local window: for footprints with fine veto masks pass the
+             int W^2 / norm for a local window: for footprints with fine veto masks pass the
              pair-averaged value, e.g. WindowSmoothing.I_k / norm)
     """
 
-    # how many times the m-weighted (M, alpha) and m^2-weighted (W, the data in norm) means of the long mode enter
+    # how many times the W-weighted (M, alpha) and W^2-weighted (W, the data in norm) means of the long mode enter
     # ln norm: delta_norm = sum_n g_n (lam_W D^W_n + lam_M D^M_n) + eps_N
     NORM_KINDS = {'data-randoms': {'M': 1.0, 'W': 1.0},   # norm = alpha sum_c D_c R_c: alpha and the data realised
                   'randoms': {'M': 2.0, 'W': 0.0},        # norm = alpha^2 sum_c R_c^2: realised through alpha only, twice
@@ -215,8 +215,7 @@ class SuperSampleCovariance:
 
     # -- per-k-bin quantities
     def _bin_average(self, func):
-        K = self.cov.kernels
-        return np.sum(K.wq * func(K.kq), axis=1) / K.norm
+        return self.cov.hankel.bin_average(func)
 
     def _linear_power(self):
         spl = CubicSpline(np.log(self.k_lin), self.p_lin)
@@ -226,7 +225,7 @@ class SuperSampleCovariance:
         """{(ell, n): R_ell^(n) averaged over each k bin} (tree level, true-power units); with p_dressed, from the
         dressed (damped) power at each k node (response_multipoles)."""
         if self.p_dressed is not None:
-            K = self.cov.kernels
+            K = self.cov.hankel
             kq = np.asarray(K.kq, float)
             R = response_multipoles(kq.ravel(), self.p_dressed, self.b1, self.f, self.b2, self.bs2)
             return {key: np.sum(K.wq * v.reshape(kq.shape), axis=1) / K.norm for key, v in R.items()}
@@ -241,9 +240,11 @@ class SuperSampleCovariance:
         return np.asarray(self.cov.I_k(A, A), float) / self.cov.I(A, A)
 
     def _measured(self, A, l):
-        """P_hat_l per bin: the window-diluted spectrum the estimator measures (the masked model itself, or model x d_k)."""
-        p = self._bin_average(lambda k: self.cov.model(A, A, l, k))
-        return p if self.cov.masked else p * self._dilution(A)
+        """P_hat_l per bin: the window-diluted spectrum the estimator measures (the window-convolved spectrum itself,
+        or the spectrum x d_k)."""
+        power = self.cov.power_of(A, A)
+        p = power.binned(l, s=self.cov.s)
+        return p if power.window_convolved else p * self._dilution(A)
 
     def coefficients(self, A, ells):
         """{X: (len(ells) * nbins,) vector c^X} in the data-vector order (ell, bin):
@@ -264,13 +265,13 @@ class SuperSampleCovariance:
     def discreteness_integrals(self, A):
         """Var_P(eps_N) and (J_alpha + J_D, J3_alpha + J3_D) from the host randoms (see module docstring)."""
         T = self.cov._tracer(A)
-        a, w, m = T.alpha, np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
-        w2 = a * T.shotnoise_scale * w ** 2                    # sum_g w^2 g  ->  sum_r w2_r g(x_r)
-        I_M, I_W = a * np.sum(w), a * np.sum(w * m)
+        a, w, W = T.alpha, np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
+        w2 = a * self.cov.shotnoise_scale(A) * w ** 2                    # sum_g w^2 g  ->  sum_r w2_r g(x_r)
+        I_M, I_W = a * np.sum(w), a * np.sum(w * W)
         lM, lW = self.lam['M'], self.lam['W']
-        var = np.sum(w2 * (lM / I_M + lW * m / I_W) ** 2)
-        J = lM * np.sum(w2 * m) / I_M + lW * np.sum(w2 * m ** 2) / I_W
-        J3 = lM * a * np.sum(w * m ** 2) / I_M + lW * a * np.sum(w * m ** 3) / I_W
+        var = np.sum(w2 * (lM / I_M + lW * W / I_W) ** 2)
+        J = lM * np.sum(w2 * W) / I_M + lW * np.sum(w2 * W ** 2) / I_W
+        J3 = lM * a * np.sum(w * W ** 2) / I_M + lW * a * np.sum(w * W ** 3) / I_W
         return var, J, J3
 
     def _poisson_terms(self, A, ells):
@@ -296,8 +297,8 @@ class SuperSampleCovariance:
         """C^SSC for the data vector [P^{AA}_ell(k_i)] ordered by spectrum, ell, bin (as GaussianCovariance.covariance);
         returns (matrix, labels)."""
         cov = self.cov
-        if cov.model is None:
-            raise RuntimeError("set the covariance's model first (cov.set_model)")
+        if not cov.power:
+            raise RuntimeError("set the covariance's power spectrum first (cov.set_power)")
         ells = cov.ells if ells is None else tuple(ells)
         spectra = [tuple(str(x) for x in sp) for sp in spectra]
         if any(sp[0] != sp[1] for sp in spectra):

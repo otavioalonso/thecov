@@ -7,7 +7,7 @@ Same decomposition as Kobayashi (2023, PowerSpecCovFFT):
   T = T_2211 ("snake", P(k_a) P(k_b) P(|k_a + k_c|) Z1 Z1 Z2 Z2) + T_3111 ("star", P P P Z1 Z1 Z1 Z3),
 
 with the average over the line of sight n^ (local, both spectra) and over the orientations of k1^, k2^;
-J_4 = int m^4 / norm^2 (m = nbar w; = 1/V for a uniform window, Kobayashi's 1/V_eff = I44 / I22^2). The
+J_4 = int W^4 / norm^2 (W = nbar w; = 1/V for a uniform window, Kobayashi's 1/V_eff = I44 / I22^2). The
 kernels Z1, Z2, Z3 are the SCF99 redshift-space kernels of a biased tracer, built from the matter kernels
 F_n, G_n (standard recursion) and the galaxy density kernels in the Galileon basis
 
@@ -405,7 +405,7 @@ class TrispectrumCovariance:
     Parameters: cov (k bins, normalisation, tracers), p_lin = (k, P) linear matter power at z_eff, bias
     (a Bias, or b1 with the other Galileon parameters as keywords), f; quadrature n_mu, n_psi (line of
     sight; exact for n_mu >= 11, n_psi >= 21 up to l = 4), n_mid, n_end (mu12; relative error ~3e-7 at the
-    defaults), n_k (|k| nodes per bin); sigma_fog: Gaussian FoG damping of the external fields [Mpc/h]; J4: override of int m^4 / norm^2 (e.g. 1/V); n_workers: processes
+    defaults), n_k (|k| nodes per bin); sigma_fog: Gaussian FoG damping of the external fields [Mpc/h]; J4: override of int W^4 / norm^2 (e.g. 1/V); n_workers: processes
     (rows of the k x k matrix in parallel; ~0.12 s per pair of k nodes and process).
     """
 
@@ -423,15 +423,15 @@ class TrispectrumCovariance:
         self.k_collapse = None if k_collapse is None else float(k_collapse)
 
     def window_integral(self, A):
-        """J4 = int m^4 / norm^2 = alpha sum_r w_r m_r^3 / norm^2 (m = nbar w at the randoms)"""
+        """J4 = int W^4 / norm^2 = alpha sum_r w_r W_r^3 / norm^2 (W = nbar w at the randoms)"""
         if self._J4 is not None:
             return float(self._J4)
         T = self.cov._tracer(A)
-        w, m = np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
-        return T.alpha * float(np.sum(w * m ** 3)) / self.cov.I(A, A) ** 2
+        w, W = np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
+        return T.alpha * float(np.sum(w * W ** 3)) / self.cov.I(A, A) ** 2
 
     def _nodes(self):
-        return shell_nodes(self.cov.k_edges, self.n_k)
+        return shell_nodes(self.cov.kedges, self.n_k)
 
     def components(self, spectra, ells=None, verbose=False):
         """{'snake': C, 'star': C, 'star_b3': d C_star / d b3} for [P^{AA}_ell(k_i)] ordered by ell, bin (as
@@ -470,4 +470,4 @@ class TrispectrumCovariance:
         comps = self.components(spectra, ells=ells, verbose=verbose)
         ells = self.cov.ells if ells is None else tuple(ells)
         A = str(spectra[0][0])
-        return comps['snake'] + comps['star'], [(A, A, l, i) for l in ells for i in range(len(self.cov.k_edges) - 1)]
+        return comps['snake'] + comps['star'], [(A, A, l, i) for l in ells for i in range(self.cov.nbins)]

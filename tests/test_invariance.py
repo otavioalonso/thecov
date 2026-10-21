@@ -7,7 +7,7 @@ on inputs related by a transformation under which the answer is known not to cha
     1. w_A -> c w_A            : exact  (F^A and I_AB both scale, the estimator is invariant)
     2. randoms -> half, alpha -> 2 alpha : statistical (the randoms sample nbar/alpha)
     3. rigid rotation of every catalogue : exact (the covariance is a rotational scalar)
-    4. L_max padded with zero multipoles : exact (the extra L terms vanish identically)
+    4. L padded with zero multipoles     : exact (the extra L terms vanish identically)
 
 Note on determinism: the pair-count subsample is drawn from a seed that depends on the tracer NAME,
 so a transformed catalogue must keep the same name for the two runs to use the same random subset.
@@ -15,7 +15,7 @@ so a transformed catalogue must keep the same name for the two runs to use the s
 import numpy as np
 import pytest
 
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrum, GaussianCovariance
 
 
 # --------------------------------------------------------------------------- helpers
@@ -27,18 +27,15 @@ def sphere_randoms(rng, R, n, center=(0.0, 0.0, 1400.0)):
     return np.concatenate(pts)[:n] + np.asarray(center)
 
 
-def toy_model(names_and_amps):
+COV_OPTS = dict(ells=(0, 2), ds=2.0, ds_pair=10.0, n_sub=1200, n_near=15000, s_split=80.0, seed=0)
+K_EDGES = np.arange(0.02, 0.13, 0.02)
+
+
+def toy_model(names_and_amps, kedges=K_EDGES):
     k = np.linspace(0.0, 1.0, 200)
     shape = (k / 0.05 + 1e-3) / (1 + (k / 0.05) ** 2.2)
-    model = PowerSpectrumModel()
-    for pair, amps in names_and_amps.items():
-        model.add(pair, {L: (k, a * shape) for L, a in amps.items()})
-    return model
-
-
-COV_OPTS = dict(ells=(0, 2), L_max=2, ds=2.0, ds_pair=10.0, n_sub=1200, n_near=15000,
-                s_split=80.0, seed=0)
-K_EDGES = np.arange(0.02, 0.13, 0.02)
+    return {pair: PowerSpectrum({L: (k, a * shape) for L, a in amps.items()}, kedges=kedges)
+            for pair, amps in names_and_amps.items()}
 BLOCKS = [(('A', 'A'), ('A', 'A'), 0, 0), (('A', 'A'), ('A', 'A'), 2, 2),
           (('A', 'A'), ('A', 'B'), 0, 0), (('A', 'B'), ('A', 'B'), 2, 0)]
 
@@ -72,8 +69,8 @@ def test_weight_rescaling_invariance():
     c = 3.0
     A1, B1 = two_tracers(np.random.default_rng(21))
     A2, B2 = two_tracers(np.random.default_rng(21), wA=lambda p: np.full(len(p), c))
-    cov1 = GaussianCovariance([A1, B1], K_EDGES, **COV_OPTS, smoothing=None).set_model(MODEL)
-    cov2 = GaussianCovariance([A2, B2], K_EDGES, **COV_OPTS, smoothing=None).set_model(MODEL)
+    cov1 = GaussianCovariance([A1, B1], MODEL, **COV_OPTS, smoothing=None)
+    cov2 = GaussianCovariance([A2, B2], MODEL, **COV_OPTS, smoothing=None)
     b1, b2 = blocks_of(cov1), blocks_of(cov2)
     for key in BLOCKS:
         assert np.allclose(b1[key], b2[key], rtol=1e-10, atol=1e-12 * np.max(np.abs(b1[key]))), key
@@ -97,8 +94,8 @@ def test_random_density_rescaling():
     half = Tracer('A', {'POSITION': pos[idx], 'WEIGHT': np.ones(n // 2), 'NZ': np.full(n // 2, nA)},
                   nA * V / (n // 2))
     opts = dict(COV_OPTS, shot_noise=False, n_sub=1200, n_near=10000)
-    c1 = GaussianCovariance([full], K_EDGES, **opts, smoothing=None).set_model(MODEL)
-    c2 = GaussianCovariance([half], K_EDGES, **opts, smoothing=None).set_model(MODEL)
+    c1 = GaussianCovariance([full], MODEL, **opts, smoothing=None)
+    c2 = GaussianCovariance([half], MODEL, **opts, smoothing=None)
     assert np.isclose(c1.I('A', 'A'), c2.I('A', 'A'), rtol=0.02)
     for ell in (0, 2):
         d1 = np.diag(c1.block(('A', 'A'), ('A', 'A'), ell, ell))
@@ -124,8 +121,8 @@ def test_rotation_invariance():
     A1, B1 = two_tracers(np.random.default_rng(24))
     Rm = random_rotation(rng)
     rot = lambda t: Tracer(t.name, {'POSITION': t.positions @ Rm.T, 'WEIGHT': t.weights, 'NZ': t.nbar}, t.alpha)
-    cov1 = GaussianCovariance([A1, B1], K_EDGES, **COV_OPTS, smoothing=None).set_model(MODEL)
-    cov2 = GaussianCovariance([rot(A1), rot(B1)], K_EDGES, **COV_OPTS, smoothing=None).set_model(MODEL)
+    cov1 = GaussianCovariance([A1, B1], MODEL, **COV_OPTS, smoothing=None)
+    cov2 = GaussianCovariance([rot(A1), rot(B1)], MODEL, **COV_OPTS, smoothing=None)
     b1, b2 = blocks_of(cov1), blocks_of(cov2)
     for key in BLOCKS:
         d1, d2 = np.diag(b1[key]), np.diag(b2[key])
@@ -140,9 +137,9 @@ def test_rotation_invariance():
         assert np.max(np.abs(b1[key] - b2[key]) / scale) < 1e-5, (key, b2[key] / b1[key])
 
 
-# --------------------------------------------------------------------------- 4. L_max padding
+# --------------------------------------------------------------------------- 4. L padding
 def test_Lmax_padding_is_exact():
-    """Adding a vanishing P_4 and raising L_max must not change anything.
+    """Adding a vanishing P_4 must not change anything.
 
     The L = 4 terms enter with pbar = 0, so they contribute identically zero: this checks the
     selection-rule enumeration and the L sums for off-by-one or index-reuse errors.
@@ -150,18 +147,17 @@ def test_Lmax_padding_is_exact():
     A, B = two_tracers(np.random.default_rng(25))
     k = np.linspace(0.0, 1.0, 200)
     shape = (k / 0.05 + 1e-3) / (1 + (k / 0.05) ** 2.2)
-    m2, m4 = PowerSpectrumModel(), PowerSpectrumModel()
+    m2, m4 = {}, {}
     for pair, amps in {('A', 'A'): (2.0e4, 0.9e4), ('B', 'B'): (0.8e4, 0.3e4), ('A', 'B'): (1.2e4, 0.5e4)}.items():
         base = {0: (k, amps[0] * shape), 2: (k, amps[1] * shape)}
-        m2.add(pair, base)
-        m4.add(pair, {**base, 4: (k, np.zeros_like(k))})
-    # n_mu is chosen automatically from the multipoles actually requested, so raising L_max would
+        m2[pair] = PowerSpectrum(base, kedges=K_EDGES)
+        m4[pair] = PowerSpectrum({**base, 4: (k, np.zeros_like(k))}, kedges=K_EDGES)
+    # n_mu is chosen automatically from the multipoles actually requested, so adding L = 4 would
     # also raise the mu resolution and change the discretisation of every triple (at the ~1e-3
     # level on the off-diagonals). Pin it, so that this test isolates the L sums.
-    opts2 = dict(COV_OPTS, L_max=2, n_mu=72)
-    opts4 = dict(COV_OPTS, L_max=4, n_mu=72)
-    c2 = GaussianCovariance([A, B], K_EDGES, **opts2, smoothing=None).set_model(m2)
-    c4 = GaussianCovariance([A, B], K_EDGES, **opts4, smoothing=None).set_model(m4)
+    opts = dict(COV_OPTS, n_mu=72)
+    c2 = GaussianCovariance([A, B], m2, **opts, smoothing=None)
+    c4 = GaussianCovariance([A, B], m4, **opts, smoothing=None)
     for key in BLOCKS:
         x2 = c2.block(key[0], key[1], key[2], key[3])
         x4 = c4.block(key[0], key[1], key[2], key[3])
@@ -192,14 +188,12 @@ def test_split_sample_identity_weighted():
     k = np.linspace(0.0, 1.0, 200)
     shape = (k / 0.05 + 1e-3) / (1 + (k / 0.05) ** 2.2)
     mult = {0: (k, 2e4 * shape), 2: (k, 0.8e4 * shape)}
-    model = PowerSpectrumModel()
-    for pair in [('T', 'T'), ('A', 'A'), ('A', 'B'), ('B', 'B')]:
-        model.add(pair, mult)
+    power = PowerSpectrum(mult, kedges=K_EDGES)
 
-    opts = dict(ells=(0, 2), L_max=2, s_max=2 * R, ds=2.0, ds_pair=10.0, shot_noise=True,
-                n_sub=2500, n_near=30000, s_split=80.0, seed=0)
-    single = GaussianCovariance([T], K_EDGES, **opts, smoothing=None).set_model(model)
-    multi = GaussianCovariance([A, B], K_EDGES, **opts, smoothing=None).set_model(model)
+    opts = dict(s_max=2 * R, ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=2500, n_near=30000, s_split=80.0, seed=0)
+    single = GaussianCovariance([T], power, **opts, smoothing=None)
+    multi = GaussianCovariance([A, B], {pair: power for pair in [('A', 'A'), ('A', 'B'), ('B', 'B')]}, **opts,
+                               smoothing=None)
     spectra = [('A', 'A'), ('A', 'B'), ('B', 'A'), ('B', 'B')]
     for l1, l2 in [(0, 0), (2, 2), (0, 2)]:
         ref = single.block(('T', 'T'), ('T', 'T'), l1, l2)
@@ -229,12 +223,10 @@ def test_shot_noise_only_limit():
     pos[:, 0] += dist
     A = Tracer('A', {'POSITION': pos, 'WEIGHT': np.ones(N), 'NZ': np.full(N, nbar)}, alpha)
     k = np.linspace(0.0, 1.0, 20)
-    model = PowerSpectrumModel()
-    model.add(('A', 'A'), {0: (k, np.zeros_like(k))})
     k_edges = np.arange(0.0, 0.205, 0.02)
-    cov = GaussianCovariance([A], k_edges, ells=(0, 2), L_max=0, ds=2.0, ds_pair=10.0,
-                             shot_noise=True, n_sub=2500, n_near=80000, s_split=80.0,
-                             seed=1, smoothing=None).set_model(model)
+    power = PowerSpectrum({0: (k, np.zeros_like(k))}, kedges=k_edges, ells=(0, 2))
+    cov = GaussianCovariance([A], power, ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=2500, n_near=80000,
+                             s_split=80.0, seed=1, smoothing=None)
     S = (1 + alpha) / nbar
     Vi = (k_edges[1:] ** 3 - k_edges[:-1] ** 3) / 3.0 / (2 * np.pi ** 2)
     N_modes = L_box ** 3 * Vi

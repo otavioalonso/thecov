@@ -32,7 +32,7 @@ from thecov import Tracer
 from thecov.harmonics import unit_vectors
 from tests.reference import tripolar_direct
 from thecov.tracers import Window
-from thecov.windows import TripolarWindow
+from thecov.pair_counts import TripolarWindow
 from thecov.wigner import FOUR_PI
 
 R_SPHERE = 500.0

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from scipy.special import spherical_jn
 
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance, SuperSampleCovariance, response_coefficients
+from thecov import Tracer, PowerSpectrum, GaussianCovariance, SuperSampleCovariance, response_coefficients
 
 
 def test_real_space_responses():
@@ -46,11 +46,8 @@ def sphere_ssc():
     V = 4 / 3 * np.pi * R ** 3
     tr = Tracer('T', {'POSITION': pos, 'WEIGHT': np.ones(len(pos)), 'NZ': np.full(len(pos), nbar)}, nbar * V / len(pos))
     k, P = p_lin()
-    cov = GaussianCovariance([tr], np.arange(0.02, 0.2001, 0.02), ells=(0, 2), L_max=2, n_sub=6000, n_near=30000,
-                             ds_pair=10.0, smoothing=None)
-    model = PowerSpectrumModel()
-    model.add(('T', 'T'), {0: (k, 4.0 * P), 2: (k, 1.0 * P)})
-    cov.set_model(model)
+    power = PowerSpectrum({0: (k, 4.0 * P), 2: (k, 1.0 * P)}, kedges=np.arange(0.02, 0.2001, 0.02))
+    cov = GaussianCovariance([tr], power, n_sub=6000, n_near=30000, ds_pair=10.0, smoothing=None)
     ssc = SuperSampleCovariance(cov, (k, P), b1=2.0, f=0.0, n_near=30000)
     return ssc, R
 
@@ -67,7 +64,7 @@ def test_sigma2_uniform_sphere(sphere_ssc):
         assert np.isclose(sig[((X, 0), (X, 0))], s00, rtol=0.03)
         assert np.isclose(sig[((X, 2), (X, 2))], s00 / 5, rtol=0.05)
         assert abs(sig[((X, 0), (X, 2))]) < 0.02 * s00
-    assert np.isclose(sig[(('W', 0), ('M', 0))], s00, rtol=0.03)               # uniform: m^2 and m same shape
+    assert np.isclose(sig[(('W', 0), ('M', 0))], s00, rtol=0.03)               # uniform: W^2 and W same shape
 
 
 def test_ssc_assembly(sphere_ssc):
@@ -78,7 +75,7 @@ def test_ssc_assembly(sphere_ssc):
     sig = ssc.sigma2('T')[(('W', 0), ('W', 0))]
     resp = ssc.responses()[(0, 0)]
     cov = ssc.cov
-    P0 = ssc._bin_average(lambda kk: cov.model('T', 'T', 0, kk))       # unmasked model, d = I_k / I = 1
+    P0 = ssc._bin_average(cov.power_of('T', 'T').function(0))       # not window-convolved, d = I_k / I = 1
     v = resp - 2 * ssc.b1 * P0
     tr = cov._tracer('T')
     N = tr.alpha * len(tr.weights)                                             # galaxies (unit weights)
@@ -145,7 +142,7 @@ def test_local_average_statistics_and_norm_kinds(sphere_ssc):
     assert np.isclose(st['sigma_norm_clustering'] ** 2, 4 * b1 ** 2 * s00, rtol=0.05)        # D^W ~ D^M for a uniform sphere
     var_p, J, J3 = ssc.discreteness_integrals('T')
     assert np.isclose(st['sigma_norm'] ** 2, st['sigma_norm_clustering'] ** 2 + var_p, rtol=1e-8)
-    P0 = ssc._bin_average(lambda kk: cov.model('T', 'T', 0, kk))
+    P0 = ssc._bin_average(cov.power_of('T', 'T').function(0))
     resp = ssc.responses()[(0, 0)]
     from scipy.interpolate import CubicSpline
     kl, Pl = p_lin()

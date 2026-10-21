@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrum, GaussianCovariance
 
 
 # ----------------------------------------------------------------------------- synthetic survey
@@ -61,23 +61,21 @@ if __name__ == "__main__":
     k = np.geomspace(5e-4, 1.5, 600)
     P_lin = 2.5e4 * (k / 0.02) / (1 + (k / 0.02) ** 2.4)
     f = 0.8
-    model = PowerSpectrumModel()
-    model.add(('A', 'A'), kaiser_multipoles(k, P_lin, b=2.0, f=f))
-    model.add(('B', 'B'), kaiser_multipoles(k, P_lin, b=1.2, f=f))
-    model.add(('A', 'B'), kaiser_cross(k, P_lin, 2.0, 1.2, f))
+    power = {('A', 'A'): PowerSpectrum(kaiser_multipoles(k, P_lin, b=2.0, f=f)),
+             ('B', 'B'): PowerSpectrum(kaiser_multipoles(k, P_lin, b=1.2, f=f)),
+             ('A', 'B'): PowerSpectrum(kaiser_cross(k, P_lin, 2.0, 1.2, f))}
 
     # --- covariance setup
     k_edges = np.arange(0.01, 0.205, 0.01)      # 19 bins
-    cov = GaussianCovariance([A, B], k_edges, ells=(0, 2, 4), L_max=4,
-                             ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=2500, seed=0, smoothing=None)
+    cov = GaussianCovariance([A, B], k_edges, ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=2500, seed=0, smoothing=None)
     spectra = [('A', 'A'), ('A', 'B'), ('B', 'B')]
 
     t0 = time.time()
     cov.compute_windows(spectra, verbose=False)            # pair counts: geometry only
     print(f"window functions: {time.time() - t0:.1f} s")
-    cov.save_windows("windows_example.npz")                  # reusable for any model
+    cov.save_windows("windows_example.npz")                  # reusable for any power spectrum
 
-    cov.set_model(model)
+    cov.set_power(power)                                     # the spectra take the covariance's k bins
     t0 = time.time()
     C, labels = cov.covariance(spectra, verbose=False)
     print(f"covariance ({C.shape[0]}x{C.shape[0]}): {time.time() - t0:.1f} s")
@@ -90,7 +88,7 @@ if __name__ == "__main__":
     print("\nfractional errors sigma(P_ell)/P_ell at a few k for ('A','A'):")
     for l in (0, 2, 4):
         blk = idx[(('A', 'A'), l)]
-        Pl = model('A', 'A', l, kc)
+        Pl = power[('A', 'A')](kc, l)
         sig = diag[blk * nb:(blk + 1) * nb]
         print(f"  ell={l}: " + " ".join(f"{s / p:+.3f}" for s, p in zip(sig[::4], Pl[::4])))
     corr = C / np.outer(diag, diag)

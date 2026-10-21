@@ -46,7 +46,7 @@ import time
 
 import numpy as np
 
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrum, GaussianCovariance
 
 from .estimator import MultipoleEstimator, MultipoleFields, ShellBinner, cross_multipole, realised_alpha, shot_noise
 from .field import GaussianField
@@ -169,10 +169,8 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
         tracers.append(Tracer(t, rnd, alpha))
     k = np.linspace(0.0, 1.2 * k_edges[-1], 400)
     mult = model_multipoles(k, lambda kk: pk_lin(kk, amplitude), BIAS, stoch, GROWTH, cat.tracers)
-    model = PowerSpectrumModel()
-    for pair, m in mult.items():
-        model.add(pair, {L: (k, v) for L, v in m.items()})
-    cov = GaussianCovariance(tracers, k_edges, ells=ells, L_max=4, ds=ds, ds_pair=ds_pair,
+    power = {pair: PowerSpectrum({L: (k, v) for L, v in m.items()}) for pair, m in mult.items()}
+    cov = GaussianCovariance(tracers, k_edges, ells=ells, ds=ds, ds_pair=ds_pair,
                              shot_noise=True, n_sub=n_sub, n_near=n_near, s_split=80.0, seed=0, smoothing=None)
     t0 = time.time()
     if windows_path is not None and os.path.exists(windows_path):
@@ -185,7 +183,7 @@ def analytic_covariance(cat, k_edges, spectra, ells, amplitude, n_sub, n_near, d
             print(f"[thecov] window functions: {time.time() - t0:.1f} s")
         if windows_path is not None:
             _atomic(windows_path, lambda f: cov.save_windows(f))
-    cov.set_model(model)
+    cov.set_power(power)
     t0 = time.time()
     C, labels = cov.covariance(spectra, ells=ells)
     if verbose:

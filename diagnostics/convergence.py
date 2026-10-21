@@ -19,7 +19,7 @@ import time
 
 import numpy as np
 
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrum, GaussianCovariance
 
 REFERENCE = dict(ds=1.0, ds_pair=5.0, n_sub=8000, n_near=200000, s_split=80.0, min_pairs=20)
 SWEEPS = {
@@ -62,9 +62,7 @@ def make_tracer(footprint, seed=0):
 def make_model():
     k = np.linspace(0.0, 1.0, 400)
     P = 2e4 * (k / 0.05 + 1e-3) / (1 + (k / 0.05) ** 2.2)
-    model = PowerSpectrumModel()
-    model.add(('A', 'A'), {0: (k, P), 2: (k, 0.5 * P), 4: (k, 0.1 * P)})
-    return model
+    return PowerSpectrum({0: (k, P), 2: (k, 0.5 * P), 4: (k, 0.1 * P)})
 
 
 def summary(cov, k_edges, ells):
@@ -80,8 +78,8 @@ def summary(cov, k_edges, ells):
 
 
 def run(tracer, model, k_edges, ells, **opts):
-    cov = GaussianCovariance([tracer], k_edges, ells=ells, L_max=4, shot_noise=True, seed=0,
-                             **opts, smoothing=None).set_model(model)
+    cov = GaussianCovariance([tracer], k_edges, ells=ells, shot_noise=True, seed=0,
+                             **opts, smoothing=None).set_power(model)
     t0 = time.time()
     s = summary(cov, k_edges, ells)
     return s, time.time() - t0

@@ -129,7 +129,7 @@ def covariance_cached(tracer, spec, cfg: Config, path, n_near=None, log=print, s
 def kernel_smoothing(paths, tracer_bin, r, name, spec_r, cfg: Config, log=print):
     """thecov.WindowSmoothing for the tracer `name` of region r: reference density from
     cfg.kernel_random_files random files, kernel shape from the mocks' mean monopole."""
-    from thecov import WindowSmoothing
+    from thecov import WindowSmoothing, PowerSpectrum
     sm = WindowSmoothing(cell=cfg.kernel_cell, r_split=cfg.kernel_r_split, r_max=cfg.kernel_rmax, tol=cfg.kernel_tol,
                          max_basis=cfg.kernel_max_basis, max_kernels=cfg.kernel_max_kernels,
                          damping=cfg.kernel_damping)
@@ -140,7 +140,7 @@ def kernel_smoothing(paths, tracer_bin, r, name, spec_r, cfg: Config, log=print)
     log(f'  {r}: kernel reference density from {len(wK)} randoms ({cfg.kernel_random_files} files)')
     del rcK
     nb = len(spec_r['k'])
-    sm.set_power(name, name, spec_r['k'], spec_r['vectors'][:, :nb].mean(0))
+    sm.set_power(name, name, PowerSpectrum({0: (spec_r['k'], spec_r['vectors'][:, :nb].mean(0))}))
     return sm
 
 

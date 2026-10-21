@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from scipy.special import spherical_jn, eval_legendre
 
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrum, GaussianCovariance
 from tests.test_box import leakage_fractions
 
 
@@ -53,16 +53,13 @@ def test_split_sample_identity():
 
     k = np.linspace(0.0, 1.0, 200)
     P = 2e4 * (k / 0.05 + 1e-3) / (1 + (k / 0.05) ** 2.2)
-    mult = {L: (k, Pl) for L, Pl in kaiser(P, 1.8, 0.7).items()}
-    model = PowerSpectrumModel()
-    for pair in [('T', 'T'), ('A', 'A'), ('A', 'B'), ('B', 'B')]:
-        model.add(pair, mult)
-
+    mult = {L: (k, Pl) for L, Pl in kaiser(P, 1.8, 0.7).items() if L <= 2}
     k_edges = np.arange(0.02, 0.13, 0.02)
-    opts = dict(ells=(0, 2), L_max=2, s_max=2 * R, ds=2.0, ds_pair=10.0, shot_noise=True,
-                n_sub=2000, n_near=40000, s_split=80.0, seed=0)
-    single = GaussianCovariance([T], k_edges, **opts, smoothing=None).set_model(model)
-    multi = GaussianCovariance([A, B], k_edges, **opts, smoothing=None).set_model(model)
+    power = PowerSpectrum(mult, kedges=k_edges)
+    opts = dict(s_max=2 * R, ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=2000, n_near=40000, s_split=80.0, seed=0)
+    single = GaussianCovariance([T], power, **opts, smoothing=None)
+    multi = GaussianCovariance([A, B], {pair: power for pair in [('A', 'A'), ('A', 'B'), ('B', 'B')]}, **opts,
+                               smoothing=None)
     spectra = [('A', 'A'), ('A', 'B'), ('B', 'A'), ('B', 'B')]
     for l1 in (0, 2):
         for l2 in (0, 2):
@@ -108,12 +105,11 @@ def test_box_multitracer_ratios():
     Pflat = np.full_like(k, 1.5e4)
     bA, bB, f = 2.0, 1.2, 0.8
     spectra_L = {('A', 'A'): kaiser(1.5e4, bA, f), ('A', 'B'): kaiser_cross(1.5e4, bA, bB, f), ('B', 'B'): kaiser(1.5e4, bB, f)}
-    model = PowerSpectrumModel()
-    for pair, mult in spectra_L.items():
-        model.add(pair, {L: (k, np.full_like(k, v)) for L, v in mult.items()})
     k_edges = np.arange(0.0, 0.205, 0.01)
-    cov = GaussianCovariance(tracers, k_edges, ells=(0, 2), L_max=4, ds=2.0, ds_pair=10.0, shot_noise=True,
-                             n_sub=3000, n_near=100000, s_split=80.0, seed=1, smoothing=None).set_model(model)
+    power = {pair: PowerSpectrum({L: (k, np.full_like(k, v)) for L, v in mult.items()}, kedges=k_edges)
+             for pair, mult in spectra_L.items()}
+    cov = GaussianCovariance(tracers, power, ells=(0, 2), ds=2.0, ds_pair=10.0, shot_noise=True,
+                             n_sub=3000, n_near=100000, s_split=80.0, seed=1, smoothing=None)
     # shot noise (autos only) enters the periodic reference through the monopole
     ref_spectra = {pair: dict(m) for pair, m in spectra_L.items()}
     for name in ('A', 'B'):
@@ -207,12 +203,10 @@ def test_two_footprints_vs_bruteforce():
     k = np.linspace(0.0, 1.0, 300)
     shape = (k / 0.05 + 1e-3) / (1 + (k / 0.05) ** 2.2)
     amp = {('A', 'A'): 2.0e4, ('A', 'B'): 1.3e4, ('B', 'B'): 0.9e4}
-    model = PowerSpectrumModel()
-    for pair, a in amp.items():
-        model.add(pair, {0: (k, a * shape)})
     k_edges = np.arange(0.02, 0.13, 0.02)
-    cov = GaussianCovariance([A, B], k_edges, ells=(0,), L_max=0, s_max=2 * RA, ds=2.0, ds_pair=10.0,
-                             shot_noise=True, n_sub=3000, n_near=200000, s_split=80.0, seed=2, smoothing=None).set_model(model)
+    power = {pair: PowerSpectrum({0: (k, a * shape)}, kedges=k_edges) for pair, a in amp.items()}
+    cov = GaussianCovariance([A, B], power, s_max=2 * RA, ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=3000,
+                             n_near=200000, s_split=80.0, seed=2, smoothing=None)
 
     # analytic window transforms (real, isotropic)
     sph = lambda R: (lambda q: 4 * np.pi * R ** 3 * np.where(q > 0, spherical_jn(1, q * R) / np.where(q > 0, q * R, 1), 1 / 3))
@@ -257,13 +251,12 @@ def test_full_matrix_positive_definite():
     B = Tracer('B', make(20000, 6e-4), 6e-4 * V / 20000)
     k = np.linspace(0.0, 1.0, 200)
     P = 2e4 * (k / 0.05 + 1e-3) / (1 + (k / 0.05) ** 2.2)
-    model = PowerSpectrumModel()
-    model.add(('A', 'A'), {L: (k, v) for L, v in kaiser(P, 2.0, 0.8).items()})
-    model.add(('B', 'B'), {L: (k, v) for L, v in kaiser(P, 1.2, 0.8).items()})
-    model.add(('A', 'B'), {L: (k, v) for L, v in kaiser_cross(P, 2.0, 1.2, 0.8).items()})
     k_edges = np.arange(0.02, 0.17, 0.02)
-    cov = GaussianCovariance([A, B], k_edges, ells=(0, 2), L_max=4, s_max=2 * R, ds=2.0, ds_pair=10.0,
-                             n_sub=2500, n_near=20000, seed=4, smoothing=None).set_model(model)
+    spectrum = lambda mult: PowerSpectrum({L: (k, v) for L, v in mult.items()}, kedges=k_edges)
+    power = {('A', 'A'): spectrum(kaiser(P, 2.0, 0.8)), ('B', 'B'): spectrum(kaiser(P, 1.2, 0.8)),
+             ('A', 'B'): spectrum(kaiser_cross(P, 2.0, 1.2, 0.8))}
+    cov = GaussianCovariance([A, B], power, ells=(0, 2), s_max=2 * R, ds=2.0, ds_pair=10.0, n_sub=2500, n_near=20000,
+                             seed=4, smoothing=None)
     C, labels = cov.covariance([('A', 'A'), ('A', 'B'), ('B', 'B')])
     ev = np.linalg.eigvalsh(C)
     assert ev[0] > 0 and len(labels) == C.shape[0]

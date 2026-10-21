@@ -22,8 +22,8 @@ thecov/
   wigner.py      3j symbols, n-harmonic Gaunt tensors, CouplingCoefficients (t^(1), t^(2))
   harmonics.py   normalised Legendre / spherical-harmonic tables, tripolar S in the s-hat frame
   tracers.py     Tracer (randoms, nbar, alpha), Window (W^AB, S^A), spectrum_window_pairs (P^AB)
-  windows.py     TripolarWindow (pair counts -> Q), WindowLibrary (bookkeeping, symmetry, save/load)
-  kernels.py     PowerSpectrumModel (arbitrary k grids), ShellKernels (p̄)
+  pair_counts.py TripolarWindow (pair counts -> Q), WindowLibrary (bookkeeping, symmetry, save/load)
+  power.py       PowerSpectrum (multipoles, k bins, norm, shot noise), BinnedHankel (p̄)
   covariance.py  GaussianCovariance (selection rules, both Wick terms, blocks, full matrix)
 tests/           test suite (see below); `pytest -m "not slow"` skips the long validations
 example.py       two tracers on a synthetic footprint, full 171x171 covariance
@@ -47,29 +47,32 @@ Dependencies: numpy, scipy (sympy only for one optional test).
 plus `alpha` = (weighted galaxies)/(weighted randoms): the randoms sample n̄/α. It normalises the
 windows and enters the shot noise as (1+α).
 
-**Model multipoles** `P_L^{AB}(k)` on any k grid (cubic-spline interpolated; the grid must cover the
-covariance bins). Missing multipoles are zero; cross spectra are symmetric in the tracers.
+**Power spectrum**, one `PowerSpectrum` per pair of tracers: the multipoles `P_L^{AB}(k)` as arrays on any k
+grid (cubic-spline interpolated; the grid must cover the covariance bins) or callables, the k bins of the data
+vector (`kedges`), and, for measured spectra, `window_convolved=True` with the estimator's `norm` and shot noise
+(`PowerSpectrum.from_estimator` reads all of them from pypower / jaxpower output). Missing multipoles are zero;
+the multipoles given are the L of the formula, and the ells of the data vector default to them.
 
 ## Usage
 
 ```python
 import numpy as np
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrum, GaussianCovariance
 
 A = Tracer('A', randoms_A, alpha=alpha_A)
 B = Tracer('B', randoms_B, alpha=alpha_B)
 
-model = PowerSpectrumModel()
-model.add(('A', 'A'), {0: (k, P0_AA), 2: (k, P2_AA), 4: (k, P4_AA)})
-model.add(('A', 'B'), {0: (k, P0_AB), 2: (k, P2_AB), 4: (k, P4_AB)})
-model.add(('B', 'B'), {0: (k, P0_BB), 2: (k, P2_BB), 4: (k, P4_BB)})
+kedges = np.arange(0.01, 0.205, 0.01)
+power = {('A', 'A'): PowerSpectrum({0: (k, P0_AA), 2: (k, P2_AA), 4: (k, P4_AA)}, kedges=kedges),
+         ('A', 'B'): PowerSpectrum({0: (k, P0_AB), 2: (k, P2_AB), 4: (k, P4_AB)}, kedges=kedges),
+         ('B', 'B'): PowerSpectrum({0: (k, P0_BB), 2: (k, P2_BB), 4: (k, P4_BB)}, kedges=kedges)}
 
-cov = GaussianCovariance([A, B], k_edges=np.arange(0.01, 0.205, 0.01), ells=(0, 2, 4), L_max=4,
-                         ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=5000, n_near=200000, s_split=80.0)
+cov = GaussianCovariance([A, B], power, ds=2.0, ds_pair=10.0, shot_noise=True, n_sub=5000, n_near=200000,
+                         s_split=80.0)
 
 spectra = [('A', 'A'), ('A', 'B'), ('B', 'B')]
-cov.set_model(model)                    # cosmology — cheap, repeat at will (its P_0 also shapes the window kernel)
 cov.compute_windows(spectra)            # kernel smoothing + pair counts (geometry) — expensive, once per survey
+# cov.set_power(other_power)            # cosmology — cheap, repeat at will (same k bins)
 cov.save_windows('windows.npz')         # ... and reusable:  cov.load_windows('windows.npz')
 C, labels = cov.covariance(spectra)     # data vector ordered by spectrum, ell, k-bin
 blk = cov.block(('A','A'), ('A','B'), 0, 2)   # a single (nbins x nbins) block
@@ -84,9 +87,10 @@ value, so every self-pair is removed and no non-Gaussian 1/nbar^3 term arises). 
 
 * **Normalisation.** C scales as 1 / (I_AB I_CD). By default thecov uses I_AB = int nbar_A nbar_B
   w_A w_B from the randoms; pypower / jaxpower default to data x randoms painted on a 10 Mpc/h mesh,
-  which differs by a few per cent (2 % low for the mock survey, i.e. 4 % in the variance). Pass
-  the estimator's value: `cov.set_normalization('A', 'A', poles.wnorm)` (pypower) or the `norm` of
-  the jaxpower spectrum, before calling `covariance`.
+  which differs by a few per cent (2 % low for the mock survey, i.e. 4 % in the variance). Give
+  the estimator's value to the spectrum: `PowerSpectrum(..., norm=...)`, or `PowerSpectrum.from_estimator`.
+* **Shot noise.** The shot-noise window has the randoms' integral (1 + alpha) alpha sum_r w_r^2; with
+  `PowerSpectrum(..., shotnoise=num_shotnoise)` it is scaled to the value the estimator subtracted.
 * **Randoms and NZ.** The `Tracer` randoms, weights and `NZ` must be the ones given to the
   estimator, with `alpha` their expected data/randoms ratio.
 
@@ -102,37 +106,36 @@ x̂'→x̂ step in the second term and is ~1e-6 in the distant-observer limit).
 
 Parameters: `ds` — step of the s grid for the radial integrals (≲ π/2k_max); `ds_pair` — radial
 bin width of the pair counts (Q is smooth; 10 Mpc/h is fine); `n_sub`, `n_near`, `s_split` — see
-below; `s_max` — defaults to the bounding box of the randoms. The model k grid must cover the
+below; `s_max` — defaults to the bounding box of the randoms. The k grid of the spectra must cover the
 covariance bins (down to k = 0 if the first bin starts there).
 
-### Masked or unmasked model power, and pair-averaged windows (`thecov/smoothing.py`)
+### Window-convolved or true power spectrum, and pair-averaged windows (`thecov/smoothing.py`)
 
-`cov.set_model(model, masked=False)` uses the model multipoles as the power spectrum itself (e.g.
-theory). With `masked=True` the model is taken to be window-convolved and normalised like the
-estimator (e.g. the mean of mocks): its mean is `P(k) I_k / I`, so thecov multiplies it by
-`I / I_k` (`cov.mask_factor`). Set the estimator's normalisation (`set_normalization`) first.
+`PowerSpectrum(..., window_convolved=False)` is the power spectrum itself (e.g. theory). With
+`window_convolved=True` the multipoles are taken to be measured (e.g. the data or the mean of mocks),
+normalised by the spectrum's `norm`: their mean is `P(k) I_k / I`, so thecov multiplies them by
+`I / I_k` (`cov.mask_factor`).
 
-The clustering terms contain `m(x) m(x + r)` over a correlation length, which the local
-approximation (`smoothing=None`) replaces by `m(x)^2`. Near window structure smaller than a correlation length (veto
+The clustering terms contain `W_A(x) W_B(x + r)` (`W = nbar w`) over a correlation length, which the local
+approximation (`smoothing=None`) replaces by `W_A(x) W_B(x)`. Near window structure smaller than a correlation length (veto
 holes, footprint edges, completeness patches) this underestimates the Gaussian variance (by ~7% for
 DESI DR2 LRG1). `WindowSmoothing` replaces it by the pair-averaged window
-`W_k = m_A (K_k * m_B)`, `K_k(r) = xi(r) e^{ik.r} / P(k)` (isotropic: `xi_0 j_0(kr) / P_0`), per
-k-bin, with no free smoothing scale; then `I_k = int W_k` per bin. This is the default
-(`smoothing='auto'`): the reference density is each tracer's own randoms and the kernel shape the model's
-`P_0` at the bin centres, so `set_model` comes before `compute_windows`. With denser reference randoms
-(recommended for DESI footprints) build the smoothing explicitly:
+`W^{AB}_k = W_A (K_k * W_B)`, `K_k(r) = xi(r) e^{ik.r} / P(k)` (isotropic: `xi_0 j_0(kr) / P_0`), per
+k-bin, with no free smoothing scale; then `I_k = int W^{AB}_k` per bin. This is the default
+(`smoothing='auto'`): the reference density is each tracer's own randoms and the kernel shape the spectrum's
+`P_0` (continued as a power law beyond its arrays), so the power spectrum is set before `compute_windows`. With
+denser reference randoms (recommended for DESI footprints) pass a smoothing with them; anything not set takes the
+same defaults:
 
     sm = WindowSmoothing()                                  # cell, r_split, r_max, tol: numerical only
     sm.add_density('LRG', ref_pos, ref_w, ref_alpha)        # dense reference randoms (several files)
-    sm.set_power('LRG', 'LRG', k, P0)                       # fiducial shape (amplitude cancels)
-    cov = GaussianCovariance([lrg], k_edges, ..., smoothing=sm)
+    sm.set_power('LRG', 'LRG', fiducial)                    # optional: another PowerSpectrum for the kernel shape
+    cov = GaussianCovariance([lrg], power, ..., smoothing=sm)
     cov.compute_windows([('LRG', 'LRG')])
-    cov.set_normalization('LRG', 'LRG', norm)
-    cov.set_model(model, masked=True)
 
 The per-bin kernels are expanded on a small basis (typically 5-10 kernels for 1e-3 accuracy on
 `I_k`), so the windows are pair counts of basis pairs, all in one pass; other binnings reuse them
-(coefficients projected on the basis). `(K_b * m)` is evaluated at the randoms by direct neighbour
+(coefficients projected on the basis). `(K_b * W)` is evaluated at the randoms by direct neighbour
 sums below `r_split` (the kernel is steep there) and an FFT above. Tests: `tests/test_smoothing.py`.
 
 ## Accuracy and cost
@@ -150,10 +153,10 @@ sums below `r_split` (the kernel is steep there) and an FFT above. Tests: `tests
   shell), and a GPU kernel would need nothing more.
 * `n_mu` must resolve oscillations of order max(Lam1, Lam2) in mu -- up to 12 for ells and L up to
   4 -- and defaults to 6x that. A fixed small value silently biases the high multipoles. Because it
-  adapts to the multipoles actually requested, raising L_max changes the mu resolution and hence the
+  adapts to the multipoles actually requested, adding multipoles L changes the mu resolution and hence the
   discretisation of every triple; the effect is ~1e-3 on the off-diagonals, which is the size of the
   residual discretisation error. Pass an explicit `n_mu` when comparing two runs that differ in
-  L_max or ells.
+  the multipoles L or ells.
 * **Backends.** `backend='auto'` (default) uses JAX if it imports, else numpy; `'jax'` and
   `'numpy'` force the choice. Only the counting step differs, and the two agree bitwise, so they can
   be compared directly. On CPU the JAX path runs the all-pairs kernel about 5x faster
@@ -283,13 +286,13 @@ expectation overlaid (`box_test_d0.png`).
   reference calculation is needed: w_A -> c w_A (exact); halving the randoms while doubling alpha
   (statistical — this is the alpha/NZ consistency that Tracer only warns about); a rigid rotation of
   every catalogue (exact, and the only end-to-end test of the tripolar machinery as a rotational
-  scalar); padding L_max with a vanishing P_4 (exact). Plus the split-sample identity repeated with
+  scalar); padding the multipoles with a vanishing P_4 (exact). Plus the split-sample identity repeated with
   spatially varying weights — the only test with non-uniform w(x) — and the P = 0 limit, where the
   answer is pure Poisson noise and the S-S window family is isolated.
-* `test_units.py` — pieces previously exercised only indirectly: `ShellKernels.average` against
+* `test_units.py` — pieces previously exercised only indirectly: `BinnedHankel.transform` against
   adaptive quadrature (including s = 0, the shot-noise branch and the automatic node count), the
-  `PowerSpectrumModel` contract (symmetry, missing multipoles, out-of-range k), and a save/load
-  round trip for the windows.
+  `PowerSpectrum` contract (missing multipoles, out-of-range k, binned values, attributes kept by copies),
+  and a save/load round trip for the windows.
 * `test_tripolar_window.py` (marked `slow`) — the anisotropic components of Q against direct 2D
   quadrature for a uniform sphere **centred on the observer**, where the line of sight sweeps the
   whole sky. Until now only Q_000 and Q_002 had ever been checked against anything. It also verifies

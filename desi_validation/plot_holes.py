@@ -20,7 +20,8 @@ from scipy.spatial import cKDTree
 sys.path.insert(0, os.environ.get('THECOV_DIR', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from desi_validation import desi_compare as dc  # noqa: E402
 from desi_validation.run_gaussian_footprint import setup  # noqa: E402
-from thecov.smoothing import extend_power, xi0_from_power, bin_kernels  # noqa: E402
+from thecov import PowerSpectrum  # noqa: E402
+from thecov.smoothing import xi0_from_power, bin_kernels  # noqa: E402
 
 
 def main():
@@ -43,8 +44,7 @@ def main():
     s = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=cfg.rebin, ells=cfg.ells)
     k, edges, nb = s['k'], np.asarray(s['k_edges']), len(s['k'])
     rr = np.concatenate([np.linspace(0.01, 1, 100), np.linspace(1.02, args.rmax, 1500)])
-    kk, pk = extend_power(k, s['vectors'][:, :nb].mean(0))
-    K = bin_kernels(edges, rr, xi0_from_power(kk, pk, rr))
+    K = bin_kernels(edges, rr, xi0_from_power(PowerSpectrum({0: (k, s['vectors'][:, :nb].mean(0))}), rr))
     sel = {'first': 0, 'middle': nb // 2, 'last': nb - 1}
 
     rc = dc.load_region(paths, b, r, n_random_files=args.random_files)

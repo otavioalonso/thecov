@@ -739,7 +739,8 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
     shotnoise_target : if given, the integral of S instead (use the spectra's mean `num_shotnoise`:
                 the catalogue value depends on how many random files are loaded here, through
                 alpha^2 sum_r w^2 ~ alpha sum_d w^2, while the spectra used their own number).
-    Returns (tracer, info).
+    Returns (tracer, info); tracer.shotnoise holds the chosen int S (for PowerSpectrum(shotnoise=...)), which
+    thecov_covariance uses.
     """
     from thecov import Tracer
     rng = np.random.default_rng(seed)
@@ -785,7 +786,8 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
     scale = sn_real / sn_rand if shotnoise == 'realised' else 1.0
     if shotnoise_target is not None:
         scale = float(shotnoise_target) / sn_rand
-    tr = Tracer(name, randoms, alpha, shotnoise=scale * sn_rand)
+    tr = Tracer(name, randoms, alpha)
+    tr.shotnoise = scale * sn_rand        # the estimator's int S for this catalogue: give it to the PowerSpectrum
     info.update(alpha=alpha, shotnoise_scale=scale, shotnoise_numerator=sn_real, keep_frac=keep_frac,
                 nw=nw, n_randoms=len(w))
     if verbose:
@@ -843,20 +845,21 @@ def model_from_mocks(spec, scale=1.0):
 
 
 def thecov_covariance(tracer, spec, n_sub=20000, n_near=1_000_000, ds=2.0, ds_pair=10.0, s_split=80.0,
-                      L_max=4, norm=None, windows_file=None, verbose=True, model_norm_correction=True,
+                      norm=None, shotnoise=None, windows_file=None, verbose=True, model_norm_correction=True,
                       power_input=None, smoothing=None, **kwargs):
     """thecov's matrix for the data vector of `spec` (same k bins and ells), normalised by the
-    estimator's `norm` (default: the mean over the mocks). The model is the mocks' mean.
+    estimator's `norm` (default: the mean over the mocks). The model is the mocks' mean. shotnoise: the estimator's
+    int S (default: tracer.shotnoise, set by build_tracer).
 
     power_input: 'masked' -- the model is window-convolved (the mocks' mean): thecov multiplies it by
                  norm / I_k, with I_k = int m^2 or, with `smoothing` (thecov.WindowSmoothing), the
                  pair-averaged int m (K_k * m) per k-bin; 'unmasked' -- used as is (e.g. theory).
                  Default from model_norm_correction (True -> 'masked').
     Returns (C, cov); cov.I_randoms = int m^2 (local) and cov.I_k_bins the per-bin window integrals."""
-    from thecov import GaussianCovariance, PowerSpectrumModel
+    from thecov import GaussianCovariance, PowerSpectrum
     power_input = power_input or ('masked' if model_norm_correction else 'unmasked')
     name = tracer.name
-    cov = GaussianCovariance([tracer], spec['k_edges'], ells=spec['ells'], L_max=L_max, ds=ds, ds_pair=ds_pair,
+    cov = GaussianCovariance([tracer], spec['k_edges'], ells=spec['ells'], ds=ds, ds_pair=ds_pair,
                              shot_noise=True, n_sub=n_sub, n_near=n_near, s_split=s_split, smoothing=smoothing, **kwargs)
     sp = [(name, name)]
     if windows_file and os.path.exists(windows_file):
@@ -869,10 +872,9 @@ def thecov_covariance(tracer, spec, n_sub=20000, n_near=1_000_000, ds=2.0, ds_pa
             cov.save_windows(windows_file)
     norm = float(np.mean(spec['norm'])) if norm is None else float(norm)
     I_local = cov.I_local(name, name)
-    cov.set_normalization(name, name, norm)
-    model = PowerSpectrumModel()
-    model.add((name, name), model_from_mocks(spec))
-    cov.set_model(model, masked=(power_input == 'masked'))
+    shotnoise = getattr(tracer, 'shotnoise', None) if shotnoise is None else shotnoise
+    cov.set_power(PowerSpectrum(model_from_mocks(spec), kedges=spec['k_edges'], window_convolved=(power_input == 'masked'),
+                                norm=norm, shotnoise=shotnoise))
     C, _ = cov.covariance(sp, ells=spec['ells'])
     cov.I_randoms = I_local
     cov.I_k_bins = cov.I_k(name, name)

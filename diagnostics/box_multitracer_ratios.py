@@ -19,7 +19,7 @@ import time
 
 import numpy as np
 
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance
+from thecov import Tracer, PowerSpectrum, GaussianCovariance
 from tests.test_box import leakage_fractions
 from tests.test_multitracer import kaiser, kaiser_cross, box_multitracer_analytic
 
@@ -40,14 +40,12 @@ k = np.linspace(0.0, 1.0, 20)
 bA, bB, f = 2.0, 1.2, 0.8
 spectra_L = {('A', 'A'): kaiser(1.5e4, bA, f), ('A', 'B'): kaiser_cross(1.5e4, bA, bB, f),
              ('B', 'B'): kaiser(1.5e4, bB, f)}
-model = PowerSpectrumModel()
-for pair, mult in spectra_L.items():
-    model.add(pair, {L: (k, np.full_like(k, v)) for L, v in mult.items()})
+power = {pair: PowerSpectrum({L: (k, np.full_like(k, v)) for L, v in mult.items()}) for pair, mult in spectra_L.items()}
 
 k_edges = np.arange(0.0, 0.205, 0.01)
 t0 = time.time()
-cov = GaussianCovariance(tracers, k_edges, ells=(0, 2), L_max=4, ds=2.0, ds_pair=10.0, shot_noise=True,
-                         n_sub=n_sub, n_near=100000, s_split=80.0, seed=1, smoothing=None).set_model(model)
+cov = GaussianCovariance(tracers, k_edges, ells=(0, 2), ds=2.0, ds_pair=10.0, shot_noise=True,
+                         n_sub=n_sub, n_near=100000, s_split=80.0, seed=1, smoothing=None).set_power(power)
 ref = {pair: dict(m) for pair, m in spectra_L.items()}
 for name in ('A', 'B'):
     ref[(name, name)][0] += (1 + alpha[name]) / nb[name]

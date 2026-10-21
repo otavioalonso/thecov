@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(HERE, '..', '..'))
 sys.path.insert(0, HERE)
 
 from standard_run import survey, p_lin  # noqa: E402
-from thecov import Tracer, PowerSpectrumModel, GaussianCovariance, WindowSmoothing  # noqa: E402
+from thecov import Tracer, PowerSpectrum, GaussianCovariance, WindowSmoothing  # noqa: E402
 
 
 def main(repeat=3):
@@ -27,23 +27,22 @@ def main(repeat=3):
     kl, Pl = p_lin()
     k_edges = np.arange(0.02, 0.1601, 0.02)
     kc = 0.5 * (k_edges[1:] + k_edges[:-1])
-    model = PowerSpectrumModel()
-    model.add(('T', 'T'), {0: (kl, 4.7 * Pl), 2: (kl, 2.3 * Pl), 4: (kl, 0.1 * Pl)})
+    power = PowerSpectrum({0: (kl, 4.7 * Pl), 2: (kl, 2.3 * Pl), 4: (kl, 0.1 * Pl)}, kedges=k_edges,
+                          window_convolved=True)
     out = {}
     t = time.perf_counter()
     sm = WindowSmoothing(cell=6.0, r_max=100.0, tol=5e-3)
     sm.add_density('T', ref, wfun(ref), alpha * len(pos) / len(ref))
-    sm.set_power('T', 'T', kc, np.interp(kc, kl, 6 * Pl))
-    cov = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, n_sub=1500, n_near=8000, smoothing=sm)
+    sm.set_power('T', 'T', PowerSpectrum({0: (kc, np.interp(kc, kl, 6 * Pl))}))
+    cov = GaussianCovariance([tr], power, n_sub=1500, n_near=8000, smoothing=sm)
     cov.build_smoothing([('T', 'T')], log=lambda *a: None)
     out['smoothing'] = time.perf_counter() - t
     t = time.perf_counter()
     cov.compute_windows([('T', 'T')])
     out['pair counts'] = time.perf_counter() - t
-    cov.set_model(model, masked=True)
     ts = []
     for _ in range(repeat):
-        cov.set_model(model, masked=True)              # clears the kernel cache: full assembly each time
+        cov.set_power(power)                           # clears the kernel cache: full assembly each time
         t = time.perf_counter()
         cov.covariance([('T', 'T')])
         ts.append(time.perf_counter() - t)

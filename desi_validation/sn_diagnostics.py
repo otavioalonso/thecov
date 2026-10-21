@@ -96,7 +96,7 @@ def main():
     ap.add_argument('--workers', type=int, default=32)
     args = ap.parse_args()
 
-    from thecov import GaussianCovariance, PowerSpectrumModel, SuperSampleCovariance, DiscretenessCovariance
+    from thecov import GaussianCovariance, PowerSpectrum, SuperSampleCovariance, DiscretenessCovariance
     from thecov.tree.power import Dressed
     from scipy.spatial import cKDTree
     b, r = args.bin, args.cap
@@ -132,7 +132,8 @@ def main():
     rc = dc.load_region(paths, b, r, n_random_files=cfg.n_random_files)
     tr, info = dc.build_tracer(f'{b}_{r}_ssc', [rc], nw='random-density', n_randoms_max=cfg.n_randoms_max // 2,
                                surface_density_deg2=cfg.surface_density, verbose=False)
-    log(f'tracer: {tr.size} randoms, alpha {tr.alpha:.4f}, shot-noise scale {tr.shotnoise_scale:.4f}')
+    sn_scale = tr.shotnoise / ((1 + tr.alpha) * tr.alpha * float(np.sum(tr.weights ** 2)))
+    log(f'tracer: {tr.size} randoms, alpha {tr.alpha:.4f}, shot-noise scale {sn_scale:.4f}')
     wd = np.asarray(dc.total_weight(rc.data), float)
     wr_all = np.asarray(dc.total_weight(rc.randoms), float)
     for cat, tag in ((rc.data, 'data'), (rc.randoms, 'randoms')):
@@ -144,7 +145,7 @@ def main():
     pos_d = dc.sky_to_cartesian(rc.data['RA'], rc.data['DEC'], rc.data['Z'])
 
     # ------------------------------------------------------------------ window integrals
-    a, sc, w, m = tr.alpha, tr.shotnoise_scale, np.asarray(tr.weights, float), np.asarray(tr.weighted_density, float)
+    a, sc, w, m = tr.alpha, sn_scale, np.asarray(tr.weights, float), np.asarray(tr.weighted_density, float)
     ratio = np.sum(w ** 2) / np.sum(w)
     m_d, _ = tr.density_and_weight_at(pos_d)                                   # m at each galaxy (nearest random)
     # local <w^2>/<w> of the data: k nearest other galaxies, at each galaxy and at each random
@@ -160,7 +161,7 @@ def main():
         'ratio_global_data': np.sum(wd ** 2) / np.sum(wd),
         'int_m2': a * np.sum(w * m),                             # thecov's I_local
         'int_S_randoms': a * sc * np.sum(w ** 2), 'int_S_data': np.sum(wd ** 2),
-        'Smm_randoms': a * np.sum(sc * w ** 2 * m ** 2),         # thecov J_Smm x norm^2
+        'Smm_randoms': a * np.sum(sc * w ** 2 * m ** 2),         # thecov J_SWW x norm^2
         'SS_randoms_global': a * np.sum(sc * w ** 2 * sc * ratio * m),   # thecov J_SS x norm^2
         'SS_randoms_local': a * np.sum(sc * w ** 2 * sc * ratio_r * m),
         'Smm_data': np.sum(wd ** 2 * m_d ** 2),
@@ -194,15 +195,13 @@ def main():
     dil = np.interp(k, z[f'{r}/k'], z[f'{r}/dilution'])          # constant beyond the main run's kmax
     norm = float(np.mean(res['hi/norm']))
     nb = len(k)
-    cov = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, n_sub=cfg.n_sub_far, n_near=args.n_near,
-                             ds=2.0, ds_pair=10.0, s_split=80.0, smoothing=None)
-    cov.set_normalization(tr.name, tr.name, norm)
     mean = V.mean(0)
     kk = np.r_[0.0, k, k_edges[-1]]
-    model = PowerSpectrumModel()
-    model.add((tr.name, tr.name), {ell: (kk, np.r_[mean[i * nb], mean[i * nb:(i + 1) * nb], mean[(i + 1) * nb - 1]])
-                                   for i, ell in enumerate((0, 2, 4))})
-    cov.set_model(model, masked=True)
+    power = PowerSpectrum({ell: (kk, np.r_[mean[i * nb], mean[i * nb:(i + 1) * nb], mean[(i + 1) * nb - 1]])
+                           for i, ell in enumerate((0, 2, 4))}, kedges=k_edges, window_convolved=True, norm=norm,
+                          shotnoise=tr.shotnoise)
+    cov = GaussianCovariance([tr], power, n_sub=cfg.n_sub_far, n_near=args.n_near,
+                             ds=2.0, ds_pair=10.0, s_split=80.0, smoothing=None)
     disc = DiscretenessCovariance(cov, (kl, PirA), b1=b1, f=f, b2=b2, bs2=bs2, sigma_fog=sigma_v,
                                   **(dict(n_mu=16, n_phi=24) if sigma_v else {}))
     comps = disc.components([(tr.name, tr.name)], ells=(0, 2, 4))

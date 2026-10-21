@@ -6,7 +6,7 @@
     I^(1)_ij = sum_{(w,p) in P^{AD}} sum_{(w',p') in P^{CB}} int s^2 ds  pbar'^{(i)}_{L1 lam}  pbar^{(j)}_{L2 lam'}  Q^{w w'}_{Lam1 Lam2 Lam},
     I^(2)_ij = sum_{(w,p) in P^{AC}} sum_{(w',p') in P^{DB}} int s^2 ds  pbar'^{(i)}_{L1 lam}  pbar^{(j)}_{L2 lam'}  Q^{w w'}_{Lam1 Lam2 Lam}.
 
-Structure: `_wick_terms` lists, for a pair of spectra, every (Wick term, window pair, model multipoles) combination;
+Structure: `_wick_terms` lists, for a pair of spectra, every (Wick term, window pair, power-spectrum multipoles) combination;
 `_couplings` gives, for one combination of multipoles, the (lam, lam') groups of window triples with their coefficients
 (selection rules and t-coefficients, computed once). Both the window requests and the assembly iterate over these.
 """
@@ -19,11 +19,11 @@ from functools import lru_cache
 import numpy as np
 
 from . import defaults as D
-from .kernels import PowerSpectrumModel, ShellKernels
+from .power import PowerSpectrum, BinnedHankel
 from .smoothing import WindowSmoothing
 from .tracers import Tracer, Window, spectrum_window_pairs
 from .wigner import CouplingCoefficients, tri, tri_multi, FOUR_PI
-from .windows import WindowLibrary
+from .pair_counts import WindowLibrary
 
 _COEFFS = CouplingCoefficients()
 
@@ -57,34 +57,45 @@ class GaussianCovariance:
     Parameters
     ----------
     tracers   : list of Tracer
-    k_edges   : edges of the k bins of the covariance (h/Mpc)
-    ells      : estimator multipoles (even)
-    L_max     : highest power-spectrum multipole used in the model (even)
+    power     : the power spectrum (power.py): a PowerSpectrum (one tracer), or {(A, B): PowerSpectrum} for several;
+                the k bins of the covariance are those of the spectra (kedges, common to all), the multipoles L of
+                the formula those given, the normalisation I(A, B) the spectrum's norm (else the FKP integral of the
+                randoms), and the shot-noise window is scaled to the spectrum's shotnoise. Or only the bin edges
+                kedges (h/Mpc), to compute the windows first and set_power later.
+    ells      : the multipoles of the data vector (default: those of the spectra, else 0, 2, 4)
     s_max     : maximum separation (default: bounding box of the randoms)
     ds        : step of the s grid used for the radial integrals (Mpc/h)
     shot_noise: include the shot-noise windows S^A
     smoothing : the clustering window (smoothing.py):
-                'auto' (default): pair-averaged windows m_A (K_k * m_B) with the xi-based kernel of each k-bin, built
-                    automatically: reference density = each tracer's own randoms, kernel shape = the model's P_0 at
-                    the bin centres (so call set_model before compute_windows). For DESI-like footprints pass a
-                    WindowSmoothing with denser reference randoms instead (the near part of the kernel is a sum
-                    over them);
-                a WindowSmoothing: the same, with its reference densities and fiducial power set by the caller;
-                None: the local window m_A m_B (exact for a box, 7-9 % low on footprints with fine veto masks).
+                'auto' (default): pair-averaged windows W_A (K_k * W_B) with the xi-based kernel of each k-bin, i.e.
+                    WindowSmoothing() with its defaults: reference density = each tracer's own randoms, kernel shape
+                    = the spectrum's P_0 (so set the power spectrum before compute_windows);
+                a WindowSmoothing: the same, with the reference densities (add_density; for DESI-like footprints
+                    denser randoms than the tracer's: the near part of the kernel is a sum over them) or fiducial
+                    powers (set_power) set by the caller, the defaults for the rest;
+                None: the local window W_A W_B (exact for a box, 7-9 % low on footprints with fine veto masks).
                 The smoothing is built (for the k bins and tracers here) by compute_windows.
     Pair counts (see thecov/defaults.py): ds_pair, n_sub, n_near, s_split, min_pairs, seed, chunk_pairs, n_shells,
                 n_mu; backend 'auto' (jax if importable) / 'jax' / 'numpy' (same histogram); n_threads.
     """
 
-    def __init__(self, tracers, k_edges, ells=(0, 2, 4), L_max=4, s_max=None, ds=D.DS, ds_pair=D.DS_PAIR,
+    DEFAULT_MULTIPOLES = (0, 2, 4)     # ells and L when no power spectrum is set
+
+    def __init__(self, tracers, power, ells=None, s_max=None, ds=D.DS, ds_pair=D.DS_PAIR,
                  shot_noise=True, n_sub=D.N_SUB, n_near=D.N_NEAR, s_split=D.S_SPLIT, min_pairs=D.MIN_PAIRS,
                  seed=D.SEED, chunk_pairs=D.CHUNK_PAIRS, n_shells=D.N_SHELLS, n_mu=D.N_MU, backend='auto',
                  n_threads=None, smoothing='auto'):
         self.tracers = {t.name: t for t in tracers}
-        self.k_edges = np.asarray(k_edges, dtype=float)
-        self.nbins = len(self.k_edges) - 1
-        self.ells = tuple(int(l) for l in ells)
-        self.Ls = tuple(range(0, int(L_max) + 1, 2))
+        spectra = None if not isinstance(power, (PowerSpectrum, dict)) else self._as_spectra(power)
+        if spectra is None:
+            self.kedges = np.asarray(power, dtype=float)
+        else:
+            binnings = [p.kedges for p in spectra.values() if p.kedges is not None]
+            if not binnings:
+                raise ValueError("the power spectrum has no k binning: give it kedges")
+            self.kedges = binnings[0]
+        self.nbins = len(self.kedges) - 1
+        self._ells = None if ells is None else tuple(int(l) for l in ells)
         self.shot_noise = bool(shot_noise)
         self.s_max = float(s_max if s_max is not None else max(t.s_max() for t in tracers))
         self.s = np.arange(0.5 * ds, self.s_max, ds)
@@ -93,93 +104,151 @@ class GaussianCovariance:
                                      s_split=s_split, min_pairs=min_pairs, seed=seed, chunk_pairs=chunk_pairs,
                                      n_shells=n_shells, n_mu=n_mu, backend=backend, n_threads=n_threads)
         self.coeffs = _COEFFS
-        self.kernels = ShellKernels(self.k_edges, self.s)
-        self.model: PowerSpectrumModel | None = None
-        self.masked = False
-        self.automatic_smoothing = isinstance(smoothing, str) and smoothing == 'auto'
-        self.smoothing = WindowSmoothing() if self.automatic_smoothing else smoothing
-        self._I = {}
+        self.hankel = BinnedHankel(self.kedges, self.s)
+        self.power = {}
+        self._power_version = 0
+        self.smoothing = WindowSmoothing() if isinstance(smoothing, str) and smoothing == 'auto' else smoothing
+        self._I_local = {}
         self._requested = set()
+        if spectra is not None:
+            self.set_power(spectra)
 
     index_tuples = staticmethod(index_tuples)
+
+    @property
+    def kmid(self) -> np.ndarray:
+        return 0.5 * (self.kedges[1:] + self.kedges[:-1])
+
+    @property
+    def ells(self) -> tuple:
+        """The multipoles of the data vector: as given, else those of the spectra (if they agree), else 0, 2, 4."""
+        if self._ells is not None:
+            return self._ells
+        found = {p.ells for p in self.power.values()}
+        if len(found) > 1:
+            raise ValueError(f"the spectra have different ells {sorted(found)}: pass ells= to the covariance")
+        return found.pop() if found else self.DEFAULT_MULTIPOLES
+
+    # ------------------------------------------------------------------ power spectrum
+    def _as_spectra(self, power) -> dict:
+        """{(A, B) sorted: PowerSpectrum}; a single PowerSpectrum belongs to the only tracer."""
+        if isinstance(power, PowerSpectrum):
+            if len(self.tracers) != 1:
+                raise ValueError("several tracers: pass {(A, B): PowerSpectrum} for the spectra")
+            name = next(iter(self.tracers))
+            power = {(name, name): power}
+        return {tuple(sorted((str(A), str(B)))): p for (A, B), p in power.items()}
+
+    def set_power(self, power):
+        """The power spectrum P_L^{AB}(k): a PowerSpectrum (one tracer) or {(A, B): PowerSpectrum}.
+
+        window_convolved=False: the power spectrum itself (e.g. theory), used as is.
+        window_convolved=True : multipoles as measured (e.g. the data or the mean of mocks), normalised by
+                                I(A, B) = power.norm (else int W_A W_B): their mean is P(k) I_k / I(A, B), so
+                                they are multiplied by I(A, B) / I_k (mask_factor). Without smoothing,
+                                I_k = int W_A W_B.
+        Spectra without kedges take those of the covariance; others must have the same binning.
+        """
+        spectra = self._as_spectra(power)
+        for key, p in spectra.items():
+            if p.kedges is None:
+                spectra[key] = p.binned_on(self.kedges)
+            elif len(p.kedges) != len(self.kedges) or not np.allclose(p.kedges, self.kedges):
+                raise ValueError(f"the k binning of the spectrum {key} differs from the covariance's")
+        self.power = spectra
+        self._power_version += 1
+        self.hankel._cache.clear()
+        return self
+
+    def power_of(self, A, B) -> PowerSpectrum | None:
+        """The PowerSpectrum of the pair (A, B) (either order), or None."""
+        return self.power.get(tuple(sorted((str(A), str(B)))))
 
     # ------------------------------------------------------------------ the sums of the formula
     def _tracer(self, name) -> Tracer:
         return self.tracers[str(name)]
 
-    def _Ls_for(self, power):
-        """Model multipoles of a window's spectrum: 0 for shot noise, those of the model otherwise."""
-        if power[0] == 'S':
+    def _Ls_for(self, spectrum):
+        """Multipoles L of a window's spectrum: 0 for shot noise, those of the power spectrum otherwise (0, 2, 4
+        before any is set, to request the windows)."""
+        if spectrum[0] == 'S':
             return (0,)
-        if self.model is None:
-            return self.Ls
-        avail = self.model.multipoles(power[1], power[2])
-        return tuple(L for L in self.Ls if L in avail)
+        if not self.power:
+            return self.DEFAULT_MULTIPOLES
+        p = self.power_of(spectrum[1], spectrum[2])
+        return () if p is None else tuple(p.multipoles())
 
     def _wick_terms(self, AB, CD):
-        """(term, window_x, power_x, window_xp, power_xp) for the two Wick terms.
+        """(term, window_x, spectrum_x, window_xp, spectrum_xp) for the two Wick terms.
 
-        Each correlator of a Wick term is a sum of (window, power) pieces, the set P^{XY} of the note
-        (spectrum_window_pairs): the clustering window W^{XY} = m_X m_Y (or its smoothed basis windows) with the model
-        P_L^{XY}, and for X = Y the shot-noise window S^X with p_L = delta_L0. window_x (the note's omega) is the piece
-        of the first correlator, at x^, with the kernel of bin j and multipole L2; window_xp (omega') the piece of the
-        second, at x'^, with bin i and L1. Each (window_x, window_xp) needs its own tripolar window Q^{omega omega'}.
-        Term 1 pairs A with D and C with B, term 2 A with C and D with B."""
+        Each correlator of a Wick term is a sum of (window, spectrum) pieces, the set P^{XY} of the note
+        (spectrum_window_pairs): the clustering window W^{XY} = W_X W_Y (or its smoothed basis windows) with the
+        multipoles P_L^{XY}, and for X = Y the shot-noise window S^X with p_L = delta_L0. window_x (the note's omega)
+        is the piece of the first correlator, at x^, with the kernel of bin j and multipole L2; window_xp (omega') the
+        piece of the second, at x'^, with bin i and L1. Each (window_x, window_xp) needs its own tripolar window
+        Q^{omega omega'}. Term 1 pairs A with D and C with B, term 2 A with C and D with B."""
         (A, B), (C, D) = AB, CD
         pairs = lambda X, Y: spectrum_window_pairs(self._tracer(X), self._tracer(Y), self.shot_noise, self.smoothing)
         for term, (X, Xp) in ((1, ((A, D), (C, B))), (2, ((A, C), (D, B)))):
-            for window_x, power_x in pairs(*X):
-                for window_xp, power_xp in pairs(*Xp):
-                    yield term, window_x, power_x, window_xp, power_xp
+            for window_x, spectrum_x in pairs(*X):
+                for window_xp, spectrum_xp in pairs(*Xp):
+                    yield term, window_x, spectrum_x, window_xp, spectrum_xp
 
-    # ------------------------------------------------------------------ normalisation
+    # ------------------------------------------------------------------ normalisation and shot noise
     def I(self, A, B) -> float:
-        """The normalisation of P^AB: int W^AB from the randoms, unless set_normalization was used."""
-        key = tuple(sorted((str(A), str(B))))
-        if key not in self._I:
-            self._I[key] = self.I_local(A, B)
-        return self._I[key]
+        """The normalisation of P^AB: the spectrum's norm (the estimator's), else int W_A W_B from the randoms.
 
-    def set_normalization(self, A, B, norm: float):
-        """Use the normalisation the power-spectrum estimator actually divided by.
-
-        Default (no call): I_AB = int m_A m_B = alpha sum_r m_B(x_r) w_r over the randoms, the standard FKP
-        normalisation int nbar^2 w^2 of an FKP estimator normalised with the randoms; nothing to do for it.
-        The covariance scales as 1 / (I_AB I_CD), so it must match the estimator. pypower and
-        jaxpower default to painting data x randoms on a 10 Mpc/h mesh (their `wnorm` / `norm`),
-        which differs from int nbar_A nbar_B w_A w_B by a few per cent (2 % low in the mock
-        validation, i.e. 4 % in the variance). Pass their value here, e.g.
-        `cov.set_normalization('A', 'A', poles.wnorm)`.
+        int W_A W_B = alpha sum_r W_B(x_r) w_r is the FKP normalisation int nbar^2 w^2 of an estimator normalised
+        with the randoms. pypower and jaxpower paint data x randoms on a 10 Mpc/h mesh instead (their `norm`), a few
+        per cent different (2 % low in the mock validation, i.e. 4 % in the variance): give it to the PowerSpectrum.
         """
-        self._I[tuple(sorted((str(A), str(B))))] = float(norm)
-        return self
+        p = self.power_of(A, B)
+        if p is not None and p.norm is not None:
+            return p.norm
+        return self.I_local(A, B)
 
     def I_local(self, A, B) -> float:
-        """int m_A m_B (the local-approximation window integral)."""
-        return Window('W', self._tracer(A), self._tracer(B)).integral()
+        """int W_A W_B (the local-approximation window integral)."""
+        key = tuple(sorted((str(A), str(B))))
+        if key not in self._I_local:
+            self._I_local[key] = Window('W', self._tracer(A), self._tracer(B)).integral()
+        return self._I_local[key]
+
+    def shotnoise_scale(self, A) -> float:
+        """Scale of the shot-noise window S^A: the auto spectrum's shotnoise (the estimator's int S) over the randoms'
+        own (1 + alpha) alpha sum_r w_r^2, or 1."""
+        p = self.power_of(A, A)
+        if p is None or p.shotnoise is None:
+            return 1.0
+        T = self._tracer(A)
+        return p.shotnoise / ((1.0 + T.alpha) * T.alpha * float(np.sum(T.weights ** 2)))
+
+    def _window_scale(self, spectrum) -> float:
+        return self.shotnoise_scale(spectrum[1]) if spectrum[0] == 'S' else 1.0
 
     def I_k(self, A, B) -> np.ndarray:
-        """Per k-bin integral of the clustering window, int m_A (K_k * m_B) with smoothing, else
-        int m_A m_B for every bin: the mean of the estimator is P(k) I_k / I(A, B)."""
+        """Per k-bin integral of the clustering window, int W_A (K_k * W_B) with smoothing, else
+        int W_A W_B for every bin: the mean of the estimator is P(k) I_k / I(A, B)."""
         if self.smoothing is not None and self.smoothing.has(str(A), str(B)):
-            return self.smoothing.I_k(str(A), str(B), self.k_edges)
+            return self.smoothing.I_k(str(A), str(B), self.kedges)
         return np.full(self.nbins, self.I_local(A, B))
 
     def mask_factor(self, A, B, k) -> np.ndarray:
-        """I(A, B) / I_k(k): converts a masked (window-convolved) model into the power spectrum the
+        """I(A, B) / I_k(k): converts window-convolved multipoles into the power spectrum the
         covariance needs (interpolated between bin centres, constant beyond the first and last)."""
-        centres = 0.5 * (self.k_edges[1:] + self.k_edges[:-1])
-        return self.I(A, B) / np.interp(k, centres, self.I_k(A, B))
+        return self.I(A, B) / np.interp(k, self.kmid, self.I_k(A, B))
 
-    def _kernel(self, power, L, lam):
-        """pbar^{(i)}_{L lam}(s) for every bin i, (nbins, ns): shot noise, the model, or the masked model."""
-        if power[0] == 'S':
-            return self.kernels.average(None, lam, tag=('S',))
-        A, B = power[1], power[2]
-        if self.masked:
-            return self.kernels.average(lambda k: self.model(A, B, L, k) * self.mask_factor(A, B, k), lam,
-                                        tag=('P', A, B, L, 'masked'))
-        return self.kernels.average(lambda k: self.model(A, B, L, k), lam, tag=('P', A, B, L))
+    def _kernel(self, spectrum, L, lam):
+        """pbar^{(i)}_{L lam}(s) for every bin i, (nbins, ns): shot noise, the power spectrum, or the window-convolved
+        one times mask_factor."""
+        if spectrum[0] == 'S':
+            return self.hankel.transform(None, lam, tag=('S',))
+        A, B = spectrum[1], spectrum[2]
+        p = self.power_of(A, B)
+        if p.window_convolved:
+            return self.hankel.transform(p.function(L), lam, tag=('P', A, B, L, 'window_convolved'),
+                                         factor=lambda k: self.mask_factor(A, B, k))
+        return self.hankel.transform(p.function(L), lam, tag=('P', A, B, L))
 
     # ------------------------------------------------------------------ geometry
     def request_windows(self, spectra):
@@ -188,37 +257,21 @@ class GaussianCovariance:
         self.build_smoothing(spectra)            # before the windows are listed (they depend on it)
         for AB in spectra:
             for CD in spectra:
-                if (AB, CD, id(self.model)) in self._requested:      # the model sets the multipoles needed
+                if (AB, CD, self._power_version) in self._requested:      # the spectra set the multipoles needed
                     continue
-                for term, window_x, power_x, window_xp, power_xp in self._wick_terms(AB, CD):
-                    trip = {t[2:] for ell1 in self.ells for ell2 in self.ells for L1 in self._Ls_for(power_xp)
-                            for L2 in self._Ls_for(power_x) for t in index_tuples(term, ell1, ell2, L1, L2)}
+                for term, window_x, spectrum_x, window_xp, spectrum_xp in self._wick_terms(AB, CD):
+                    trip = {t[2:] for ell1 in self.ells for ell2 in self.ells for L1 in self._Ls_for(spectrum_xp)
+                            for L2 in self._Ls_for(spectrum_x) for t in index_tuples(term, ell1, ell2, L1, L2)}
                     self.windows.request(window_x, window_xp, trip)
-                self._requested.add((AB, CD, id(self.model)))
+                self._requested.add((AB, CD, self._power_version))
 
     def build_smoothing(self, spectra, log=print):
-        """Build the smoothing (basis, coefficients, smoothed m at the randoms) for the spectra's pairs."""
+        """Build the smoothing (basis, coefficients, smoothed W at the randoms) for the spectra's pairs."""
         if self.smoothing is not None:
             todo = [p for p in (tuple(str(x) for x in sp) for sp in spectra) if not self.smoothing.has(*p)]
-            if todo and self.automatic_smoothing:
-                self._set_automatic_smoothing_inputs(todo)
             if todo:
-                self.smoothing.build(self.k_edges, self.tracers, todo, log=log)
+                self.smoothing.build(self.kedges, self.tracers, todo, power_of=self.power_of, log=log)
         return self
-
-    def _set_automatic_smoothing_inputs(self, pairs):
-        """smoothing='auto': each tracer's randoms as its reference density, the model's P_0 as the kernel shape."""
-        for A, B in pairs:
-            for name in (A, B):
-                if not self.smoothing.has_density(name):
-                    T = self._tracer(name)
-                    self.smoothing.add_density(name, T.positions, T.weights, T.alpha)
-            if not self.smoothing.has_power(A, B):
-                if self.model is None or 0 not in self.model.multipoles(A, B):
-                    raise RuntimeError("smoothing='auto' takes the kernel shape from the model's P_0: call set_model "
-                                       "before compute_windows (or pass smoothing=None for the local window)")
-                centres = 0.5 * (self.k_edges[1:] + self.k_edges[:-1])
-                self.smoothing.set_power(A, B, centres, self.model(A, B, 0, centres))
 
     def compute_windows(self, spectra, verbose=False):
         """Pair counts for everything needed by `spectra` (a list of (A, B) tracer-name pairs)."""
@@ -241,21 +294,6 @@ class GaussianCovariance:
             self.smoothing.load(str(path) + '.smoothing.npz')
         return self
 
-    # ------------------------------------------------------------------ model
-    def set_model(self, model: PowerSpectrumModel, masked: bool = False):
-        """The model multipoles P_L^{AB}(k).
-
-        masked=False: the power spectrum itself (e.g. theory), used as is.
-        masked=True : window-convolved multipoles as measured, normalised by I(A, B) (e.g. the mean of
-                      mocks): their mean is P(k) I_k / I(A, B), so they are multiplied by
-                      I(A, B) / I_k (mask_factor). Without smoothing, I_k = int m_A m_B. Set the
-                      estimator's normalisation (set_normalization) first.
-        """
-        self.model = model
-        self.masked = bool(masked)
-        self.kernels._cache.clear()
-        return self
-
     # ------------------------------------------------------------------ results
     def block(self, AB, CD, ell1: int, ell2: int, symmetrize: bool = True) -> np.ndarray:
         """Covariance block Cov[P^{AB}_{ell1}(k_i), P^{CD}_{ell2}(k_j)] as an (nbins, nbins) array.
@@ -276,21 +314,24 @@ class GaussianCovariance:
 
     def _block_raw(self, AB, CD, ell1: int, ell2: int) -> np.ndarray:
         """sum over Wick terms, window pairs and multipoles of u_i (s^2 ds sum_c c Q) v_j, / (I_AB I_CD)."""
-        if self.model is None:
-            raise RuntimeError("set_model() first")
+        if not self.power:
+            raise RuntimeError("set the power spectrum first (set_power)")
         AB, CD = tuple(str(x) for x in AB), tuple(str(x) for x in CD)
         self.request_windows([AB, CD])
         if self.windows.missing():          # lazily compute whatever pair counts are missing
             self.windows.compute_all()
         C = np.zeros((self.nbins, self.nbins))
-        for term, window_x, power_x, window_xp, power_xp in self._wick_terms(AB, CD):
-            ci, cj = window_xp.coeffs_for(self.k_edges), window_x.coeffs_for(self.k_edges)   # basis-window coefficients
-            for L1 in self._Ls_for(power_xp):
-                for L2 in self._Ls_for(power_x):
+        for term, window_x, spectrum_x, window_xp, spectrum_xp in self._wick_terms(AB, CD):
+            ci, cj = window_xp.coeffs_for(self.kedges), window_x.coeffs_for(self.kedges)   # basis-window coefficients
+            scale = self._window_scale(spectrum_x) * self._window_scale(spectrum_xp)        # shot-noise windows
+            for L1 in self._Ls_for(spectrum_xp):
+                for L2 in self._Ls_for(spectrum_x):
                     for (lam, lamp), group in _couplings(term, ell1, ell2, L1, L2).items():
                         q = sum(c * self.windows.get(window_x, window_xp, *trip, self.s) for c, trip in group)
-                        u = self._kernel(power_xp, L1, lam)     # (nbins, ns), bin i
-                        v = self._kernel(power_x, L2, lamp)      # (nbins, ns), bin j
+                        if scale != 1.0:
+                            q = scale * q
+                        u = self._kernel(spectrum_xp, L1, lam)     # (nbins, ns), bin i
+                        v = self._kernel(spectrum_x, L2, lamp)      # (nbins, ns), bin j
                         if ci is not None:
                             u = u * ci[:, None]
                         if cj is not None:

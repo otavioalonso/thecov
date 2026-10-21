@@ -21,7 +21,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', '..'))
 
-from thecov import (Tracer, PowerSpectrumModel, GaussianCovariance, WindowSmoothing,  # noqa: E402
+from thecov import (Tracer, PowerSpectrum, GaussianCovariance, WindowSmoothing,  # noqa: E402
                     SuperSampleCovariance, DiscretenessCovariance, TrispectrumCovariance,
                     galileon_bias, response_split, response_covariance)
 from thecov.tree.windowing import window_convolve  # noqa: E402
@@ -67,32 +67,28 @@ def run():
     k_edges = np.arange(0.02, 0.1601, 0.02)
     kc = 0.5 * (k_edges[1:] + k_edges[:-1])
     g0 = b1 + f / 3
-    model = PowerSpectrumModel()
-    model.add(('T', 'T'), {0: (kl, (b1 ** 2 + 2 * b1 * f / 3 + f ** 2 / 5) * Pl),
-                           2: (kl, (4 * b1 * f / 3 + 4 * f ** 2 / 7) * Pl), 4: (kl, 8 * f ** 2 / 35 * Pl)})
+    multipoles = {0: (kl, (b1 ** 2 + 2 * b1 * f / 3 + f ** 2 / 5) * Pl),
+                  2: (kl, (4 * b1 * f / 3 + 4 * f ** 2 / 7) * Pl), 4: (kl, 8 * f ** 2 / 35 * Pl)}
     out = {}
 
     # --- Gaussian, kernel smoothing (desi_compare.thecov_covariance) ---
     sm = WindowSmoothing(cell=6.0, r_max=100.0, tol=5e-3)
     sm.add_density('T', ref, wfun(ref), alpha * len(pos) / len(ref))
-    sm.set_power('T', 'T', kc, np.interp(kc, kl, g0 ** 2 * Pl))
-    cov = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, ds=2.0, ds_pair=10.0, n_sub=1500, n_near=8000,
-                             smoothing=sm)
+    sm.set_power('T', 'T', PowerSpectrum({0: (kc, np.interp(kc, kl, g0 ** 2 * Pl))}))
+    cov = GaussianCovariance([tr], k_edges, ds=2.0, ds_pair=10.0, n_sub=1500, n_near=8000, smoothing=sm)
     cov.compute_windows([('T', 'T')])
-    norm = 0.98 * cov.I('T', 'T')
-    cov.set_normalization('T', 'T', norm)
-    cov.set_model(model, masked=True)
+    norm = 0.98 * cov.I_local('T', 'T')
+    power = PowerSpectrum(multipoles, kedges=k_edges, window_convolved=True, norm=norm)
+    cov.set_power(power)
     C, _ = cov.covariance([('T', 'T')], ells=(0, 2, 4))
     out['C_gauss_kernel'] = C
     out['I_k_kernel'] = np.asarray(cov.I_k('T', 'T'))
     print(f'gaussian kernel done {time.time() - t0:.0f} s', flush=True)
 
     # --- local-window container used by the NG terms (ssc_check) ---
-    covl = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, n_sub=1500, n_near=8000, ds=2.0, ds_pair=10.0,
-                              s_split=80.0, smoothing=None)
-    out['I_local'] = np.array(covl.I('T', 'T'))
-    covl.set_normalization('T', 'T', norm)
-    covl.set_model(model, masked=True)
+    covl = GaussianCovariance([tr], power, n_sub=1500, n_near=8000, ds=2.0, ds_pair=10.0, s_split=80.0,
+                              smoothing=None)
+    out['I_local'] = np.array(covl.I_local('T', 'T'))
     out['C_gauss_local'] = covl.covariance([('T', 'T')], ells=(0, 2, 4))[0]
     dil = out['I_k_kernel'] / norm
 

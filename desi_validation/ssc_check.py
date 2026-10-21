@@ -293,7 +293,7 @@ def main():
 
     from cosmoprimo.fiducial import DESI
     from scipy.interpolate import CubicSpline
-    from thecov import (GaussianCovariance, PowerSpectrumModel, SuperSampleCovariance, DiscretenessCovariance,
+    from thecov import (GaussianCovariance, PowerSpectrum, SuperSampleCovariance, DiscretenessCovariance,
                         TrispectrumCovariance, galileon_bias, response_split, response_covariance)
     from thecov.tree.response_approach import collapsed_covariance
     from thecov.tree.windowing import window_convolve
@@ -358,12 +358,10 @@ def main():
         tr, _ = dc.build_tracer(f'{b}_{r}_ssc', [rc], nw='random-density', n_randoms_max=cfg.n_randoms_max // 2,
                                 surface_density_deg2=cfg.surface_density, verbose=False)
         del rc
-        cov = GaussianCovariance([tr], k_edges, ells=(0, 2, 4), L_max=4, n_sub=cfg.n_sub_far, n_near=args.n_near,
+        power = PowerSpectrum(dc.model_from_mocks(spec), kedges=k_edges, window_convolved=True, norm=norm,
+                              shotnoise=tr.shotnoise)
+        cov = GaussianCovariance([tr], power, ells=(0, 2, 4), n_sub=cfg.n_sub_far, n_near=args.n_near,
                                  ds=2.0, ds_pair=10.0, s_split=80.0, smoothing=None)
-        cov.set_normalization(tr.name, tr.name, norm)
-        model = PowerSpectrumModel()
-        model.add((tr.name, tr.name), dc.model_from_mocks(spec))
-        cov.set_model(model, masked=True)
         res = {}
         # variants: LA with its Poisson self-calibration term, LA without it, no LA
         for key, la, pois in (('LA', True, True), ('LA_noPoisson', True, False), ('noLA', False, False)):
@@ -409,8 +407,8 @@ def main():
         Cd = wconv(Cd_loc)                                   # the discreteness terms with the window's mode mixing
         out[f'{r}/C_disc_B'], out[f'{r}/C_disc_P'] = dcomp['B'], dcomp['P']
         out[f'{r}/C_disc_local'], out[f'{r}/C_disc'] = Cd_loc, Cd
-        J_Smm, J_SS = disc.window_integrals(tr.name)
-        log(f'{r}: discreteness 4-point: J_Smm {J_Smm:.3e}, J_SS {J_SS:.3e}; diag(C_disc)/diag(C) l=0 at k~0.05, 0.15, 0.25: '
+        J_SWW, J_SS = disc.window_integrals(tr.name)
+        log(f'{r}: discreteness 4-point: J_SWW {J_SWW:.3e}, J_SS {J_SS:.3e}; diag(C_disc)/diag(C) l=0 at k~0.05, 0.15, 0.25: '
             + ', '.join(f'{Cd[i, i] / C[i, i]:.3f}' for i in (6, 26, 46))
             + ('' if args.no_window_local else ' (window-convolved)'))
         C_disc[r] = Cd
@@ -425,7 +423,7 @@ def main():
         out[f'{r}/dilution'] = np.asarray(dil, float) * np.ones(nb)
         # inputs, so that every term can be rebuilt locally (desi_validation/ssc_dev/local_rebuild.py)
         out[f'{r}/plin_k'], out[f'{r}/plin_P'], out[f'{r}/plin_P_damped_normalised'] = kl, Pl, PirA
-        out[f'{r}/J_disc'] = np.array([J_Smm, J_SS])
+        out[f'{r}/J_disc'] = np.array([J_SWW, J_SS])
         out[f'{r}/LA_integrals'] = np.array([var, J, J3, norm])
         out[f'{r}/k'], out[f'{r}/k_edges'], out[f'{r}/mock_mean'] = k, k_edges, V.mean(0)
         save(out)
