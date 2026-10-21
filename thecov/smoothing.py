@@ -44,54 +44,36 @@ import warnings
 import numpy as np
 import scipy.fft as sfft
 from scipy.spatial import cKDTree
-from scipy.special import spherical_jn
 
 from . import cache, defaults as D
-from .power import PowerSpectrum
+from .power import PowerSpectrum, BinnedHankel, hankel_integral
 
-VERSION = 1          # part of the kernel tag: 1 = xi_0 by the trapezoid rule, 16-point bin averages of j_0
-
-
-def _extended_power(k, p, k_max, damping, low_slope, n_k=20001):
-    """P on [1e-4, k_max] from its values on [k0, k1]: (k/k0)^low_slope below k0, a power law fitted to the last
-    8 points above k1, times exp(-(k damping)^2) [damping in Mpc/h] to regularise xi(r -> 0)."""
-    k, p = np.asarray(k, float), np.asarray(p, float)
-    kk = np.linspace(1e-4, k_max, n_k)
-    tail = slice(max(0, len(k) - 8), len(k))
-    slope = np.polyfit(np.log(k[tail]), np.log(np.abs(p[tail]) + 1e-300), 1)[0]
-    out = np.interp(kk, k, p)
-    out = np.where(kk < k[0], p[0] * (kk / k[0]) ** low_slope, out)
-    out = np.where(kk > k[-1], p[-1] * (kk / k[-1]) ** slope, out)
-    return kk, out * np.exp(-(kk * damping) ** 2)
+VERSION = 2          # part of the kernel tag: 2 = xi_0 and the bin-averaged j_0 by BinnedHankel quadrature
 
 
-def xi0_from_power(power, r, damping=D.KERNEL_DAMPING, k_max=D.KERNEL_K_MAX, low_slope=D.KERNEL_LOW_SLOPE):
-    """xi_0(r) = int_0^k_max k^2 dk / (2 pi^2) P(k) exp(-(k damping)^2) j_0(k r) for a PowerSpectrum (its P_0: the
-    arrays linearly interpolated and continued as power laws) or a callable P(k); the damping [Mpc/h] regularises xi
-    at r -> 0."""
-    entry = power if callable(power) and not isinstance(power, PowerSpectrum) else power.entry(0)
-    if callable(entry):
-        kk = np.linspace(1e-4, k_max, 20001)
-        pk = entry(kk) * np.exp(-(kk * damping) ** 2)
-    else:
-        kk, pk = _extended_power(*entry, k_max=k_max, damping=damping, low_slope=low_slope)
-    xi = np.empty(len(r))
-    for i in range(0, len(r), 64):
-        rr = np.asarray(r[i:i + 64])[:, None]
-        xi[i:i + 64] = np.trapezoid(kk ** 2 * pk * np.sinc(kk * rr / np.pi), kk, axis=1) / (2 * np.pi ** 2)
-    return xi
+# ----------------------------------------------------------------------------- kernels
+def kernel_power(power, low_slope=D.KERNEL_LOW_SLOPE):
+    """The P_0 that shapes the kernel, as a callable defined at every k: a PowerSpectrum's P_0, continued beyond its
+    arrays as a power law (k^low_slope below, the slope of the last points above) unless it extrapolates already."""
+    if callable(power) and not isinstance(power, PowerSpectrum):
+        return power
+    if power.extrapolation is False:
+        power = power.extrapolated('power-law', low_slope=low_slope)
+    return power.function(0)
 
 
-def bin_kernels(kedges, r, xi, nk=16):
-    """K_i(r) = xi_0(r) <j_0(k r)>_i / norm for each k-bin i (mode-weighted average over the bin),
+def xi0_from_power(power, r, damping=D.KERNEL_DAMPING, k_max=D.KERNEL_K_MAX):
+    """xi_0(r) = int_0^k_max k^2 dk / (2 pi^2) P(k) exp(-(k damping)^2) j_0(k r) for a PowerSpectrum (its P_0,
+    see kernel_power) or a callable P(k); the damping [Mpc/h] regularises xi at r -> 0."""
+    damp = lambda k: np.exp(-(k * damping) ** 2)
+    return hankel_integral(kernel_power(power), np.linspace(1e-4, k_max, 101), r, factor=damp) / (2 * np.pi ** 2)
+
+
+def bin_kernels(kedges, r, xi):
+    """K_i(r) = xi_0(r) <j_0(k r)>_i / norm for each k-bin i (<.>_i: the k^2-weighted bin average),
     normalised to int 4 pi r^2 K_i dr = 1 on the tabulated r. Shape (nbins, nr)."""
-    out = np.empty((len(kedges) - 1, len(r)))
-    for i, (lo, hi) in enumerate(zip(kedges[:-1], kedges[1:])):
-        kb = np.linspace(lo, hi, nk)
-        wk = kb ** 2 / np.sum(kb ** 2)
-        K = xi * np.sum(wk[:, None] * spherical_jn(0, kb[:, None] * r[None, :]), axis=0)
-        out[i] = K / np.trapezoid(4 * np.pi * r ** 2 * K, r)
-    return out
+    K = xi[None, :] * BinnedHankel(kedges, r).transform(None, 0)
+    return K / np.trapezoid(4 * np.pi * r ** 2 * K, r, axis=1)[:, None]
 
 
 def hankel0(r, K, q):
@@ -395,7 +377,8 @@ class WindowSmoothing:
     def _kernel_basis(self, kedges, key, log):
         """Stage 1: the k-bin kernels K_i(r) on the smallest basis K_a (SVD in the metric of the window's own
         autocorrelation, so that the error on I_k = int K_k Q_WW is controlled)."""
-        xi = xi0_from_power(self._power[key], self.r, damping=self.damping, k_max=self.k_max, low_slope=self.low_slope)
+        power = kernel_power(self._power[key], low_slope=self.low_slope)
+        xi = xi0_from_power(power, self.r, damping=self.damping, k_max=self.k_max)
         Ki = bin_kernels(np.asarray(kedges, float), self.r, xi)                  # (nbins, nr)
         r_edges = np.concatenate([[0.0], np.arange(self.cell, self.r_max + self.cell, self.cell)])
         q_WW = self._densities[key[1]].autocorrelation(r_edges)
