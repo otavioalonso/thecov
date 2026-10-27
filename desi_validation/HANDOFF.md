@@ -1108,3 +1108,12 @@ Section 16 tree discreteness terms and the SSC responses must also be recomputed
 **Decisive next step**: the 25 Abacus c000 LRG z = 0.5 cubic boxes (3 LOS each; `mock_challenge_box/abacus-hf-v2`, with the
 sugiyama-diagonal bispectrum for b2): no window (J4 = 1/V exactly), no SSC, b1 from P0 with A = 1, b2 from the bispectrum, exact
 Gaussian from the box mean P(k, mu), tree discreteness with the known nbar; what is left is T0 alone, hard and squeezed.
+
+**Long-mode content of the mocks vs sigma2 (2026-10-27, `long_mode_check.py`, from nz_scatter_LRG1.npz + the ssc npz)**:
+M-weighted survey-mean galaxy overdensity over 989 mocks: std 0.448 % (Poisson 0.125 %, clustering 0.430 %) vs thecov
+g0^2 s_00 + 2 g0 g2 s_02 + g2^2 s_22 = 0.476 %: the mocks hold 82 % of the model's survey-mean variance (tree g_n, isotropic
+P_lin). thecov's s_22 / s_00 = 0.65 (wide footprint: the LOS varies, so even radial modes project partly off L_2). An upper
+bound treating all of it as locally radial (nu = 1, lam_W = 2) gives an SSC 1.3x (P0) - 1.8x (P2) thecov's clustering part
+at k > 0.1 and a better Wishart (P2 914 -> 889; with responses x 1.3: 862) -- the n(z) data fix the variance, not its
+n = 0/2 split, so this only says the mocks want the larger end. Measured Poisson-LA term and SSC pieces: job
+catcov/LRG1_NGC_mock173_v4 (regular queue).
