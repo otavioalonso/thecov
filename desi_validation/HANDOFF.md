@@ -1011,3 +1011,16 @@ insensitive to thecov's shot-noise terms, but the SPLIT puts thecov's P x S erro
 "B/n" at full strength: the negative l > 0 B/n is a few-% test of G_PS, not a measurement. (4) Grid shells +-2 % vs
 continuum in the first bins (~0.002 of G leak). Block-wise Wishart with T0 and next steps (GRF-Poisson test of G_PS,
 MC thinning for l > 0 quad, catalogue P in thecov) in the report.
+
+## 19. Code review of the tree-level T0 (2026-10-27; `report/t0_code_review.md`)
+
+Kernels and quadratures verified (F3, G3 vs the P13 kernels to 1e-6; Z1, Z2 vs tree.responses to 1e-16; LOS and mu12 rules
+converged < 1e-5 with FoG; n_k = 1 biases the diagonal low by 1-6 %, use n_k = 2). **The T0 validation is parameter-limited:**
+b1 = 2.202 comes from a pure-Kaiser fit to the window-convolved P2/P0 at k <= 0.06 and A = 0.739 absorbs the mismatch
+(sqrt(A) b1 = 1.893; flagged 2026-10-07, never changed). With b1 = 1.893, A = 1 the T0 changes by x0.6 (P0 hard), x1.15 (P2 hard),
+x1.3-1.4 (squeezed P2, P0xP2) with Lazeyras b2 = -0.262, or x1.5 everywhere with the production b2, bs2
+(`responses/t0_review/t0_parameter_split_sensitivity.csv`): the section 13 amplitudes (1.00 / 1.6-1.8 / 0.5) are conditional on
+the split, and the Lazeyras-consistent one turns the ell-dependent tension into a common ~1.5-1.65 (nonlinear P in the kernels
+can do that). J4 = int W^4 / norm^2 uses the local window (likely 20-40 % high; the Gaussian's I_k / int W^2 is 0.77-0.85).
+Next: window-convolved (b1, sigma_v) fit to the catalogue with A = 1 as check, b2 from R1; J4 cell-size convergence; n_k = 2;
+redo sections 13 and 16 tree terms.

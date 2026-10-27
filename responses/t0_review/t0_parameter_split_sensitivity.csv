@@ -1,0 +1,13 @@
+block,ells,n_pairs,"ratio: b1 1.893, A 1, Lazeyras b2 -0.262, bs2 -0.510","ratio: b1 1.893, A 1, production b2 0.283, bs2 -0.687"
+hard,P0xP0,21,0.605,1.495
+hard,P0xP2,21,1.175,1.575
+hard,P2xP2,21,1.145,1.517
+hard,P4xP4,21,1.287,1.527
+other,P0xP0,25,0.102,1.513
+other,P0xP2,25,0.867,1.524
+other,P2xP2,25,1.092,1.507
+other,P4xP4,25,1.598,1.575
+squeezed,P0xP0,32,0.882,1.501
+squeezed,P0xP2,32,1.316,1.542
+squeezed,P2xP2,32,1.362,1.531
+squeezed,P4xP4,32,1.574,1.573
