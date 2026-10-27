@@ -42,7 +42,7 @@ def decompose(d):
         GPP, GPS, GSS = t1['C_PP'], t1['C_PS'], t1['C_SS']
         sw2, sn1 = float(t1['sum_w2']), float(t1['sn'])
         r = sn1 / sw2                                   # S(a) = S_1 + a sum w^2: G(a) = PP + (1 + a/r) PS + (1 + a/r)^2 SS
-        g1 = GPS / r + 2 * GSS / r ** 2
+        g1 = GPS / r + 2 * GSS / r                      # d/da of (1 + a/r)^2 SS at a = 0 (was 2 SS / r^2: bug, Poisson null test)
         g2 = GSS / r ** 2
         a = {'mode': 'one-run split'}
     else:                                               # three runs at p = 1, 0.5, 0.25: quadratic fit in a
@@ -87,6 +87,14 @@ def band(d, M, ell1, ell2=None):
     return [float(np.mean(x[(k >= lo) & (k < hi)])) for lo, hi in KR]
 
 
+def hybrid(d):
+    """measured discreteness (B/n + P/n^2) in the P0 x P0 block, tree everywhere else (the recommended combination)"""
+    H = d['tree_B'] + d['tree_P']
+    nb = d['nb']
+    H[:nb, :nb] = d['Bn'][:nb, :nb] + d['Pn2'][:nb, :nb]
+    return H
+
+
 def wishart_D(C, S):
     n = len(C)
     M = np.linalg.solve(C, S)
@@ -127,7 +135,9 @@ def main():
     models = {'G (catalogue Gaussian)': d['G'],
               'G + tree disc': d['G'] + d['tree_B'] + d['tree_P'],
               'G + measured disc': d['G'] + d['Bn'] + d['Pn2'],
-              'G + measured disc + SSC': d['G'] + d['Bn'] + d['Pn2'] + ssc}
+              'G + measured disc + SSC': d['G'] + d['Bn'] + d['Pn2'] + ssc,
+              'G + tree disc + SSC': d['G'] + d['tree_B'] + d['tree_P'] + ssc,
+              'hybrid + SSC': d['G'] + hybrid(d) + ssc}
     sel_k = np.flatnonzero(k <= args.kmax + 1e-9)
     print(f'\nagainst {N} mocks (k <= {args.kmax}); Wishart deviance per d.o.f.-scaled: (N-1) * D, and min eigenvalue of G^-1/2 C G^-1/2')
     for ells in ((0,), (2,), (4,), (0, 2), (0, 2, 4)):

@@ -968,3 +968,33 @@ check: lin - g1 should vanish for an unclustered catalogue).
 9e-7 from double); tree T0 on one octant of the angular grid (exact to 2e-16, 8.0x; T0 for 56 bins x 3 ells in 8 s on
 64 processes); `catalogue_covariance.py`: all terms of one catalogue in one process with a memoised loader, the
 Gaussian computed once through its parts. Timings: see the end of this section.
+
+## 17. Poisson-catalogue null test of the shot-noise term; g1 bug; full timings (2026-10-27)
+
+**Test** (`catalogue_covariance --poisson 1 --no-t0 --no-ssc --ells 0 2 4 --single`, holi mock 173 LRG1 NGC footprint):
+galaxies = Poisson draw (p0 = 0.090) from one half of the 4-file randoms (706,984 vs 706,162 real; same weights, n(z)),
+the other half as randoms; measured P0 ~ 0 (-27 at k_mid vs 7504). Expected: exact thinning lin_ll' = d/da G(a) = 2 G_SS / r
+(P-independent), quad00 = G_SS / r^2, r = S_1 / sum w^2.
+
+**Bug found**: `disc_multipoles.decompose` one-run split used g1 = G_PS/r + 2 G_SS/r^2; the a-linear coefficient of
+(1 + a/r)^2 G_SS is 2 G_SS / r (fixed). With the old coefficient lin/pred = 1.09-1.11 = r in every block (Poisson r = 1.090);
+with the fix:
+- diagonal blocks: lin / (2 G_SS/r) - 1 = +0.4 / +1.8 / +1.5 % (P0, k 0.02-0.1 / 0.1-0.2 / 0.2-0.3), P2 -0.3/+0.8/+1.7 %, P4 -0.2/+1.3/+1.3 %;
+  quad00 / (G_SS/r^2) = 1.014 / 1.021 / 1.014;
+- residual in units of the real-catalogue G: <= 0.009 (diagonal), <= 0.002 (cross blocks) (`responses/poisson_null/`,
+  `report_figures/poisson_null_test_LRG1_NGC.png`).
+=> thecov's shot-noise covariance is right for l = 2, 4 (no O(1/kL) LOS problem at this level); a common ~1.5 % excess of the
+exact term at k > 0.1, the same at every l (normalisation of the SS window / kernel smoothing; small, state in Paper 1).
+The low / negative l > 0 measured B/n of section 16 is therefore NOT a thecov shot-noise artefact.
+
+**Section 16 numbers redone with the fix** (mock 173, end-to-end run catcov/LRG1_NGC_mock173_v2): P0xP0 B/n 0.0022/0.0190/0.0689/0.1249
+of G (k bands 0.02-0.05/0.05-0.1/0.1-0.2/0.2-0.3; tree 0.0063/0.0254/0.0637/0.0829), P/n^2 0.0005/0.0057/0.0266 (last three);
+P2xP2 B/n -0.0044/-0.0063/-0.0025/+0.0062 (tree +0.0006/0.0039/0.0148/0.0253); P4xP4 -0.0016/-0.0043/-0.0079/-0.0067.
+The "three-run fit bias" of section 16 should be re-examined: part of the one-run vs three-run difference was this bug.
+Wishart (N-1)D vs 848 mocks, P0 / P2 / P4 / P0+P2 / P0+P2+P4: tree+SSC 929/907/826/3595/8397; measured everywhere+SSC
+886/915/846/3647/9846; **hybrid (measured P0xP0, tree elsewhere) + SSC 886/907/826/3560/8131 (best; min eig 0.944)**.
+Recommendation unchanged. (`disc_multipoles` now prints tree+SSC and hybrid+SSC.)
+
+**Cold-cache end-to-end timings** (one CPU node, all terms, ells 0 2 4, --single): thin stub 184 s, measured discreteness 441 s,
+Gaussian (smoothing 280 s + pair counts) + split + tree disc 765 s, tree T0 8 s, SSC 28 s; total 1426 s (24 min) -> fits the
+30-min debug queue. (A harmless jax CUDA_ERROR_NO_DEVICE message is logged on CPU nodes.)
