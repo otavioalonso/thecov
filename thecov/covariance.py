@@ -312,8 +312,12 @@ class GaussianCovariance:
             return 0.5 * (self._block_raw(AB, CD, ell1, ell2) + self._block_raw(CD, AB, ell2, ell1).T)
         return self._block_raw(AB, CD, ell1, ell2)
 
-    def _block_raw(self, AB, CD, ell1: int, ell2: int) -> np.ndarray:
-        """sum over Wick terms, window pairs and multipoles of u_i (s^2 ds sum_c c Q) v_j, / (I_AB I_CD)."""
+    def _block_raw(self, AB, CD, ell1: int, ell2: int, split: bool = False):
+        """sum over Wick terms, window pairs and multipoles of u_i (s^2 ds sum_c c Q) v_j, / (I_AB I_CD).
+
+        split=True returns {'PP', 'PS', 'SS'}: the contributions with zero, one and two shot-noise pieces, from the same
+        windows (their sum is the block). The shot-noise windows enter through _window_scale only, so a covariance at
+        shot noise S' is PP + (S'/S) PS + (S'/S)^2 SS exactly (single tracer; for cross pairs per tracer)."""
         if not self.power:
             raise RuntimeError("set the power spectrum first (set_power)")
         AB, CD = tuple(str(x) for x in AB), tuple(str(x) for x in CD)
@@ -321,7 +325,9 @@ class GaussianCovariance:
         if self.windows.missing():          # lazily compute whatever pair counts are missing
             self.windows.compute_all()
         C = np.zeros((self.nbins, self.nbins))
+        parts = {0: np.zeros_like(C), 1: np.zeros_like(C), 2: np.zeros_like(C)} if split else None
         for term, window_x, spectrum_x, window_xp, spectrum_xp in self._wick_terms(AB, CD):
+            n_s = (spectrum_x[0] == 'S') + (spectrum_xp[0] == 'S')
             ci, cj = window_xp.coeffs_for(self.kedges), window_x.coeffs_for(self.kedges)   # basis-window coefficients
             scale = self._window_scale(spectrum_x) * self._window_scale(spectrum_xp)        # shot-noise windows
             for L1 in self._Ls_for(spectrum_xp):
@@ -336,8 +342,28 @@ class GaussianCovariance:
                             u = u * ci[:, None]
                         if cj is not None:
                             v = v * cj[:, None]
-                        C += (u * (self.s_weights * q)) @ v.T
-        return C / (self.I(*AB) * self.I(*CD))
+                        contrib = (u * (self.s_weights * q)) @ v.T
+                        C += contrib
+                        if split:
+                            parts[n_s] += contrib
+        norm = self.I(*AB) * self.I(*CD)
+        if split:
+            return {name: parts[n] / norm for n, name in ((0, 'PP'), (1, 'PS'), (2, 'SS'))}
+        return C / norm
+
+    def covariance_parts(self, spectra, ells=None, symmetrize=True):
+        """The covariance split by the number of shot-noise pieces: {'PP', 'PS', 'SS'}, labels; PP + PS + SS equals
+        covariance(). Gives the covariance at any other shot-noise level from one set of windows (e.g. for thinning or
+        the discreteness decomposition) without recomputing the windows."""
+        ells = self.ells if ells is None else ells
+        blocks = [(tuple(str(x) for x in sp), l) for sp in spectra for l in ells]
+        raw = [[self._block_raw(a[0], b[0], a[1], b[1], split=True) for b in blocks] for a in blocks]
+        out = {}
+        for name in ('PP', 'PS', 'SS'):
+            C = np.block([[raw[i][j][name] for j in range(len(blocks))] for i in range(len(blocks))])
+            out[name] = 0.5 * (C + C.T) if symmetrize else C
+        labels = [(sp[0], sp[1], l, i) for (sp, l) in blocks for i in range(self.nbins)]
+        return out, labels
 
     def covariance(self, spectra, ells=None, symmetrize=True, verbose=False):
         """Full covariance matrix for the data vector [P^{sp}_{ell}(k_i)] ordered by spectrum, ell, bin.

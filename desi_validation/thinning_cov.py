@@ -178,6 +178,10 @@ def thecov_stage(args):
                                   windows_file=os.path.join(od, f'windows_{name}.npz'), power_input='masked', smoothing=sm)
     log(f'  done in {time.time() - t0:.0f} s')
     res = dict(C_G=C, sn=sn, n_near=n_near)
+    if hasattr(cov, 'covariance_parts'):                                    # G_PP, G_PS, G_SS from the same windows
+        parts, _ = cov.covariance_parts([(tr.name, tr.name)], ells=spec['ells'])
+        res.update(C_PP=parts['PP'], C_PS=parts['PS'], C_SS=parts['SS'], sum_w2=float(g['sum_w2']), sn_randoms=float(g['sn_randoms']))
+        log(f'  Gaussian split PP/PS/SS: max |sum - C_G| / max |C_G| = {np.max(np.abs(parts["PP"] + parts["PS"] + parts["SS"] - C)) / np.max(np.abs(C)):.1e}')
     try:                                                                    # tree-level discreteness terms
         try:
             from thecov.tree.discreteness import DiscretenessCovariance

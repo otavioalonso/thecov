@@ -220,3 +220,22 @@ def test_per_object_weights_need_the_smooth_mean_density():
                          shotnoise=0.5 * (1 + alpha) * alpha * np.sum((ws * u) ** 2))
     cov = GaussianCovariance([new], half, smoothing=None)
     assert np.isclose(cov.shotnoise_scale('A') * Window('S', new).integral() / exact_S, 0.5, rtol=1e-3)
+
+
+def test_covariance_parts_sum_and_shotnoise_scaling():
+    """covariance_parts: PP + PS + SS = covariance(), and a spectrum with shot noise x2 gives PP + 2 PS + 4 SS from the
+    same windows (the shot-noise windows enter only through their scale)."""
+    A, _, opts = _small_setup(np.random.default_rng(7))
+    k = np.linspace(0.0, 1.0, 100)
+    spec = lambda sn: PowerSpectrum({0: (k, 2e4 * np.ones_like(k)), 2: (k, 0.8e4 * np.ones_like(k))},
+                                    kedges=np.arange(0.04, 0.13, 0.04), shotnoise=sn)
+    cov = GaussianCovariance([A], spec(3.0e3), **opts, smoothing=None)
+    C, _ = cov.covariance([('A', 'A')], ells=(0, 2))
+    parts, _ = cov.covariance_parts([('A', 'A')], ells=(0, 2))
+    assert np.allclose(parts['PP'] + parts['PS'] + parts['SS'], C, rtol=1e-12, atol=1e-12 * np.abs(C).max())
+    assert np.abs(parts['SS']).max() > 0 and np.abs(parts['PS']).max() > 0
+    cov2 = GaussianCovariance([A], spec(6.0e3), **opts, smoothing=None)
+    cov2.windows = cov.windows                         # same pair counts
+    C2, _ = cov2.covariance([('A', 'A')], ells=(0, 2))
+    pred = parts['PP'] + 2 * parts['PS'] + 4 * parts['SS']
+    assert np.allclose(C2, pred, rtol=1e-10, atol=1e-10 * np.abs(C2).max())
