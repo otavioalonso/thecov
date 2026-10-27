@@ -998,3 +998,16 @@ Recommendation unchanged. (`disc_multipoles` now prints tree+SSC and hybrid+SSC.
 **Cold-cache end-to-end timings** (one CPU node, all terms, ells 0 2 4, --single): thin stub 184 s, measured discreteness 441 s,
 Gaussian (smoothing 280 s + pair counts) + split + tree disc 765 s, tree T0 8 s, SSC 28 s; total 1426 s (24 min) -> fits the
 30-min debug queue. (A harmless jax CUDA_ERROR_NO_DEVICE message is logged on CPU nodes.)
+
+## 18. Code review of the discreteness computation (2026-10-27; `report/discreteness_code_review.md`)
+
+Bugs: (1) quad (exact P/n^2) aliased by the circular FFT correlation for |k + k'| > grid Nyquist (0.305): clustering
+part overestimated +6 % at k = 0.22, +26 % at 0.27, +42 % at 0.30 -> measured P/n^2 at 0.2-0.3 (0.027 vs tree 0.021) is
+mostly this; B/n low by 2x the excess, hybrid P0 block low by 1x, ratio_off high. Fixed (5e9f97b, --quad-pad 2, brute-force
+checked); mock 173 rerun in catcov/LRG1_NGC_mock173_v3. (2) thecov G in the mock comparison uses the device shot noise
+(4 random files, 28311) not the files' (27650): G 2.2 % high at k = 0.2-0.3; assemble G(files' S) + B/n + P/n^2 (to do in
+disc_multipoles). (3) Structural: G + B/n + P/n^2 = G_PP + (1-1/r) G_PS + (1-1/r)^2 G_SS + lin - quad, so the SUM is
+insensitive to thecov's shot-noise terms, but the SPLIT puts thecov's P x S error (untested by the Poisson test) into
+"B/n" at full strength: the negative l > 0 B/n is a few-% test of G_PS, not a measurement. (4) Grid shells +-2 % vs
+continuum in the first bins (~0.002 of G leak). Block-wise Wishart with T0 and next steps (GRF-Poisson test of G_PS,
+MC thinning for l > 0 quad, catalogue P in thecov) in the report.
