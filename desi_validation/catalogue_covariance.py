@@ -126,7 +126,7 @@ def main(argv=None):
         from thecov.tree.trispectrum import galileon_bias
         t0 = time.time()
         t0c = TrispectrumCovariance(cov, (kl, PirA), galileon_bias(b1, b2, bs2, b3=0.0), f=f, n_workers=args.workers,
-                                    sigma_fog=sigma_v, **(dict(n_mu=20, n_psi=40) if sigma_v else {}))
+                                    sigma_fog=sigma_v, n_k=2, **(dict(n_mu=20, n_psi=40) if sigma_v else {}))
         tc = t0c.components(spectra, ells=tuple(args.ells))
         out.update(C_T0_snake=tc['snake'], C_T0_star=tc['star'], J4=t0c.window_integral(tr.name))
         T['tree_T0'] = time.time() - t0
