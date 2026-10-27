@@ -59,7 +59,7 @@ def decompose(d):
     Pn2[:nb, :nb] = Pn2_00
     Bn = lin - g1 - 2 * Pn2
     return dict(k=k, nb=nb, G=G[1], GPP=GPP, GPS=GPS, GSS=GSS, Bn=Bn, Pn2=Pn2, tree_B=TB, tree_P=TP, ratio_P=ratio,
-                a=a, sn=sn[1], sw2=sw2)
+                a=a, sn=float(t1["sn"]), sw2=sw2)
 
 
 def ratio_off(meas, tree, k, kmin=0.1, offs=range(3, 9)):

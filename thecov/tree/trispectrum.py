@@ -347,19 +347,33 @@ def mu12_nodes(n_mid=64, n_end=32, delta=0.05, eps=1e-12):
 
 
 def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None, parts=('snake', 'star', 'star_b3'),
-               sigma_fog=0.0, k_collapse=None):
+               sigma_fog=0.0, k_collapse=None, symmetric=True):
     """{part: {(l1, l2): (2 l1 + 1)(2 l2 + 1) < L_l1(mu1) L_l2(mu2) T(k1, -k1, k2, -k2) >}} at |k1|, |k2|.
 
     sigma_fog: Gaussian fingers-of-God damping of the four external fields, T -> T exp(-(k1 mu1 s)^2 - (k2 mu2 s)^2)
     (phenomenological; the angular rule is then no longer exact: raise n_mu, n_psi).
     k_collapse: also return 'collapsed_tree', the snake + star restricted to the configurations with
     min |k1 +- k2| < k_collapse. Diagnostic only: the bulk-flow (IR) pieces of the snake cancel against star
-    contributions from all configurations, so this restriction is not IR safe; use collapsed_multipoles."""
+    contributions from all configurations, so this restriction is not IR safe; use collapsed_multipoles.
+
+    symmetric: evaluate one eighth of the angular grid. The integrand (even l only) is invariant under
+    psi -> -psi (reflection through the k1-n plane), (mu1, psi) -> (-mu1, pi - psi) (reflection of the line of sight)
+    and (mu12, psi) -> (-mu12, psi + pi) (k2 -> -k2, a symmetry of the parallelogram); the node sets map onto
+    themselves when n_mu and n_psi are even and the mu12 nodes are symmetric, so mu12 > 0, mu1 > 0, psi in (0, pi)
+    with weight 8 gives the same sum (to rounding). Falls back to the full grid otherwise."""
     mu, wmu = mu12_nodes() if mu12 is None else mu12
+    mu, wmu = np.asarray(mu), np.asarray(wmu)
     xg, wg = np.polynomial.legendre.leggauss(n_mu)
     psi = 2 * np.pi * (np.arange(n_psi) + 0.5) / n_psi
+    wpsi = np.full(n_psi, 1 / n_psi)
+    sym = (symmetric and n_mu % 2 == 0 and n_psi % 2 == 0 and all(l % 2 == 0 for l in ells)
+           and not np.any(np.abs(mu) < 1e-14) and np.allclose(np.sort(mu), np.sort(-mu))
+           and np.allclose(wmu[np.argsort(mu)], wmu[np.argsort(-mu)]))
+    if sym:
+        km, kx, kp = mu > 0, xg > 0, psi < np.pi
+        mu, wmu, xg, wg, psi, wpsi = mu[km], 2 * wmu[km], xg[kx], 2 * wg[kx], psi[kp], 2 * wpsi[kp]
     M, C1, PS = np.meshgrid(mu, xg, psi, indexing='ij')
-    W = np.meshgrid(wmu, wg / 2, np.full(n_psi, 1 / n_psi), indexing='ij')
+    W = np.meshgrid(wmu, wg / 2, wpsi, indexing='ij')
     W = W[0] * W[1] * W[2]
     S1 = np.sqrt(1 - C1 ** 2)
     SM = np.sqrt(np.clip(1 - M ** 2, 0, None))

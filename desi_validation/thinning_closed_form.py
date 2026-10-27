@@ -95,14 +95,18 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
                 kt = kt * khat[i]; xt = xt * xh[:, i]
             ktens[o].append(kt); xtens[o].append(xt)
     del khat, xh
-    F0c = np.conj(F0); Flc = {l: np.conj(Fl[l]) for l in ells}
+    single = bool(getattr(args, 'single', False))
+    cdt = np.complex64 if single else np.complex128
+    F0c = np.conj(F0).astype(cdt); Flc = {l: np.conj(Fl[l]).astype(cdt) for l in ells}
+    ktens = {o: [kt.astype(np.float32) if single else kt for kt in ktens[o]] for o in ktens}
     io3 = io.reshape(n, n, n)
     Gb = {l: np.empty((nb, len(wd))) for l in ells}
-    thd = th(xd)
+    thd = [t.astype(np.float32) for t in th(xd)] if single else th(xd)
+    opts2 = dict(opts, eps=max(opts['eps'], 1e-5)) if single else opts
     for i in range(nb):
         m = io3 == i
         stack = [np.where(m, Flc[l], 0) for l in ells] + [np.where(m, F0c * kt, 0) for o in (2, 4) for kt in ktens[o]]
-        v = finufft.nufft3d2(*thd, np.ascontiguousarray(np.array(stack)), isign=-1, **opts)
+        v = finufft.nufft3d2(*thd, np.ascontiguousarray(np.array(stack, dtype=cdt)), isign=-1, **opts2).astype(np.complex128)
         vF = {l: v[j] for j, l in enumerate(ells)}
         off = len(ells)
         S = {}
@@ -134,6 +138,7 @@ def main():
     ap.add_argument('--pad', type=float, default=1.1)
     ap.add_argument('--eps', type=float, default=1e-4)
     ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--single', action='store_true', help='single-precision NUFFTs for the multipole linear term (~2x faster; eps >= 1e-5)')
     ap.add_argument('--ells', type=int, nargs='+', default=[0], help='multipoles of the linear (B/n) term; 0 2 4 gives all nine blocks')
     ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
     args = ap.parse_args()
