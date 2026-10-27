@@ -1068,3 +1068,43 @@ production run).
 reproduces the light check exactly: P0xP0 B/n 0.0022/0.0190/0.0690/0.1357, P/n^2 0.0000/0.0005/0.0056/0.0212; Wishart with the
 files' S (P0 / P2 / P4 / P0+P2 / P0+P2+P4): tree + SSC 927/902/826/3590/8417, measured + SSC 881/910/843/3631/9827,
 hybrid + SSC 881/902/826/3548/8119 (min eig 0.943). Use v3 as the reference mock-173 catalogue covariance from here on.
+
+## 21. T0 validation redone with catalogue-consistent inputs (2026-10-27; `t0_inputs_fit.py`, `responses/t0_review/`)
+
+**Inputs through the DESI window matrix** (`cutsky_window_matrix_validation/holi-v3-altmtl/mock0/window_mesh2_spectrum_poles_LRG_z0.4-0.6_NGC_..._smooth_mesh.h5`,
+observable 3 x 418 bins, theory 3 x 501; `t0_inputs_fit.py --stage fit` dumps a slim copy and does the fit; refit locally at
+k = 0.02-0.08 with a 2 % model-error floor, `window_fit_LRG1_NGC.csv`): mock mean, A free: b1 1.93, sigma_v 3.75, A 0.944
+(chi2 2/24); A = 1: b1 1.87, sigma_v 4.25. Mock 173 alone, A = 1: b1 1.87, sigma_v 3.75 (A free is degenerate on one mock:
+b1 2.18, A 0.75). The production b1 = 2.202 / A = 0.739 was the unconvolved-Kaiser artefact; the window LOWERS the model P2/P0
+at k < 0.08 (0.39 -> 0.35-0.38) while the data sit at 0.42-0.47. **Catalogue recipe: A = 1 (fiducial P_lin), b1 from the
+window-convolved P0, sigma_v from P2/P0: b1 1.87, sigma_v 3.75.** b2: Lazeyras(1.87) = -0.29 makes the tree T0 tiny/negative
+(P0 diagonal -1.5 % of G at k < 0.1); b2 from the measured P0xP0 B/n against the tree B/n (linear in b2) gives 0.52 at
+k = 0.1-0.2 but 2.4 at 0.2-0.3 and 1.8 from the off-diagonals: the collapsed bispectrum is beyond tree level at k > 0.2.
+Adopted b2 = 0.52 (k = 0.1-0.2), bs2 = -4/7 (b1 - 1) = -0.50.
+
+**J4 is inflated by the randoms' density noise** (`--stage j4`, 18 random files split in 4 disjoint quarters, sum_c W1 W2 W3 W4 V_c
+unbiased): int W^4 = 4.70 / 4.30 / 4.10 / 3.85e-8 at cells 3 / 10 / 20 / 40 Mpc/h (naive single-field estimate 9.3e-7 at
+3 Mpc/h: pure noise) vs 6.97e-8 implied by the production J4 = 9.70e-10 (norm 8.476). J4_eff = int W^4 / norm^2 = 5.7e-10 at
+20 Mpc/h (0.588 x production; 0.62 at 10, 0.55 at 40). int W^2 cross = 8.83 -> 7.73 (3 -> 80 Mpc/h) against the estimator's
+norm 8.476. `TrispectrumCovariance.window_integral` (alpha sum_r w_r W_r^3 with the per-random density) should be replaced by
+a cell/quarter estimate or a kernel-smoothed W.
+
+**Block amplitudes** (`t0_tree_fit.block_amplitudes`: rebinned to dk 0.025, correlation units, base = G + measured
+B/n + P/n^2 of catcov v2 [one-run split, quad still aliased at k > 0.2], G at the device S; T0 with n_k = 2 and J4_eff;
+`t0_block_amplitudes_newpar_LRG1_NGC.csv`, `report_figures/t0_block_amplitudes_inputs_LRG1_NGC.png`). Hard (k >= 0.15,
+off-diagonal) / squeezed (k < 0.1 x k >= 0.1), base without / with the clustering SSC (positive eigen-part of C_ssc):
+- production inputs: P0xP0 2.1 / 1.2, P2xP2 3.4 / 2.4, P0xP2 0.4 / 2.3; squeezed P0 0.9 / 0.7, P2 1.2 / 1.1, P0xP2 0.6 / 0.9
+  (the section 13 "P0 hard = 1.0" was the inflated J4 compensating).
+- b1 1.87, b2 0.52, sigma_v 3.75, A 1, measured P inside the kernels: P0xP0 0.95 / 0.54, P2xP2 2.7 / 1.9, P0xP2 0.75 / 2.6;
+  squeezed P0 0.56 / 0.46, P2 1.07 / 0.92, P0xP2 0.55 / 0.78.
+- b1 1.87, Lazeyras b2 -0.29: 3-5 everywhere in the hard blocks (the template nearly vanishes).
+The hard-block result is a test of tree-level PT plus b2, not of the code (kernels and quadratures verified, section 19); the
+mocks' off-diagonal correlation excess at k >= 0.15 is 0.14 (P0xP0) / 0.26 (P2xP2) without and 0.07 / 0.17 with the clustering
+SSC in the base, against 0.04-0.11 from any tree T0 with J4_eff. The P2xP2 hard block wants 2-3x tree under every input choice;
+the squeezed P0 block stays at 0.5 (section 13 conclusion unchanged); squeezed P2 and P0xP2 move to ~1 with the new inputs.
+Section 16 tree discreteness terms and the SSC responses must also be recomputed with (b1, b2, bs2, sigma_v) = (1.87, 0.52,
+-0.50, 3.75), A = 1.
+
+**Decisive next step**: the 25 Abacus c000 LRG z = 0.5 cubic boxes (3 LOS each; `mock_challenge_box/abacus-hf-v2`, with the
+sugiyama-diagonal bispectrum for b2): no window (J4 = 1/V exactly), no SSC, b1 from P0 with A = 1, b2 from the bispectrum, exact
+Gaussian from the box mean P(k, mu), tree discreteness with the known nbar; what is left is T0 alone, hard and squeezed.

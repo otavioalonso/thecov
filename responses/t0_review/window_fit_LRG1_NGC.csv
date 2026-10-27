@@ -1,0 +1,6 @@
+fit,b1,sigma_v,A
+"mock 173, A free, k 0.02-0.08",2.18,0.0,0.752
+"mock 173, A = 1",1.87,3.75,1.0
+"mock mean, A free",1.93,3.75,0.944
+"mock mean, A = 1",1.87,4.25,1.0
+"production (no window, k<=0.06)",2.202,2.088,0.7387
