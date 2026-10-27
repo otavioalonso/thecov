@@ -366,7 +366,7 @@ def main():
         # variants: LA with its Poisson self-calibration term, LA without it, no LA
         for key, la, pois in (('LA', True, True), ('LA_noPoisson', True, False), ('noLA', False, False)):
             ssc = SuperSampleCovariance(cov, (kl, PlA), b1=b1, f=f, b2=b2, bs2=bs2, local_average=la, **damp,
-                                        n_near=args.n_near, dilution=dil, discreteness=pois, norm_kind=args.norm_kind)
+                                        n_near=args.n_near, dilution=dil, discreteness=pois, norm_kind=args.norm_kind, p_lin_long=(kl, Pl))
             wfile = os.path.join(args.dir, f'ssc_windows_{b}_{r}.npz')
             if key == 'LA':
                 if os.path.exists(wfile):
@@ -391,7 +391,7 @@ def main():
             kinds = {}
             for kind in ('data-randoms', 'randoms', 'alpha'):
                 sk = SuperSampleCovariance(cov, (kl, PlA), b1=b1, f=f, b2=b2, bs2=bs2, local_average=True, **damp,
-                                           n_near=args.n_near, dilution=dil, discreteness=True, norm_kind=kind)
+                                           n_near=args.n_near, dilution=dil, discreteness=True, norm_kind=kind, p_lin_long=(kl, Pl))
                 sk.windows = windows
                 kinds[kind] = sk
             ns = norm_statistics(f'{b} {r}', V, norm_arr, k, nb, kinds, C + Cs, tr.name)

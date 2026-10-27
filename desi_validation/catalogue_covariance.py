@@ -142,7 +142,9 @@ def main(argv=None):
                                     p_lin_long=(kl, Pl))         # long-mode variance from the fiducial P_lin, not A_norm P_lin
         ssc.compute_windows(tr.name, verbose=False)
         Cs, _ = ssc.covariance(spectra, ells=tuple(args.ells))
-        out.update(C_ssc=Cs)
+        Cpois = ssc.discreteness_covariance(tr.name, tuple(args.ells))          # tree Poisson local-average part (rank ~1 along P)
+        Pm_, T_, var_ = ssc._poisson_terms(tr.name, tuple(args.ells))
+        out.update(C_ssc=Cs, C_ssc_poisson=Cpois, C_ssc_clustering=Cs - Cpois, ssc_T_tree=T_, ssc_var_tree=var_, ssc_P_hat=Pm_)
         T['ssc'] = time.time() - t0
         log(f'  SSC done ({T["ssc"]:.0f} s)')
     T['total'] = time.time() - t00

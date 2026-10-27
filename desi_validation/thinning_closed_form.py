@@ -35,7 +35,7 @@ from desi_validation.grf_randoms import NTH, log  # noqa: E402
 from desi_validation.thinning_cov import KR, setup_mock  # noqa: E402
 
 
-def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum0):
+def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum0, Wd=None):
     """Linear (one shared galaxy, B/n-like) thinning term for the multipoles, all (l, l') blocks.
 
     With the end-point line of sight of the estimator, F_l(k) = sum w L_l(k.x_g) e_g(k) (galaxies minus alpha randoms)
@@ -123,9 +123,24 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
         del stack, v
     G = np.vstack([Gb[l] for l in ells])
     lin = G @ G.T
+    out_la = {}
+    if Wd is not None:
+        # Poisson noise of the realised normalisation (ssc.py, 'discreteness of the local average'): the estimator's alpha and
+        # norm = alpha sum_c D_c R_c are sums over the galaxies, eps_N = sum_g eta_g u_g with u_M = w_g / sum w (alpha) and
+        # u_W = w_g W_g / sum w W (the data in norm), W_g = nbar(z_g) w_g. The same thinning that gives lin gives
+        # Cov(P_hat_l(i), eps_X) = a sum_g G^l_g(i) u_X,g  and  Var(eps_X eps_Y) = a sum_g u_X,g u_Y,g; at full density
+        # T_X,l(i) = sum_g G^l_g(i) u_X,g is the catalogue's <P_raw eps_X> (tree: 2 P J_X / norm + B_c J3_X / norm), so
+        # C_LA = -T P^T - P T^T + Var P P^T with T = T_M + T_W, Var = sum_XY (data-randoms convention), P = the measured P_l.
+        u = {'M': wd / np.sum(wd), 'W': wd * Wd / np.sum(wd * Wd)}
+        out_la = {f'la_T_{X}': G @ u[X] for X in u}
+        out_la.update({f'la_var_{X}{Y}': float(np.sum(u[X] * u[Y])) for X in u for Y in u if X <= Y})
+        out_la.update(la_I_M=float(np.sum(wd)), la_I_W=float(np.sum(wd * Wd)))
+        log(f'  local-average Poisson vectors: Var(eps) = {out_la["la_var_MM"] + 2 * out_la["la_var_MW"] + out_la["la_var_WW"]:.3e} '
+            f'(4 / N_gal = {4 / len(wd):.3e}); T_0 / P_0 at k_mid: {(out_la["la_T_M"] + out_la["la_T_W"])[nb // 2] / P1[0][nb // 2]:.3e} '
+            f'(uniform-window estimate 4 / N_gal)')
     log(f'  multipole linear term done ({time.time() - t0:.0f} s); l = 0 block reproduces the monopole loop: '
         f'max rel dev {np.max(np.abs(lin[:nb, :nb] - Gsum0)) / np.max(np.abs(Gsum0)):.1e}')
-    return dict(ells=np.array(ells), lin_ell=lin, P1_ell=np.concatenate([P1[l] for l in ells]))
+    return dict(ells=np.array(ells), lin_ell=lin, P1_ell=np.concatenate([P1[l] for l in ells]), **out_la)
 
 
 def main(argv=None):
@@ -149,6 +164,7 @@ def main(argv=None):
     k, edges, nb, norm = g['k'], g['k_edges'], len(g['k']), float(g['norm'])
     rc = dc.load_region(paths, b, r, n_random_files=args.random_files)
     wd, wr = dc.total_weight(rc.data), dc.total_weight(rc.randoms)
+    Wd = np.asarray(rc.data['NX'], float) * wd if 'NX' in rc.data else None      # W(x_g) = nbar(z_g) w_g for the local-average vectors
     xd = dc.sky_to_cartesian(rc.data['RA'], rc.data['DEC'], rc.data['Z'])
     xr = dc.sky_to_cartesian(rc.randoms['RA'], rc.randoms['DEC'], rc.randoms['Z'])
     del rc
@@ -229,7 +245,7 @@ def main(argv=None):
     ells = tuple(args.ells)
     if max(ells) > 0:
         ells = tuple(sorted(set(ells) | {0}))
-        out.update(multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum))
+        out.update(multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum, Wd=Wd))
     fn = os.path.join(od, 'thinning_closed_form.npz' if max(ells) == 0 else 'thinning_closed_form_ell' + ''.join(map(str, ells)) + '.npz')
     np.savez(fn, **out)
     if max(ells) > 0:                                  # the l = 0 report below needs thecov_p*.npz with the same ells; decompose offline
