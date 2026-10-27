@@ -120,8 +120,19 @@ def one_catalogue(args, mock, grid_state):
         else:
             dg = g_b * dL_r + ds_r * (1 + R_m * dL_r)
             log(f'  synthetic field on the randoms: R_m = {R_m}, g = {g_b}; sigma(delta_L) = {dL_r.std() * 100:.2f} %, '
-                f'sigma(delta_s) = {ds_r.std():.3f}; expected dlnP0/d delta_gL = {2 * R_m / g_b:.3f} (modulation only at q < k_L), dlnP2 = 0')
-        xd, wd = xr, wr * (1 + dg)
+                f'sigma(delta_s) = {ds_r.std():.3f}; expected dlnP0/d delta_gL = {2 * R_m / g_b:.3f} (modulation only at q < k_L), dlnP2 = 0; '
+                f'R_2 = {2 * R_m ** 2 / g_b ** 2:.3f} per unit galaxy soft power')
+        if args.synthetic_poisson is not None:
+            # Poisson sampling with DISTINCT randoms: galaxies drawn from one half of the randoms with p = p0 (1 + delta_g),
+            # the other half are the randoms -> realistic shot noise and bookkeeping (as --lnpoisson)
+            p0 = args.synthetic_poisson
+            perm = rng.permutation(len(wr)); par, est = perm[: len(wr) // 2], perm[len(wr) // 2:]
+            sel = par[rng.random(len(par)) < np.clip(p0 * (1 + dg[par]), 0, 1)]
+            xd, wd = xr[sel], wr[sel]; xr, wr = xr[est], wr[est]
+            log(f'  Poisson-sampled synthetic catalogue: {len(sel)} galaxies from {len(par)} parents (p0 = {p0}), {len(est)} randoms')
+            del perm, par, est, sel
+        else:
+            xd, wd = xr, wr * (1 + dg)
         del dL_r, ds_r, dg
     del rc
     alpha = float(np.sum(wd) / np.sum(wr))
@@ -176,7 +187,7 @@ def one_catalogue(args, mock, grid_state):
     M = poles(moments(xd, wd) - alpha * moments(xr, wr))                       # F_l (once per catalogue)
     F0 = M[0]
     sn = float(np.sum(wd ** 2) + alpha ** 2 * np.sum(wr ** 2))
-    if args.synthetic is not None and args.lnpoisson is None:   # data = randoms (same points): the self pairs are those of ONE weighted point set
+    if args.synthetic is not None and args.lnpoisson is None and args.synthetic_poisson is None:   # data = randoms (same points): the self pairs are those of ONE weighted point set
         wq = wd - alpha * wr                      #   F = sum_r (w_d - alpha w_r) e,  self term sum_r wq^2 (and wq^2 delta_L for C)
         sn = float(np.sum(wq ** 2))
     nL = len(args.k_L)
@@ -208,7 +219,7 @@ def one_catalogue(args, mock, grid_state):
         # discreteness of the three-point estimator: the same galaxy in F^* and in the F of FT[delta_L F] gives the self term
         # sum_g w_g^2 delta_L(x_g) (+ alpha^2 sum_r w_r^2 delta_L(x_r)), one scalar; <delta_L at galaxies> = <delta_g delta_L> = int P W_L (> sigma_L^2 = int P W_L^2)
         c_sn = float(np.sum(wd ** 2 * dLd) + alpha ** 2 * np.sum(wr ** 2 * dLr))
-        if args.synthetic is not None and args.lnpoisson is None:
+        if args.synthetic is not None and args.lnpoisson is None and args.synthetic_poisson is None:
             c_sn = float(np.sum(wq ** 2 * dLd))
         out['sig2'][iL], out['c_sn'][iL] = sig2, c_sn
         out['dL_at_gal'][iL] = float(np.sum(wd * dLd) / np.sum(wd))
@@ -218,6 +229,128 @@ def one_catalogue(args, mock, grid_state):
             out[f'C2_{ell}'][iL] = (2 * ell + 1) * shell((np.conj(F0) * ML2[ell]).real)
         log(f'    k_L = {k_L:g}: sigma_L = {np.sqrt(sig2) * 100:.3f} %, <delta_L at gal> = {out["dL_at_gal"][iL] * 1e4:.2f}e-4 ({time.time() - t1:.0f} s)')
         del dLd, dLr, ML, ML2
+    if args.soft_band:
+        # ---- second-order response from the integrated trispectrum (HANDOFF section 14) -----------------------------
+        # Regressor: the local power of the soft band [k1, k2), S_q(x) = [m_w^2 delta_s^2]_lowpass(k_q) / [m_w^2]_lowpass(k_q),
+        # delta_s = (F W_band) / m_w, m_w = m smoothed at k_w (fixed), minus its m^2-weighted mean and its m^2-weighted
+        # projection on the long mode delta_q = (F W_q) / m_q (removes the first-order coupling R_1 <delta_q S_q>).
+        # Fourier form: Q_l(k) = <F_l^*(k) FT[g F](k)>_shell = sum_q W_q(q) sum_p W_b(p) W_b(|q-p|) <F*(k) F(k+q) F(p) F(q-p)>.
+        # Disconnected (Gaussian) part: sum_q g(q) <F*(k) F(k+q)> = P_l(k) int m^2 g = P_l(k) <g>_{m^2}, which is why the
+        # mean (and the delta_q projection) must be m^2-weighted: with <g>_{m^2} = 0 it vanishes and only the connected part
+        #     Q_l(k) - QS = R_2 P_l(k) <delta_s^2 g>_{m^2} / 2
+        # remains (collapsed trispectrum T -> R_2 P(k) P(p) P(|q-p|); for a top-hat band the Gaussian covariance of
+        # delta_s^2 with g is exactly twice the same mode sum, hence the 1/2). QS = sum_g w_g^2 g(x_g) (+ alpha^2 randoms)
+        # is the self-pair term. R_2 is per unit galaxy soft-band power, in global coordinates (what the squeezed T0 block
+        # needs: Cov(P_s, P_h) = R_2 P_h V_band Var_clust(P_s) / 2, V_band = (k2^3 - k1^3) / 6 pi^2). The band shot noise
+        # enters <delta_s^2 g> but not the response: multiply R_2 by (1 + SN / P_s)^2 afterwards (sn, Ps_band_raw saved).
+        # Discreteness terms removed: self pairs (QS), the galaxy's own contribution to S_q (h, both pair members: Qh) and to
+        # delta_q (c, both members: beta Qc). Neglected: both pair members inside the soft legs (P/n^2-type, ~2 c_bb w^2/den
+        # relative to <delta_s^2 g>: 1-5 per cent of R_2).
+        bands = [(args.soft_band[i], args.soft_band[i + 1]) for i in range(0, len(args.soft_band), 2)]
+        nB, nQ = len(bands), len(args.k_q)
+        out['soft_band'] = np.array(bands); out['k_q'] = np.array(args.k_q); out['sn'] = sn; out['k_w'] = args.k_w
+        for key in ('Q0', 'Q2', 'Qh0', 'Qh2', 'Qc0', 'Qc2'):
+            out[key] = np.zeros((nB, nQ, nb))
+        for key in ('QS', 'g_gal', 'g_m', 'g_m2', 'd2g_gal', 'd2g_m', 'd2g_m2', 'var_g_m2', 'd2_gal', 'd2_m2', 'beta', 'sig2_q', 'Ps_band_raw', 'QhS', 'h_gal', 'c_bb', 'QcS', 'c_gal'):
+            out[key] = np.zeros((nB, nQ))
+        wra = alpha * wr
+        Ww = np.exp(-0.5 * (km / args.k_w) ** 2)
+        m_w = sfft.ifftn(Fr * Ww, workers=NTH).real
+        thr_w = 0.1 * m_w.max(); mask_w = m_w > thr_w; mw = np.maximum(m_w, thr_w)
+        mw2k = sfft.fftn(np.where(mask_w, m_w, 0.0) ** 2, workers=NTH)                 # for the local normalisation
+        mwk = sfft.fftn(np.where(mask_w, m_w, 0.0), workers=NTH).astype(complex) / n ** 3
+        mw_r = finufft.nufft3d2(*th(xr), mwk, isign=1, **opts).real                   # m_w at the randoms: m^2 weights
+        om_r = wra * np.maximum(mw_r, 0.0)
+        del Ww, mwk, mw_r
+        for iB, (k1, k2) in enumerate(bands):
+            tb = time.time()
+            Wb = ((km >= k1) & (km < k2)).astype(float)
+            Fb = sfft.ifftn(F * Wb, workers=NTH).real                                 # m delta_s (+ window leakage)
+            kb_r = sfft.ifftn(Wb, workers=NTH).real                                   # band kernel K_b(r) (unit-weight galaxy -> Fb)
+            Fb_k = sfft.fftn(np.where(mask_w, Fb, 0.0), workers=NTH)
+            del Wb
+            ds2 = np.where(mask_w, (Fb / mw) ** 2, 0.0)                                # soft-band overdensity squared
+            loc_k = sfft.fftn(np.where(mask_w, Fb, 0.0) ** 2, workers=NTH)             # m_w^2 delta_s^2
+            inb = (out['k'] >= k1) & (out['k'] < k2)
+            ps_raw = float(np.mean(out['P0'][inb])) if inb.any() else np.nan           # band monopole, raw units, shot noise removed
+            ak = sfft.fftn(ds2, workers=NTH).astype(complex) / n ** 3
+            ds2_d = finufft.nufft3d2(*th(xd), ak, isign=1, **opts).real
+            ds2_r = finufft.nufft3d2(*th(xr), ak, isign=1, **opts).real
+            del ak
+            for iQ, k_q in enumerate(args.k_q):
+                Wq = np.exp(-0.5 * (km / k_q) ** 2) if args.filter == 'gauss' else (km < k_q).astype(float)
+                m_q = sfft.ifftn(Fr * Wq, workers=NTH).real
+                thr = 0.05 * m_q.max(); mask = m_q > thr; mq = np.maximum(m_q, thr)
+                dq = np.where(mask, sfft.ifftn(F * Wq, workers=NTH).real / mq, 0.0)   # long mode at k_q
+                den = sfft.ifftn(mw2k * Wq, workers=NTH).real
+                den = np.maximum(den, 0.05 * den.max())
+                Sq = np.where(mask, sfft.ifftn(loc_k * Wq, workers=NTH).real / den, 0.0)
+                sig2_q = float(np.sum(m_q * dq ** 2) / np.sum(m_q))
+                # a galaxy's own contribution to the local soft power at its position (the B/n-type discreteness term of
+                # the four-point estimator, shared galaxy between a hard leg and a soft leg): with kappa(r) = w_q(r) K_b(r),
+                # h(x_g) = [2 w_g (Fb * kappa)(x_g) + w_g^2 c_bb] / den(x_g), c_bb = sum_r w_q(r) K_b(r)^2
+                wq_r = sfft.ifftn(Wq, workers=NTH).real
+                kap_k = sfft.fftn(wq_r * kb_r, workers=NTH)
+                c_bb = float(np.sum(wq_r * kb_r ** 2))
+                Hg = sfft.ifftn(Fb_k * kap_k, workers=NTH).real
+                Vq_cell = float(np.mean(Wq))                                          # w_q(r = 0): a unit weight's own contribution to (F W_q)
+                mq_k = sfft.fftn(mq, workers=NTH).astype(complex) / n ** 3
+                mq_d = finufft.nufft3d2(*th(xd), mq_k, isign=1, **opts).real
+                del Wq, m_q, mq, mask, wq_r, mq_k
+                at = {}
+                for nm, arr in (('Sq', Sq), ('dq', dq)):
+                    ak = sfft.fftn(arr, workers=NTH).astype(complex) / n ** 3
+                    at[nm + '_d'] = finufft.nufft3d2(*th(xd), ak, isign=1, **opts).real
+                    at[nm + '_r'] = finufft.nufft3d2(*th(xr), ak, isign=1, **opts).real
+                    del ak
+                for nm, arr in (('H', Hg), ('den', den)):
+                    ak = sfft.fftn(arr, workers=NTH).astype(complex) / n ** 3
+                    at[nm + '_d'] = finufft.nufft3d2(*th(xd), ak, isign=1, **opts).real
+                    del ak
+                del Sq, dq, Hg, den
+                h_d = (2 * wd * at['H_d'] + wd ** 2 * c_bb) / np.maximum(at['den_d'], 1e-30)
+                c_d = wd * Vq_cell / np.maximum(mq_d, 1e-30)                           # own contribution to delta_q at the galaxy
+                Sbar = float(np.sum(om_r * at['Sq_r']) / np.sum(om_r))
+                dqbar = float(np.sum(om_r * at['dq_r']) / np.sum(om_r))
+                beta = float(np.sum(om_r * (at['dq_r'] - dqbar) * (at['Sq_r'] - Sbar)) / np.sum(om_r * (at['dq_r'] - dqbar) ** 2))
+                # galaxy side: own contributions to S_q (h_d) and to delta_q (c_d) removed; the pair partner's contributions
+                # (galaxy a in F^*) are the same quantities on the F^* leg: Qh (to subtract) and Qc (times -beta, to add back)
+                g_d = at['Sq_d'] - Sbar - beta * (at['dq_d'] - c_d - dqbar) - h_d
+                g_r = at['Sq_r'] - Sbar - beta * (at['dq_r'] - dqbar)
+                MQ = poles(moments(xd, wd * g_d) - alpha * moments(xr, wr * g_r))
+                Mh = moments(xd, wd * h_d)[0]
+                Mc = moments(xd, wd * c_d)[0]
+                for ell in (0, 2):
+                    out[f'Q{ell}'][iB, iQ] = (2 * ell + 1) * shell((np.conj(F0) * MQ[ell]).real)
+                    out[f'Qh{ell}'][iB, iQ] = (2 * ell + 1) * shell((np.conj(Mh) * M[ell]).real)
+                    out[f'Qc{ell}'][iB, iQ] = (2 * ell + 1) * shell((np.conj(Mc) * M[ell]).real)
+                out['QS'][iB, iQ] = float(np.sum(wd ** 2 * g_d) + alpha ** 2 * np.sum(wr ** 2 * g_r))
+                out['QhS'][iB, iQ] = float(np.sum(wd ** 2 * h_d)); out['QcS'][iB, iQ] = float(np.sum(wd ** 2 * c_d))
+                out['h_gal'][iB, iQ] = float(np.sum(wd * h_d) / np.sum(wd)); out['c_bb'][iB, iQ] = c_bb
+                out['c_gal'][iB, iQ] = float(np.sum(wd * c_d) / np.sum(wd))
+                if args.synthetic is not None and args.lnpoisson is None and args.synthetic_poisson is None:
+                    out['QS'][iB, iQ] = float(np.sum(wq ** 2 * g_d)); out['QhS'][iB, iQ] = float(np.sum(wq ** 2 * h_d)); out['QcS'][iB, iQ] = float(np.sum(wq ** 2 * c_d))
+                out['g_gal'][iB, iQ] = float(np.sum(wd * g_d) / np.sum(wd))
+                out['g_m'][iB, iQ] = float(np.sum(wra * g_r) / np.sum(wra))
+                out['g_m2'][iB, iQ] = float(np.sum(om_r * g_r) / np.sum(om_r))
+                out['d2g_gal'][iB, iQ] = float(np.sum(wd * ds2_d * g_d) / np.sum(wd))
+                out['d2g_m'][iB, iQ] = float(np.sum(wra * ds2_r * g_r) / np.sum(wra))
+                out['d2g_m2'][iB, iQ] = float(np.sum(om_r * ds2_r * g_r) / np.sum(om_r))
+                out['var_g_m2'][iB, iQ] = float(np.sum(om_r * g_r ** 2) / np.sum(om_r))
+                out['d2_gal'][iB, iQ] = float(np.sum(wd * ds2_d) / np.sum(wd))
+                out['d2_m2'][iB, iQ] = float(np.sum(om_r * ds2_r) / np.sum(om_r))
+                out['beta'][iB, iQ] = beta; out['sig2_q'][iB, iQ] = sig2_q; out['Ps_band_raw'][iB, iQ] = ps_raw
+                qc = out['Q0'][iB, iQ] - out['QS'][iB, iQ] - (out['Qh0'][iB, iQ] - out['QhS'][iB, iQ]) + beta * (out['Qc0'][iB, iQ] - out['QcS'][iB, iQ])
+                r2 = 2 * qc / out['P0'] / out['d2g_m2'][iB, iQ]
+                hb = (out['Qh0'][iB, iQ] - out['QhS'][iB, iQ]) / out['P0'] / out['d2g_m2'][iB, iQ]
+                log(f'    band [{k1:g}, {k2:g}) k_q = {k_q:g}: <delta_s^2>_m2 = {out["d2_m2"][iB, iQ]:.4f}, rms g = {np.sqrt(out["var_g_m2"][iB, iQ]):.4f}, '
+                    f'<g>_gal = {out["g_gal"][iB, iQ]:.2e}, <h>_gal = {out["h_gal"][iB, iQ]:.2e}, beta = {beta:.3f}; R_2(P0) in bands {KR[2:]}: '
+                    + ', '.join(f'{np.mean(r2[(out["k"] >= lo) & (out["k"] < hi)]):+.2f}' for lo, hi in KR[2:])
+                    + '; shared-galaxy term (each side, R_2 units): ' + ', '.join(f'{np.mean(hb[(out["k"] >= lo) & (out["k"] < hi)]):+.2f}' for lo, hi in KR[2:])
+                    + f'; long-mode self term beta*(Qc-QcS)/(P d2g) each side: {np.mean(beta * (out["Qc0"][iB, iQ] - out["QcS"][iB, iQ]) / out["P0"] / out["d2g_m2"][iB, iQ]):+.3f} ({time.time() - tb:.0f} s)')
+                del at, g_d, g_r, MQ, Mh, Mc, h_d, c_d, mq_d, kap_k
+            del ds2, loc_k, ds2_d, ds2_r, kb_r, Fb_k
+        del m_w, mw, mask_w, mw2k, om_r
     log(f'  responses done ({time.time() - t0:.0f} s)')
     return out, grid_state
 
@@ -238,10 +371,18 @@ def main():
     ap.add_argument('--eps', type=float, default=1e-4)
     ap.add_argument('--synthetic', type=float, nargs=3, default=None, metavar=('R_M', 'G', 'SEED'),
                     help='known-response field on the randoms instead of the data (validation); G < 0: lognormal with sigma_G = |G| (R = 2 at all q)')
+    ap.add_argument('--synthetic-poisson', type=float, default=None, metavar='P0',
+                    help='with --synthetic: Poisson-sample the field from half of the randoms with p = P0 (1 + delta_g) (realistic shot noise)')
     ap.add_argument('--lnpoisson', type=float, nargs=4, default=None, metavar=('A_L', 'A_S', 'P0', 'SEED'),
                     help='Poisson-sampled lognormal catalogue with distinct randoms (validation, R = 2)')
+    ap.add_argument('--soft-band', type=float, nargs='+', default=None, metavar='K',
+                    help='second-order response: soft bands as k1 k2 [k1 k2 ...]; regress the hard power on the local band power')
+    ap.add_argument('--k-q', type=float, nargs='+', default=[0.02], help='smoothing scale(s) of the local soft power (squeezedness q/k_s)')
+    ap.add_argument('--k-w', type=float, default=0.05, help='Gaussian smoothing of the mean density used for the soft overdensity and the m^2 weights')
     ap.add_argument('--out-dir', default=None)
     args = ap.parse_args()
+    if args.soft_band is not None and len(args.soft_band) % 2:
+        ap.error('--soft-band takes pairs k1 k2')
     od = args.out_dir or os.path.expanduser(f'~/thecov/responses')
     os.makedirs(od, exist_ok=True)
     mocks = [0] if args.data else (args.mocks or [args.mock])
@@ -253,7 +394,8 @@ def main():
         except FileNotFoundError as e:
             log(f'  mock {m}: skipped ({e})')
     k = runs[0]['k']
-    tag = ('data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)) + (f'_synthR{args.synthetic[0]:g}g{args.synthetic[1]:g}' if args.synthetic else '') + (f'_lnpoisson{args.lnpoisson[0]:g}_{args.lnpoisson[1]:g}' if args.lnpoisson else '') + (f'_{args.filter}' if args.filter != 'gauss' else '')
+    tag = ('data' if args.data else 'mocks' + '-'.join(str(m) for m in mocks)) + (f'_synthR{args.synthetic[0]:g}g{args.synthetic[1]:g}' if args.synthetic else '') + (f'_lnpoisson{args.lnpoisson[0]:g}_{args.lnpoisson[1]:g}' if args.lnpoisson else '') + (f'_poisson{args.synthetic_poisson:g}' if args.synthetic_poisson is not None else '') + (f'_{args.filter}' if args.filter != 'gauss' else '')
+    tag += '_r2' if args.soft_band else ''
     kLtag = f'{args.k_L[0]:g}' if len(args.k_L) == 1 else f'{min(args.k_L):g}-{max(args.k_L):g}x{len(args.k_L)}'
     fn = os.path.join(od, f'response_{args.bin}_{args.region}_{tag}_kL{kLtag}.npz')
     agg = {key: np.array([o[key] for o in runs]) for key in runs[0] if key not in ('k', 'k_L')}
@@ -274,6 +416,26 @@ def main():
             print(f'    l = {ell}: {row}')
     print('  tree level per unit GALAXY long mode (review 1.2 / g0 = b1 + f/3 = 2.45, LRG1): P0 1.2-1.6 (global-mean), P2 1.8-2.7;'
           ' net (after local average) per unit galaxy mode = this - 2. Bands with k < ~3 k_L are outside the squeezed limit.')
+    if args.soft_band:
+        print('  second-order response R_2 = 2 (Q_l - QS) / (P_l <delta_s^2 g>_m2) x (1 + SN/P_s)^2 per unit galaxy soft-band power '
+              '(hard bands 0.1-0.2, 0.2-0.3; error = scatter over catalogues / sqrt(N))')
+        for iB, (k1, k2) in enumerate(agg['soft_band'][0]):
+            for iQ, k_q in enumerate(agg['k_q'][0]):
+                snf = (1 + agg['sn'] / agg['Ps_band_raw'][:, iB, iQ]) ** 2
+                line = f'    band [{k1:g}, {k2:g}) k_q = {k_q:g}: <delta_s^2>_m2 = {agg["d2_m2"][:, iB, iQ].mean():.4f}, rms g / <delta_s^2> = ' \
+                       f'{(np.sqrt(agg["var_g_m2"][:, iB, iQ]) / agg["d2_m2"][:, iB, iQ]).mean():.3f}, (1+SN/P_s)^2 = {snf.mean():.2f}, ' \
+                       f'<g>_gal / rms g = {(agg["g_gal"][:, iB, iQ] / np.sqrt(agg["var_g_m2"][:, iB, iQ])).mean():+.3f}'
+                for ell in (0, 2):
+                    bq = agg['beta'][:, iB, iQ][:, None]
+                    P = agg[f'P{ell}']; Q = agg[f'Q{ell}'][:, iB, iQ] - agg[f'Qh{ell}'][:, iB, iQ] + bq * agg[f'Qc{ell}'][:, iB, iQ]
+                    QS = (agg['QS'][:, iB, iQ] - agg['QhS'][:, iB, iQ] + bq[:, 0] * agg['QcS'][:, iB, iQ])[:, None] if ell == 0 else 0.0
+                    r2 = 2 * (Q - QS) / P / agg['d2g_m2'][:, iB, iQ][:, None] * snf[:, None]
+                    cells = []
+                    for lo, hi in KR[2:]:
+                        m_ = (k >= lo) & (k < hi); v = r2[:, m_].mean(1)
+                        cells.append(f'{v.mean():+.2f} +- {v.std() / np.sqrt(len(v)):.2f}' if len(v) > 1 else f'{v.mean():+.2f}')
+                    line += f' | l={ell}: ' + ', '.join(cells)
+                print(line)
     log(f'saved {fn}')
 
 
