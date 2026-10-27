@@ -25,9 +25,16 @@ FIT_THREE = False
 
 
 def decompose(d):
-    cf = np.load(os.path.join(d, 'thinning_closed_form_ell024.npz'))
-    lin, quad00, nb = cf['lin_ell'], cf['quad'], len(cf['k'])
-    t1 = np.load(os.path.join(d, 'thecov_p1.npz'))
+    one = os.path.join(d, 'catalogue_covariance.npz')
+    if os.path.exists(one):                              # catalogue_covariance output: everything in one file
+        cf = t1 = np.load(one)
+        lin, quad00 = cf['lin_ell'], cf['quad']
+        nb = len(quad00)
+    else:
+        cf = np.load(os.path.join(d, 'thinning_closed_form_ell024.npz'))
+        lin, quad00 = cf['lin_ell'], cf['quad']
+        nb = len(cf['k'])
+        t1 = np.load(os.path.join(d, 'thecov_p1.npz'))
     G = {1: t1['C_G']}
     n = G[1].shape[0]
     assert lin.shape == (n, n), (lin.shape, n)

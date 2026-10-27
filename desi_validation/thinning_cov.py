@@ -33,6 +33,7 @@ from desi_validation.grf_randoms import NTH, T0, log, tensor_index  # noqa: E402
 KR = ((0.02, 0.05), (0.05, 0.1), (0.1, 0.2), (0.2, 0.3))
 
 
+LAST = {}
 SPECTRA_BASE = '/dvs_ro/cfs/cdirs/desi/science/cai/desi-clustering/dr2/summary_statistics/full_shape/base'
 
 
@@ -207,6 +208,7 @@ def thecov_stage(args):
         log(f'  discreteness terms not computed: {e!r}')
     fn = os.path.join(od, f'thecov_p{p:g}.npz')
     np.savez(fn, **res)
+    LAST.update(cov=cov, tracer=tr, spec=spec, res=res, out_dir=od)          # for catalogue_covariance (same process)
     log(f'saved {fn}')
 
 
@@ -244,7 +246,7 @@ def report(args):
         print(f'  p = {p} P0 block, k > 0.15, (thin - dG)_ij / sqrt(G_ii G_jj) for |i-j| = 0..3: ' + ' '.join(f'{x:+.3f}' for x in num))
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('stage', choices=['thin', 'thecov', 'report'])
     ap.add_argument('--bin', default='LRG1')
@@ -264,7 +266,7 @@ def main():
     ap.add_argument('--out-dir', default=None)
     ap.add_argument('--tree-params', default=None, help='ssc_check npz (<region>/params, damping, plin_*) for the tree discreteness terms')
     ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     {'thin': thin, 'thecov': thecov_stage, 'report': report}[args.stage](args)
 
 

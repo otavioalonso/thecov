@@ -128,7 +128,7 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
     return dict(ells=np.array(ells), lin_ell=lin, P1_ell=np.concatenate([P1[l] for l in ells]))
 
 
-def main():
+def main(argv=None):
     import finufft
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bin', default='LRG1')
@@ -141,7 +141,7 @@ def main():
     ap.add_argument('--single', action='store_true', help='single-precision NUFFTs for the multipole linear term (~2x faster; eps >= 1e-5)')
     ap.add_argument('--ells', type=int, nargs='+', default=[0], help='multipoles of the linear (B/n) term; 0 2 4 gives all nine blocks')
     ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     paths, cfg, od = setup_mock(args)
     b, r = args.bin, args.region
     g = dict(np.load(os.path.join(od, 'thinning.npz')))
