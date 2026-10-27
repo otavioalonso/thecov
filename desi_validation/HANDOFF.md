@@ -1025,7 +1025,7 @@ can do that). J4 = int W^4 / norm^2 uses the local window (likely 20-40 % high; 
 Next: window-convolved (b1, sigma_v) fit to the catalogue with A = 1 as check, b2 from R1; J4 cell-size convergence; n_k = 2;
 redo sections 13 and 16 tree terms.
 
-## 19. Code review of the SSC (2026-10-27; `report/ssc_code_review.md`)
+## 20. Code review of the SSC (2026-10-27; `report/ssc_code_review.md`)
 
 Algebra already verified (2026-10-07 review). New: (1) the production C_ssc = clustering SSC (rank 3, P2 up to 3.4 % of
 G at k 0.2-0.3, P0 <= 0.4 % except 2.6 % at 0.2-0.3) + Poisson local-average term (rank ~1 along P_hat, -0.6 to -2.3 % of
