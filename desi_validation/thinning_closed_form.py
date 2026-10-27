@@ -138,6 +138,7 @@ def main(argv=None):
     ap.add_argument('--pad', type=float, default=1.1)
     ap.add_argument('--eps', type=float, default=1e-4)
     ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--quad-pad', type=int, default=2, help='grid padding factor of the quadratic term (1 = aliased, pre-2026-10-27)')
     ap.add_argument('--single', action='store_true', help='single-precision NUFFTs for the multipole linear term (~2x faster; eps >= 1e-5)')
     ap.add_argument('--ells', type=int, nargs='+', default=[0], help='multipoles of the linear (B/n) term; 0 2 4 gives all nine blocks')
     ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
@@ -192,22 +193,39 @@ def main(argv=None):
 
     # quadratic term: a^2 [ <|W2(k' - k)|^2>_{k in i, k' in j} + <|W2(k' + k)|^2> - 2 sum w^4 ] / norm^2, W2 = transform of the w^2 galaxies.
     # Shell-pair averages are correlations of shell indicators with |W2|^2: corr_i(d) = sum_k ind_i(k) pw(k + d) by FFT, then
-    # Q_ij = sum_d corr_i(d) ind_j(d) (k' = d, i.e. pw(k' - k) summed over k in i, k' in j; and pw(k' + k) with ind_j reflected).
+    # Q_ij = sum_d corr_i(d) ind_j(d) (pw(k + k') summed over k in i, k' in j; = the k' - k piece since the shells are symmetric).
+    # |k + k'| reaches 2 k_max, beyond the output grid's Nyquist (k_max + 2 k_f): the FFT correlation is circular, so W2 is
+    # transformed on a grid `quad_pad` times finer in index (same k_f, Nyquist x quad_pad) and the shell indicators are embedded
+    # in it (quad_pad = 1 reproduces the aliased version used before 2026-10-27, which overestimates the clustering part of
+    # the term by ~6 % at k = 0.22 and ~40 % at k = 0.3 for LRG1).
     t0 = time.time()
-    W2 = finufft.nufft3d1(*thd, (wd ** 2).astype(complex), (n,) * 3, isign=-1, **opts)
-    PW = sfft.fftn(np.abs(W2) ** 2, workers=NTH)
+    qp = int(getattr(args, 'quad_pad', 2))
+    n2 = qp * n
+    W2 = finufft.nufft3d1(*thd, (wd ** 2).astype(complex), (n2,) * 3, isign=-1, **opts)
+    pw = (np.abs(W2) ** 2).astype(np.float64)
     del W2
+    PW = sfft.rfftn(pw, workers=NTH)
+    del pw
+    ko2 = 2 * np.pi * np.fft.fftfreq(n2, d=L / n2)
+    KO2 = np.meshgrid(ko2, ko2, ko2, indexing='ij')
+    kom2 = np.sqrt(KO2[0] ** 2 + KO2[1] ** 2 + KO2[2] ** 2).ravel()
+    del KO2
+    io2 = np.digitize(kom2, edges) - 1
+    io2[(io2 < 0) | (io2 >= nb)] = nb
+    del kom2
+    assert np.array_equal(np.bincount(io2, minlength=nb + 1)[:nb], nsh), 'shells on the padded grid differ from the output grid'
+    io23 = io2.reshape(n2, n2, n2)
     Q = np.zeros((nb, nb))
     for i in range(nb):
-        INDi = sfft.fftn((io3 == i).astype(np.float32), workers=NTH)
-        corr = sfft.ifftn(np.conj(INDi) * PW, workers=NTH).real.ravel()
-        Q[i] = np.bincount(io, corr, nb + 1)[:nb]
+        INDi = sfft.rfftn((io23 == i).astype(np.float64), workers=NTH)
+        corr = sfft.irfftn(np.conj(INDi) * PW, s=(n2,) * 3, workers=NTH).ravel()
+        Q[i] = np.bincount(io2, corr, nb + 1)[:nb]
     Q = Q / np.outer(nsh, nsh)
-    del PW
+    del PW, io2, io23
     quad = (Q + Q - 2 * float(np.sum(wd ** 4))) / norm ** 2          # M_1 and M_2 pieces (shells are symmetric under k -> -k), each minus g = h
     log(f'  quadratic (P/n^2-like) term done ({time.time() - t0:.0f} s)')
 
-    out = dict(k=k, P1=P1, lin=Gsum, quad=quad, alpha=alpha, norm=norm, n_gal=len(wd))
+    out = dict(k=k, P1=P1, lin=Gsum, quad=quad, alpha=alpha, norm=norm, n_gal=len(wd), quad_pad=qp)
     ells = tuple(args.ells)
     if max(ells) > 0:
         ells = tuple(sorted(set(ells) | {0}))
