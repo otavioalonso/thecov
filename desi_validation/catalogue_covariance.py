@@ -79,7 +79,7 @@ def main(argv=None):
     tcf.main(common + ['--ells'] + ells + (['--single'] if args.single else []))
     T['measured_discreteness'] = time.time() - t0
     t0 = time.time()
-    tcv.main(['thecov'] + common + ['--frac', '1', '--tree-params', args.params])
+    tcv.main(['thecov'] + common + ['--frac', '1', '--tree-params', args.params, '--thecov-random-files', '4'])   # shares the 4-file load
     T['gaussian_split_tree_disc'] = time.time() - t0
     cov, tr, res = tcv.LAST['cov'], tcv.LAST['tracer'], tcv.LAST['res']
 

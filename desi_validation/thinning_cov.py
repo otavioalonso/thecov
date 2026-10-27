@@ -166,7 +166,8 @@ def thecov_stage(args):
     sn = float(g[f'SN_p{p:g}'].mean()) if f'SN_p{p:g}' in g else float(g['sum_w2'] / p + g['sn_randoms'])   # MC mean, else expected
     spec = dict(spec, num_shotnoise=np.full(len(spec['norm']), sn))          # the files' norm; the thinned shot noise
     cfg = dataclasses.replace(cfg, n_randoms_max=int(args.n_randoms_max), target_near_pairs=args.target_near_pairs)
-    rc = dc.load_region(paths, b, r, n_random_files=cfg.n_random_files)
+    nrf = args.thecov_random_files or cfg.n_random_files                   # the tracer keeps <= n_randoms_max / 2 of them
+    rc = dc.load_region(paths, b, r, n_random_files=nrf)
     name = f'THIN_{b}_{r}_p{p:g}_kernel'
     tr, _ = dc.build_tracer(name, [rc], nw='random-density', n_randoms_max=cfg.n_randoms_max // 2,
                             surface_density_deg2=cfg.surface_density, verbose=False, shotnoise_target=sn)
@@ -176,11 +177,11 @@ def thecov_stage(args):
     log(f'{b} {r} p = {p}: thecov kernel Gaussian with SN / norm = {sn / g["norm"]:.1f}, n_near {n_near}')
     t0 = time.time()
     C, cov = dc.thecov_covariance(tr, spec, n_sub=cfg.n_sub_far, n_near=n_near, verbose=False,
-                                  windows_file=os.path.join(od, f'windows_{name}.npz'), power_input='masked', smoothing=sm)
+                                  windows_file=os.path.join(od, f'windows_{name}.npz'), power_input='masked', smoothing=sm, parts=True)
     log(f'  done in {time.time() - t0:.0f} s')
     res = dict(C_G=C, sn=sn, n_near=n_near)
-    if hasattr(cov, 'covariance_parts'):                                    # G_PP, G_PS, G_SS from the same windows
-        parts, _ = cov.covariance_parts([(tr.name, tr.name)], ells=spec['ells'])
+    if getattr(cov, 'parts', None) is not None:                             # G_PP, G_PS, G_SS from the same windows (C = sum)
+        parts = cov.parts
         res.update(C_PP=parts['PP'], C_PS=parts['PS'], C_SS=parts['SS'], sum_w2=float(g['sum_w2']), sn_randoms=float(g['sn_randoms']))
         log(f'  Gaussian split PP/PS/SS: max |sum - C_G| / max |C_G| = {np.max(np.abs(parts["PP"] + parts["PS"] + parts["SS"] - C)) / np.max(np.abs(C)):.1e}')
     try:                                                                    # tree-level discreteness terms
@@ -264,6 +265,7 @@ def main(argv=None):
     ap.add_argument('--n-randoms-max', type=float, default=8e6)
     ap.add_argument('--target-near-pairs', type=float, default=5e9)
     ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--thecov-random-files', type=int, default=None, help='random files for the thecov stage (default: the pipeline config)')
     ap.add_argument('--tree-params', default=None, help='ssc_check npz (<region>/params, damping, plin_*) for the tree discreteness terms')
     ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
     args = ap.parse_args(argv)

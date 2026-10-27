@@ -846,7 +846,7 @@ def model_from_mocks(spec, scale=1.0):
 
 def thecov_covariance(tracer, spec, n_sub=20000, n_near=1_000_000, ds=2.0, ds_pair=10.0, s_split=80.0,
                       norm=None, shotnoise=None, windows_file=None, verbose=True, model_norm_correction=True,
-                      power_input=None, smoothing=None, **kwargs):
+                      power_input=None, smoothing=None, parts=False, **kwargs):
     """thecov's matrix for the data vector of `spec` (same k bins and ells), normalised by the
     estimator's `norm` (default: the mean over the mocks). The model is the mocks' mean. shotnoise: the estimator's
     int S (default: tracer.shotnoise, set by build_tracer).
@@ -855,6 +855,7 @@ def thecov_covariance(tracer, spec, n_sub=20000, n_near=1_000_000, ds=2.0, ds_pa
                  norm / I_k, with I_k = int m^2 or, with `smoothing` (thecov.WindowSmoothing), the
                  pair-averaged int m (K_k * m) per k-bin; 'unmasked' -- used as is (e.g. theory).
                  Default from model_norm_correction (True -> 'masked').
+    parts: also split C into PP/PS/SS (cov.parts) in the same pass (C = their sum).
     Returns (C, cov); cov.I_randoms = int m^2 (local) and cov.I_k_bins the per-bin window integrals."""
     from thecov import GaussianCovariance, PowerSpectrum
     power_input = power_input or ('masked' if model_norm_correction else 'unmasked')
@@ -875,7 +876,11 @@ def thecov_covariance(tracer, spec, n_sub=20000, n_near=1_000_000, ds=2.0, ds_pa
     shotnoise = getattr(tracer, 'shotnoise', None) if shotnoise is None else shotnoise
     cov.set_power(PowerSpectrum(model_from_mocks(spec), kedges=spec['k_edges'], window_convolved=(power_input == 'masked'),
                                 norm=norm, shotnoise=shotnoise))
-    C, _ = cov.covariance(sp, ells=spec['ells'])
+    if parts:                       # PP/PS/SS from one pass over the blocks; C is their sum (cov.parts keeps them)
+        cov.parts, _ = cov.covariance_parts(sp, ells=spec['ells'])
+        C = cov.parts['PP'] + cov.parts['PS'] + cov.parts['SS']
+    else:
+        C, _ = cov.covariance(sp, ells=spec['ells'])
     cov.I_randoms = I_local
     cov.I_k_bins = cov.I_k(name, name)
     return C, cov
