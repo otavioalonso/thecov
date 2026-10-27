@@ -35,6 +35,95 @@ from desi_validation.grf_randoms import NTH, log  # noqa: E402
 from desi_validation.thinning_cov import KR, setup_mock  # noqa: E402
 
 
+def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum0):
+    """Linear (one shared galaxy, B/n-like) thinning term for the multipoles, all (l, l') blocks.
+
+    With the end-point line of sight of the estimator, F_l(k) = sum w L_l(k.x_g) e_g(k) (galaxies minus alpha randoms)
+    and P_l = (2l + 1) <Re F_0 F_l^*>_shell / norm (shot noise subtracted for l = 0 only). Thinning the galaxies,
+    w_g -> w_g (1 + eta_g), the part linear in eta is sum_g eta_g G^l_g(k) with
+        G^l_g(i) = (2l + 1) w_g Re <F_l^*(k) e_g(k) + L_l(k.x_g) F_0^*(k) e_g(k)>_i / norm  - 2 w_g^2 / norm  [l = 0],
+    so Cov_lin[P_l(i), P_l'(j)] = a sum_g G^l_g(i) G^l'_g(j). L_l(k.x) is expanded in symmetric k-hat tensors
+    (L_2 = 3/2 (k.x)^2 - 1/2, L_4 = 35/8 (k.x)^4 - 15/4 (k.x)^2 + 3/8; (k.x)^n = sum_T mult_T k^T x^T), so per shell
+    the galaxies need type-2 transforms of F_0^* k^T (6 + 15 tensors), of F_0^*, F_2^*, F_4^*, batched. The g = h
+    terms vanish for l > 0 up to the grid anisotropy of a shell (<L_l>_shell = 0), as in the estimator.
+    """
+    import finufft
+    import scipy.fft as sfft  # noqa: F401
+    from desi_validation.grf_randoms import tensor_index
+    t0 = time.time()
+    ko = 2 * np.pi * np.fft.fftfreq(n, d=L / n)
+    KO = np.meshgrid(ko, ko, ko, indexing='ij')
+    kom = np.sqrt(KO[0] ** 2 + KO[1] ** 2 + KO[2] ** 2)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        khat = [np.where(kom > 0, K_ / kom, 0.0) for K_ in KO]
+    del KO, kom
+    orders = {2: tensor_index(2), 4: tensor_index(4)}
+    tens = [()] + [t for o in (2, 4) for t in orders[o][0]]
+
+    def moments(x, w):
+        xh = x / np.linalg.norm(x, axis=1)[:, None]
+        cs = np.empty((len(tens), len(w)), complex)
+        for n_, t in enumerate(tens):
+            v = w.astype(float).copy()
+            for i in t:
+                v *= xh[:, i]
+            cs[n_] = v
+        return finufft.nufft3d1(*th(x), cs, (n,) * 3, isign=-1, **opts)
+
+    Fm = moments(xd, wd) - alpha * moments(xr, wr)
+    F0 = Fm[0]; pos = 1; Q = {}
+    for o in (2, 4):
+        Q[o] = np.zeros_like(F0)
+        for t, mu in zip(*orders[o]):
+            kt = 1.0
+            for i in t:
+                kt = kt * khat[i]
+            Q[o] += mu * kt * Fm[pos]; pos += 1
+    Fl = {0: F0, 2: 1.5 * Q[2] - 0.5 * F0, 4: 35 / 8 * Q[4] - 15 / 4 * Q[2] + 3 / 8 * F0}
+    del Fm, Q
+    P1 = {l: (2 * l + 1) * np.bincount(io, (F0 * Fl[l].conj()).real.ravel(), nb + 1)[:nb] / nsh / norm for l in ells}
+    P1[0] = P1[0] - (float(np.sum(wd ** 2)) + alpha ** 2 * float(np.sum(wr ** 2))) / norm
+    log(f'  multipole fields done ({time.time() - t0:.0f} s); P_l(k = mid) ' + ' '.join(f'{l}: {P1[l][nb // 2]:.1f}' for l in ells))
+    # k-hat tensors for the L_l(k.x_g) expansion, and the galaxies' x-hat tensors with multiplicities
+    xh = xd / np.linalg.norm(xd, axis=1)[:, None]
+    ktens, xtens = {}, {}
+    for o in (2, 4):
+        ktens[o], xtens[o] = [], []
+        for t, mu in zip(*orders[o]):
+            kt, xt = 1.0, mu * np.ones(len(wd))
+            for i in t:
+                kt = kt * khat[i]; xt = xt * xh[:, i]
+            ktens[o].append(kt); xtens[o].append(xt)
+    del khat, xh
+    F0c = np.conj(F0); Flc = {l: np.conj(Fl[l]) for l in ells}
+    io3 = io.reshape(n, n, n)
+    Gb = {l: np.empty((nb, len(wd))) for l in ells}
+    thd = th(xd)
+    for i in range(nb):
+        m = io3 == i
+        stack = [np.where(m, Flc[l], 0) for l in ells] + [np.where(m, F0c * kt, 0) for o in (2, 4) for kt in ktens[o]]
+        v = finufft.nufft3d2(*thd, np.ascontiguousarray(np.array(stack)), isign=-1, **opts)
+        vF = {l: v[j] for j, l in enumerate(ells)}
+        off = len(ells)
+        S = {}
+        for o in (2, 4):
+            S[o] = np.zeros(len(wd), complex)
+            for xt in xtens[o]:
+                S[o] += xt * v[off]; off += 1
+        v0 = vF[0] if 0 in vF else None
+        Lpart = {0: v0, 2: 1.5 * S[2] - 0.5 * v0, 4: 35 / 8 * S[4] - 15 / 4 * S[2] + 3 / 8 * v0}
+        for l in ells:
+            Gb[l][i] = (2 * l + 1) * wd * (vF[l] + Lpart[l]).real / nsh[i] / norm - (2 * wd ** 2 / norm if l == 0 else 0.0)
+        if i in (0, nb - 1):
+            log(f'    shell {i}: {time.time() - t0:.0f} s')
+        del stack, v
+    G = np.vstack([Gb[l] for l in ells])
+    lin = G @ G.T
+    log(f'  multipole linear term done ({time.time() - t0:.0f} s); l = 0 block reproduces the monopole loop: '
+        f'max rel dev {np.max(np.abs(lin[:nb, :nb] - Gsum0)) / np.max(np.abs(Gsum0)):.1e}')
+    return dict(ells=np.array(ells), lin_ell=lin, P1_ell=np.concatenate([P1[l] for l in ells]))
+
+
 def main():
     import finufft
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -45,6 +134,7 @@ def main():
     ap.add_argument('--pad', type=float, default=1.1)
     ap.add_argument('--eps', type=float, default=1e-4)
     ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--ells', type=int, nargs='+', default=[0], help='multipoles of the linear (B/n) term; 0 2 4 gives all nine blocks')
     ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
     args = ap.parse_args()
     paths, cfg, od = setup_mock(args)
@@ -113,8 +203,15 @@ def main():
     log(f'  quadratic (P/n^2-like) term done ({time.time() - t0:.0f} s)')
 
     out = dict(k=k, P1=P1, lin=Gsum, quad=quad, alpha=alpha, norm=norm, n_gal=len(wd))
-    fn = os.path.join(od, 'thinning_closed_form.npz')
+    ells = tuple(args.ells)
+    if max(ells) > 0:
+        ells = tuple(sorted(set(ells) | {0}))
+        out.update(multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum))
+    fn = os.path.join(od, 'thinning_closed_form.npz' if max(ells) == 0 else 'thinning_closed_form_ell' + ''.join(map(str, ells)) + '.npz')
     np.savez(fn, **out)
+    if max(ells) > 0:                                  # the l = 0 report below needs thecov_p*.npz with the same ells; decompose offline
+        log(f'saved {fn} (multipole linear term; decomposition offline: abacus/holi thecov runs with the same ells)')
+        return
     G1 = np.load(os.path.join(od, 'thecov_p1.npz'))['C_G']
     d1 = np.diag(G1)[:nb]
     print(f'closed form vs Monte Carlo thinning ({b} {r} mock {args.mock}); units: diag G_thecov(p=1); bands {KR}')
