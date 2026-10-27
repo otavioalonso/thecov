@@ -1024,3 +1024,18 @@ the split, and the Lazeyras-consistent one turns the ell-dependent tension into 
 can do that). J4 = int W^4 / norm^2 uses the local window (likely 20-40 % high; the Gaussian's I_k / int W^2 is 0.77-0.85).
 Next: window-convolved (b1, sigma_v) fit to the catalogue with A = 1 as check, b2 from R1; J4 cell-size convergence; n_k = 2;
 redo sections 13 and 16 tree terms.
+
+## 19. Code review of the SSC (2026-10-27; `report/ssc_code_review.md`)
+
+Algebra already verified (2026-10-07 review). New: (1) the production C_ssc = clustering SSC (rank 3, P2 up to 3.4 % of
+G at k 0.2-0.3, P0 <= 0.4 % except 2.6 % at 0.2-0.3) + Poisson local-average term (rank ~1 along P_hat, -0.6 to -2.3 % of
+the P0 diagonal, -5 % of the coherent P0 mode). Wishart vs 848 mocks: the clustering part is wanted by P2 (1013 -> 914),
+the Poisson LA part worsens every fit (P0 875 -> 896); a box simulation (3000 realisations) confirms the Poisson LA sign
+and size (-1.9e-4 vs -4/N = -1.3e-4 P_i P_j, the excess being the collapsed-bispectrum part), so the coherent-P0 budget
+(Poisson LA, SSC with tree vs measured responses, squeezed T0) is what is open. (2) sigma^2 uses A_norm x P_lin
+(A = 0.74): the long-mode variance should use the fiducial P_lin -> clustering SSC x 1.35 (mildly preferred by the
+mocks). (3) No hook for measured responses (R_0 is 1.27x tree, R_2 1.2-1.4x): add `responses=`. (4) Minor: B_c part of T
+lacks d_k; no I_W consistency assert; lam = 2, 4 channels of sigma^2 and the far-pair sampling convergence untested; the
+mocks lack radial long modes > 250 Mpc/h so the model SSC is not what the mocks contain. Next steps (report 4.1-4.6):
+measured Poisson-LA term from the thinning vectors (no new job), p_lin_long + responses hook, per-mock long-mode
+projections vs sigma2 (mock-fair SSC), GRF long-mode test of the lam > 0 channels, GRF-Poisson realised-norm test.
