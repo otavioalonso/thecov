@@ -75,7 +75,29 @@ def dump_window(fn, out, kmax_dump=0.32, ktheory_max=0.6):
     ells_o, ells_t = _ells_of(obs), _ells_of(th)
     log(f'  observable ells {ells_o}, theory ells {ells_t}')
     k_o = [np.asarray(obs.get(l).coords('k')) for l in ells_o]
-    k_t = [np.asarray(th.get(l).coords('k')) for l in ells_t]
+    # theory: an ObservableTree with possibly several labels; walk its leaves in flattening order
+    leaves = []
+    try:
+        for lab, leaf in th.items():
+            leaves.append((lab, leaf))
+    except Exception as e:  # noqa: BLE001
+        log(f'  theory items(): {e!r}; labels {getattr(th, "labels", None)}')
+        leaves = [((l,), th.get(ells=l)) for l in ells_t]
+    log(f'  theory leaves: {[str(lab) for lab, _ in leaves]}')
+    ells_t = []
+    for lab, leaf in leaves:
+        d_ = lab if isinstance(lab, dict) else (dict(zip(getattr(th, 'labels', ['ells']), lab)) if isinstance(lab, (tuple, list)) else {'ells': lab})
+        e_ = d_.get('ells', d_.get('ell', None))
+        for wa_key in ('wa_orders', 'wa_order', 'wa', 'n'):
+            if wa_key in d_ and np.any(np.ravel(d_[wa_key]) != 0):
+                e_ = None                                              # wide-angle rows are not modelled
+        try:
+            e_ = int(np.ravel(e_)[0]) if e_ is not None else -1
+        except Exception:  # noqa: BLE001
+            e_ = -1
+        ells_t.append(e_)
+    k_t = [np.asarray(leaf.coords('k')) for _, leaf in leaves]
+    log(f'  theory ells (parsed) {ells_t}')
     log(f'  observable k per ell: {[len(x) for x in k_o]} (first {k_o[0][:3]}, last {k_o[0][-1]:.4f}); '
         f'theory k per ell: {[len(x) for x in k_t]} (first {k_t[0][:3]}, last {k_t[0][-1]:.4f})')
     try:
