@@ -1039,3 +1039,16 @@ lacks d_k; no I_W consistency assert; lam = 2, 4 channels of sigma^2 and the far
 mocks lack radial long modes > 250 Mpc/h so the model SSC is not what the mocks contain. Next steps (report 4.1-4.6):
 measured Poisson-LA term from the thinning vectors (no new job), p_lin_long + responses hook, per-mock long-mode
 projections vs sigma2 (mock-fair SSC), GRF long-mode test of the lam > 0 channels, GRF-Poisson realised-norm test.
+
+**Light checks (debug queue, same day).** (a) Padded vs aliased quad on the cached mock-173 inputs (`thinning/LRG1_NGC_mock173_quadpad`,
+131 s for the padded term): clustering part aliased/padded = 1.00 / 1.08 / 1.31 / 1.51 at k = 0.17 / 0.22 / 0.27 / 0.30. P/n^2 (0,0)
+diag at 0.2-0.3: 0.0266 -> 0.0212 of G (tree 0.0209); B/n 0.1249 -> 0.1357 (tree 0.0829; 0.1-0.2: 0.0690 vs 0.0637); B/n + P/n^2
+0.1515 -> 0.1569; ratio_off 1.20 -> 1.14. So the measured two-shared-galaxy term agrees with tree to 1-2 % at k > 0.1 and the
+excess over tree is entirely in the one-shared-galaxy term (1.08x at 0.1-0.2, 1.64x at 0.2-0.3). Hybrid + SSC with the files'
+S: P0 mock/model 0.2-0.3 1.071 -> 1.066 (1.044 with tree T0); P0+P2+P4 Wishart 8119. (`responses/disc_multipoles/quad_padded_vs_aliased_*.csv`)
+(b) Monte-Carlo thinning, p = 0.25 (a = 3), l = 0 2 4, 62 thinnings in 19 min (`thinning/LRG1_NGC_mock173_mc024`): MC covariance vs
+a lin_exact + a^2 [quad_exact (0,0) | G_SS/r^2 + tree P/n^2 elsewhere]: diagonal blocks agree to (-16 +- 8, -6 +- 6, +4 +- 5, -1 +- 4) %
+for P0, (+10 +- 10, -1 +- 6, -1 +- 5, -5 +- 4) % for P2, (-3 +- 8, -8 +- 6, -1 +- 5, -3 +- 4) % for P4; cross blocks within 1-3 sigma
+(P0xP4 0.1-0.3 at -3.2, -2.4 sigma: noise or the tree P/n^2 proxy). The exact l > 0 linear term is validated end to end on the real
+footprint at the ~5 % level of the thinning covariance. The MC cannot resolve the l > 0 P/n^2 (needs ~2000 thinnings at p = 0.25,
+~450 at p = 0.1); the exact term for l > 0 remains the configuration-space route. (`responses/disc_multipoles/mc_thinning_vs_exact_*.csv`)
