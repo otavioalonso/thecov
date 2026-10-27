@@ -927,3 +927,44 @@ scatter). Band means of the diagonal, units of G(complete), k = 0.1-0.2 / 0.2-0.
   up to 20 per cent and P/n^2 by up to 8x at k < 0.2 — another reason to take these terms from the catalogue.
 - Caveats: one mock, one cap; G_SS and the B/n-P/n^2 split inherit the pair-count noise of the three thecov runs
   (low-k P/n^2 below ~3e-3 of G is noise, hence the negative altmtl values at k < 0.12).
+
+## 16. Measured discreteness for P0, P2, P4 and the optimised one-job pipeline (2026-10-27)
+
+**Method.** `thinning_closed_form --ells 0 2 4`: the one-shared-galaxy (B/n) thinning term is exact for all nine
+(l, l') blocks (end-point line of sight, L_l(k.x_g) expanded in k-hat tensors, 24 batched type-2 NUFFTs per shell);
+checked against finite differences of the estimator over every galaxy of a toy survey with a varying line of sight
+(all blocks to 1e-8). The two-shared-galaxy term (P/n^2, 1-2 per cent of G) stays exact for (0, 0) only; elsewhere it is
+the tree term times the measured/tree ratio of (0, 0). thecov's shot-noise dependence g1, g2 now comes from one run:
+`GaussianCovariance.covariance_parts` splits G into PP, PS, SS from the same windows (PP + PS + SS = covariance(); a
+spectrum with shot noise S' gives PP + (S'/S) PS + (S'/S)^2 SS exactly; test_covariance_parts_sum_and_shotnoise_scaling).
+
+**A bias found on the way.** The earlier three-run fit (thecov at p = 1, 0.5, 0.25) used separately computed pair
+counts per run; G_PP differed by 0.5-0.7 per cent between runs, which the fit amplified into g1 and gave a spurious
+negative B/n for l = 2, 4. The Abacus split of section 15 has the same construction: its G_PS/G_SS and B/n vs P/n^2 split
+carry this bias (the measured lin and quad themselves, and B/n + 3 P/n^2 at p = 0.5, do not).
+
+**Result, holi mock 173 LRG1 NGC (one-run split), band means of the diagonal / G, k = 0.1-0.2 / 0.2-0.3:**
+P0xP0 B/n 0.071 / 0.135 (tree 0.063 / 0.082), P/n^2 0.0046 / 0.024 (tree 0.0063 / 0.021). Mock 174 reproduces the
+(0,0) block to a few per cent (B/n + 2P/n^2: 0.080 / 0.183 vs 0.079 / 0.174). For l > 0 the measured B/n is below the tree
+and negative at k < 0.1 (P2xP2 -0.006, P4xP4 -0.003 to -0.01 of G) in BOTH mocks: a systematic, not realisation noise,
+of the size of thecov's own O(1/kL) line-of-sight ambiguity of the shot-noise term (`block()` docstring). Cross blocks
+scatter by ~0.005 of G between the two mocks.
+
+Against the 848 mocks (k <= 0.3, with SSC; Wishart (N-1) D, lower is better):
+
+| model | P0 | P2 | P4 | P0+P2 | P0+P2+P4 |
+|---|---|---|---|---|---|
+| G + tree disc everywhere | 937 | 915 | 830 | 3614 | 8498 |
+| G + measured disc everywhere | 896 | 923 | 851 | 3672 | 9890 |
+| **G + measured (0,0), tree elsewhere** | **896** | 915 | 830 | **3581** | **8206** |
+
+P0+P2+P4 is positive definite in all of these (min eigenvalue of G^-1/2 C G^-1/2 0.94; the scaled-tree stopgap of
+section 12 gave -0.065). Mock/model diagonal for P0 at k = 0.1-0.2 / 0.2-0.3: 1.003 / 1.035 with the measured terms
+(Gaussian alone 1.079 / 1.199). Recommendation: measured discreteness in the P0 block, tree for l > 0 until the
+l > 0 shot-noise term of thecov is checked against the exact estimator (the thinning linear term can serve as that
+check: lin - g1 should vanish for an unclustered catalogue).
+
+**Optimisations (no GPU):** one Gaussian run instead of three (split); `--single` NUFFTs (multipole term 671 -> 368 s,
+9e-7 from double); tree T0 on one octant of the angular grid (exact to 2e-16, 8.0x; T0 for 56 bins x 3 ells in 8 s on
+64 processes); `catalogue_covariance.py`: all terms of one catalogue in one process with a memoised loader, the
+Gaussian computed once through its parts. Timings: see the end of this section.

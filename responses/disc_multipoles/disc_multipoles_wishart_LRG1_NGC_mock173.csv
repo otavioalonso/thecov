@@ -1,0 +1,7 @@
+model,P0,P2,P4,P0+P2,P0+P2+P4
+tree everywhere,937.3,914.7,829.9,3614.0,8498.0
+measured everywhere,895.9,923.1,851.3,3671.9,9890.1
+"measured (0,0) only",895.9,914.7,829.9,3580.5,8206.2
+"measured auto blocks, tree cross",895.9,923.1,851.3,3654.2,9443.0
+measured except blocks with P4,895.9,923.1,829.9,3671.9,9214.7
+"measured (0,0),(0,2),(2,2)",895.9,923.1,829.9,3671.9,9214.7
