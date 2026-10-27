@@ -1064,3 +1064,7 @@ No bug found in ssc.py. Code changes: `p_lin_long=` (sigma^2 from the fiducial P
 clustering SSC x 1.35), `responses=` override ({(ell, n): per-bin}), d_k on the collapsed-bispectrum part of T, I_W
 consistency check (RuntimeError). ssc_check.py still passes A_norm P_lin to sigma^2 (add p_lin_long there before the next
 production run).
+(c) Full one-job rerun with the padded quad (`catcov/LRG1_NGC_mock173_v3`, 1484 s total, measured-discreteness stage 441 -> 540 s)
+reproduces the light check exactly: P0xP0 B/n 0.0022/0.0190/0.0690/0.1357, P/n^2 0.0000/0.0005/0.0056/0.0212; Wishart with the
+files' S (P0 / P2 / P4 / P0+P2 / P0+P2+P4): tree + SSC 927/902/826/3590/8417, measured + SSC 881/910/843/3631/9827,
+hybrid + SSC 881/902/826/3548/8119 (min eig 0.943). Use v3 as the reference mock-173 catalogue covariance from here on.
