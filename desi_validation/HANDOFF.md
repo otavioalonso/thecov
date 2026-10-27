@@ -15,6 +15,35 @@ Reading order: `report/validation_report_tutorial.md` (the whole programme at in
 explicit thecov calls and compared with the mocks). Superseded: `report/report.tex` section 6, `report/proposal_lowrank.md`
 (the low-rank term is now the SSC term).
 
+## Publication plan (agreed 2026-10-22)
+
+Two methods papers on mocks alone, plus a DESI collaboration supporting document that only quotes them.
+
+- **Paper 1 — the covariance model and code (thecov).** Gaussian term with the window via pair counts and the
+  smoothing kernels (BinnedHankel quadrature, a section of this paper, not its own paper); the tree-level non-Gaussian
+  terms in the same framework (discreteness B/n, P/n^2; SSC; T0 snake + star); validation against the holi and
+  Abacus ensembles. Pitch: an analytic P_l covariance for a realistic DESI footprint that reproduces N-body mocks to
+  X per cent without tuning. The base-model paper; it comes first.
+- **Paper 2 — non-Gaussian covariance from the catalogue itself.** One principle applied three times: every NG
+  ingredient the tree level gets wrong is a response or moment of the galaxy field that the single data realisation
+  measures itself — (i) discreteness via the thinning closed form (measured/tree 1.26, 1.23 for LRG1; section 9.4),
+  (ii) SSC with the first-order response from the position-dependent power spectrum (R_0 = 1.9 vs tree; survey-mean
+  response cancellation; updates 2026-10-15), (iii) the squeezed T0 via the second-order response R_2 from the
+  integrated-trispectrum estimator (tree overpredicts the squeezed block by 2, section 13; the hard block is the tree
+  with the measured P, 1.00 +- 0.08). Headline rule: no number from a mock ensemble enters the model; mock 173 plays
+  the data and the 848-mock ensemble is the referee. Derivations (survey-mean cancellation, R_2 Legendre structure,
+  the incompleteness of the isotropic separate-universe expansion) go in appendices. `ng_covariance_calibration.typ`
+  is the seed of this paper.
+- **DESI DR2 application** (data covariance, blinding-dependent numbers): a separate collaboration document; keep
+  those numbers out of Papers 1 and 2 so they can go out on mocks alone.
+- Caveats. (a) The R_2 estimator (section 14) must not hold Paper 2 back: if the prototype on mocks 173-178 takes
+  long, discreteness + SSC from the catalogue is a complete story and the squeezed T0 becomes a short follow-up
+  letter; decide after the first prototype. (b) Rejected: one combined paper (its second half would contradict the
+  tree-level model of the first half) and one paper per term (hides that it is one principle).
+- Material sorting: `report/` and `report_figures/` keep the validation record for Paper 1; the catalogue-calibration
+  derivations (`report/catalogue_calibration_plan.md`, `ng_covariance_calibration.typ`, sections 12-14 here) are
+  Paper 2 material.
+
 ## 1. Current conclusions (2026-10-12), in order of confidence
 
 1. **thecov's Gaussian covariance is right for the window it is given**, and the **xi-kernel window
@@ -48,8 +77,14 @@ explicit thecov calls and compared with the mocks). Superseded: `report/report.t
    normalisation) and find the missing SN-NG variance: window integrals with per-mock weights, non-Poisson (one-halo)
    pairs, local approximation of P(|k1 - k2|). `sn_diagnostics.py` gathers the inputs.
 
-5. **Tree-level T0 is rejected by the mocks** (holi and Abacus complete N-body, sections 7.1-7.8, 9.4): best amplitude
-   0.26-0.5 (LRG1, row-normalised mixing), not PD at amplitude 1 in local form. It is not the missing LRG1 variance.
+5. **Tree-level T0 is right block by block except in the squeezed block** (holi and Abacus complete N-body, sections
+   7.1-7.8, 9.4, 12, 13). A single amplitude fits at 0.38 +- 0.05 (LRG1 P0), 0.61 +- 0.05 (P2) (section 12), but that
+   is a compromise: per k-block at dk = 0.025 (section 13) the P0-P0 diagonal, adjacent, low-low and hard (k >= 0.15)
+   blocks are at amplitude 1 (hard: 1.00 +- 0.08 once the tree kernels are fed the measured nonlinear P), and only
+   the squeezed block (k < 0.1 x k >= 0.1) is at 0.50 +- 0.03 (P2: 0.68; P0-P2 cross: 0.27, with the hard cross block
+   ~0). PD at amplitude 1 in local form once b3 = 0 (the "not PD" of 7.1 used the Lazeyras b3 in the wrong basis).
+   The squeezed block is the second-order response R_2 of the galaxy power spectrum, which the tree kernels
+   overpredict by 2; it needs its own catalogue estimator (section 13).
 
 6. **12 defective LRG holi mocks** (n(z) spike at 0.46 < z < 0.47; section 8.4) are excluded everywhere (848 LRG1 mocks).
 
@@ -682,3 +717,213 @@ super-survey sigma^2 with the same anisotropy (radial from nz_scatter, transvers
   off-diagonal pair term equal to the exact clustering expectation (1.01-1.04).
   Nothing to report to the mock builders; the HANDOFF 9.4 QSO P/n^2 excess is a thecov (local approximation) or fit
   question. report/grf_randoms_results.md sections 7 (correction) and 11; tutorial report Part B rewritten.
+
+## 12. Tree-level T0 against the mocks with the measured discreteness terms (2026-10-21; `t0_tree_fit.py`)
+
+Template: T0 = snake + star at b3 = 0 (`C_T0_snake + C_T0_star` of `ssc_holi-kcore2-<tracer>.npz`). Not star_b3
+(= d C_star / d b3) and not `C_T0_completion` / `C_T0_response` (the response-approach rebuild of the same T0, which
+also contains the completion and the window-convolution inflation of 9.4). Base model: production Gaussian (kernel,
+RSD) + measured P/n^2 and B/n from the thinning closed form (mock 173) in the P0-P0 block, tree disc terms scaled by the
+P0 measured/tree off-diagonal ratio (B 1.26, P 1.23) elsewhere. Wishart likelihood, 848 clean LRG1 / 859 QSO NGC mocks,
+k <= 0.3. Data-vector blocks are selected by position (ell // 2): an interim session analysis selected rows 112-167 for
+"ell = 2" (i.e. P4) and summed all five T0 pieces, which gave a spurious "T0 ~10x too large, a ~ 0.1"; neither error is
+in the repository code (every block loop here runs over positions).
+
+| LRG1 NGC | a (tree T0) | Delta(-2 ln L) a = 0 / a = 1 | min eig G^-1/2 C G^-1/2 at a = 1 | NG direction mock/model, a = 0 -> 1 |
+|---|---|---|---|---|
+| P0 | 0.38 +- 0.05 | +69 / +223 | 0.62 | 1.38 -> 0.99 |
+| P2 | 0.61 +- 0.05 | +209 / +62 | 0.69 | 1.97 -> 1.19 |
+| P0+P2 | 0.43 +- 0.03 | +223 / +567 | 0.42 | 1.38 -> 0.99 |
+
+- Where a = 1 fails: squeezed coupling, mean corr(k 0.02-0.05, k 0.2-0.3) mocks 0.067 (P0) / 0.039 (P2) vs model 0.122 /
+  0.077 at a = 1 (0.061 / 0.049 at the best a); hard coupling, mean corr(|i-j| >= 4, k 0.15-0.3) mocks 0.184 / 0.133 vs
+  0.170 / 0.090 at a = 1 (tree about right for P0, too small for P2). This is 7.1's squeezed excess.
+- Two amplitudes (a_hard: both bins >= k_split; a_sq: the rest): a_sq = 0.37-0.39 (P0), 0.48-0.51 (P2), 0.39 (P0+P2) for
+  k_split 0.07 and 0.10; a_hard = 0.35 / 0.51 (P0), 0.74 / 0.95 (P2), 0.47 / 0.63 (P0+P2). (1, 1) is excluded by
+  Delta(-2 ln L) ~ 220 (P0) to 600 (P0+P2).
+- QSO: T0 negligible, amplitude unconstrained (sigma 1.5-2.4).
+- P0+P2+P4 cannot be tested: the base model is not PD there (min eig -0.065 at a = 0), from the scaled tree disc blocks.
+- Reading: the in-survey first-order response is 1.2-1.5x tree level (R_0 = 1.9, update 2026-10-15 (c)), so a weak
+  R_1 does not explain the squeezed overshoot; the squeezed T0 (k1 << k2) is set by the second-order response
+  (T -> R_2 P(k1)^2 P(k2), 7.1), not measured yet. Superseded by section 13: the single amplitude is a compromise
+  between blocks that want a = 1 and the squeezed block that wants 0.5; a fitted a_sq is not an option (it cannot be set
+  from one catalogue).
+- Reproduce: `python -m desi_validation.t0_tree_fit --tracers LRG1 QSO --region NGC --out <dir> --plot` (Perlmutter
+  paths by default; CSV, JSON and figure).
+
+## 13. Tree-level T0 block by block: only the squeezed block is wrong (2026-10-22; `t0_tree_fit.py --blocks`)
+
+Why the single amplitude of section 12 is misleading. In the production binning (dk = 0.005) the Gaussian term has
+a 0.46 correlation between adjacent bins (window convolution), the whitened T0 has one large positive and one large
+negative eigen-direction, both concentrated on the lowest k bins, and 80 per cent of the Wishart weight sits on the
+squeezed block. The tree T0 is also not positive on its own: its (i, i+1) element exceeds its diagonal (ratio 1.05-1.3)
+and the P2 diagonal is negative at low k, so a one-parameter scan mixes blocks that disagree. Rebinning to dk = 0.025
+(5 bins; adjacent correlation 0.39 -> errors on individual elements become meaningful) and fitting an amplitude per
+block in correlation units (weighted least squares, Wishart element errors; `block_amplitudes`) separates them.
+Base model as in section 12. LRG1 NGC, 848 mocks; `prod` = production inputs (P_ir A, sigma_v 2.088), `meas` = the
+same tree kernels fed with the mock-mean nonlinear P0 / dilution divided by the Kaiser-FoG monopole (ratio to P_ir A:
+1.02, 1.02, 1.15, 1.31 at k = 0.03, 0.1, 0.2, 0.3), run locally with `t0_run.py` (single process, ~7 min; the `prod`
+run reproduces the production `C_T0_snake + C_T0_star` to 2e-7).
+
+| block (dk = 0.025) | P0xP0 prod | P0xP0 meas | P2xP2 prod | P2xP2 meas | P0xP2 prod | P0xP2 meas |
+|---|---|---|---|---|---|---|
+| diagonal (T0 = 7 / 5 / 2 per cent of the variance) | 1.26 +- 0.22 | 1.11 +- 0.18 | 2.27 +- 0.30 | 2.00 +- 0.25 | 0.4 +- 0.5 | 0.3 +- 0.5 |
+| adjacent | 0.92 +- 0.11 | 0.86 +- 0.10 | 1.60 +- 0.13 | 1.50 +- 0.12 | | |
+| low-low (< 0.1, off-diagonal) | 0.84 +- 0.21 | 0.83 +- 0.20 | 0.68 +- 0.30 | 0.67 +- 0.29 | | |
+| squeezed (< 0.1 x >= 0.1) | 0.53 +- 0.03 | 0.50 +- 0.03 | 0.68 +- 0.04 | 0.68 +- 0.04 | 0.28 +- 0.05 | 0.27 +- 0.04 |
+| hard (>= 0.1, off-diagonal) | 0.84 +- 0.05 | 0.75 +- 0.05 | 1.36 +- 0.05 | 1.26 +- 0.05 | 0.13 +- 0.07 | 0.11 +- 0.06 |
+| hard (>= 0.15, off-diagonal) | 1.24 +- 0.10 | 1.00 +- 0.08 | 1.84 +- 0.09 | 1.57 +- 0.08 | 0.08 +- 0.14 | 0.06 +- 0.12 |
+
+Figure: `report_figures/t0_block_ratio_LRG1_NGC.png` (mock excess, tree T0 `meas`, and their ratio, per block, for the
+three multipole blocks). Full table: `t0_block_amplitudes_LRG1_NGC.csv` (also sigma_v = 3.5 and 5.0 variants, which
+only shrink T0 and move every amplitude up: the single-amplitude a goes 0.38 -> 0.49 -> 0.65 for P0; FoG is not the
+explanation of anything here).
+
+- **P0xP0.** Diagonal, adjacent, low-low and hard blocks are consistent with amplitude 1; with the measured nonlinear
+  P as input the hard block (k >= 0.15) is 1.00 +- 0.08. The only deficient block is the squeezed one, 0.50 +- 0.03.
+  So the tree T0 with a dressed (measured) power spectrum is right at the 10 per cent level wherever both k are
+  hard, and the hard-block "amplitude 0.35-0.5" of section 12 was an artefact of the one-parameter fit.
+- **P2xP2.** Squeezed 0.68; hard 1.6-1.8 and diagonal 2.0-2.3: the mocks have more P2-P2 non-Gaussian covariance at
+  k >= 0.15 than the tree T0 gives (this is the 7.x "P2 excess", 1.97 in the NG direction). Part of it may be the
+  ell = 2 discreteness blocks, which are still the scaled tree terms (stopgap; the thinning closed form for ell = 2 is
+  on the work list). Not a T0 amplitude problem in the squeezed sense.
+- **P0xP2.** The mocks show almost no T0-like coupling between P0 and P2: squeezed 0.27 +- 0.04, hard 0.1 +- 0.1
+  (mock excess 0.035 / 0.006 in correlation units against tree 0.12 / 0.07). The tree angular structure of the P0-P2
+  coupling is not what the mocks do.
+- **Reading.** In the squeezed limit the tree T0 is the second-order response, T(k_s, -k_s, k_h, -k_h) -> R_2(mu)
+  P(k_s)^2 P(k_h) (IR-safe; for matter in real space the coefficient is exactly R_1 = 47/21 - n/3 at first order and
+  the Legendre coefficients of R_2 are (4.19, 0, 7.86, 0, 2.82) at k_h = 0.2 for the test spectrum). The mocks say
+  the second-order response of the nonlinear redshift-space galaxy power spectrum at k_h = 0.1-0.3 is half the tree
+  value for P0, 0.7 for P2 and ~0.3 for the P0-P2 cross term, while the first-order response is 1.2-1.5x tree
+  (update 2026-10-15 (c)). Second-order responses of the nonlinear matter P are known to fall below tree level at
+  these k (separate-universe measurements); FoG and halo exclusion act in the same direction for LRGs.
+- **Consequence for the catalogue-only plan.** The hard block needs no calibration beyond feeding the tree kernels
+  the measured power spectrum (`meas`), which is catalogue data. The squeezed block needs R_2 of the catalogue, which
+  cannot be taken from the tree kernels. Candidate single-realisation estimators, both at the 2-3 sigma level per
+  catalogue by a mode-counting estimate: (i) the collapsed four-point function, mean over soft-hard mode pairs of
+  (|delta_s|^2 - P_s)(|delta_h|^2 - P_h) in the catalogue, S/N ~ sqrt(N_s N_h) R_2 P_s / V per bin pair; (ii) the
+  quadratic term of the position-dependent power spectrum, P_h(x) = P_h [1 + R_1 delta_L(x) + R_2 delta_L(x)^2 / 2]
+  over ~100 sub-volumes. Neither is implemented. The alternative that stays within the rule is to take the matter
+  second-order response from separate-universe theory (not the mocks) times the measured first-order galaxy
+  response squared over tree, which needs a derivation before it is used.
+- Reproduce: `python -m desi_validation.t0_tree_fit --tracers LRG1 --region NGC --blocks --t0-variants
+  t0_variants_LRG1_NGC.npz --out <dir>`; variants from `python desi_validation/t0_run.py LRG1 NGC meas out.npz`
+  (needs the `t0_inputs` bundle: production matrices, thinning closed form, mock vectors, mock-mean P0).
+
+
+## 14. The second-order response R_2 from one catalogue: feasibility (2026-10-23; `response_ibisp.py --soft-band`, `r2_analysis.py`)
+
+**Verdict: feasible in principle, not at the precision Paper 2 needs. The squeezed T0 goes to the follow-up letter.**
+
+Why it is possible at all. The squeezed T0 block is the collapsed trispectrum T(k_s, -k_s, k_h, -k_h) = R_2 P_s^2 P_h, and one
+realisation holds one sample of each collapsed pair (block amplitude error ~1/rho ~ 0.9). The same R_2 governs every nearly
+collapsed configuration T(k_h, -k_h + q, p, q - p), |q| << k_h, of which there are ~(k_q/k_f)^3 per collapsed one: regress the
+local hard power on the local soft-band power. Toy check (periodic box, amplitude-modulated hard field): ~20x the
+information of the collapsed covariance per realisation.
+
+Estimator (same F_l / filter machinery as the first-order response; `--soft-band k1 k2 ... --k-q ...`):
+  delta_s = (F W_band) / m_w (sharp band, m_w = mean density smoothed at k_w = 0.05);
+  S_q(x) = [m_w^2 delta_s^2]_q / [m_w^2]_q  (local band power smoothed at k_q, m^2-weighted);
+  g = S_q - <S_q>_{m^2} - beta (delta_q - <delta_q>_{m^2}),  delta_q = (F W_q)/m_q;
+  Q_l(k) = <F_l^*(k) FT[g F](k)>_shell;   R_2 = 2 Q_conn / (P_l <delta_s^2 g>_{m^2}) x (1 + SN/P_s)^2,
+with Q_conn = Q - QS - (Qh - QhS) + beta (Qc - QcS): self pairs; the galaxy's own contribution to the local soft power
+(h = [2 w (Fb * kappa) + w^2 c_bb]/den, kappa = w_q K_b; both pair members -> Qh on the F^* leg) — the B/n-type term of the
+four-point estimator; the galaxy's own contribution to delta_q (c = w V_q/m_q; both members -> Qc). Normalisation: for a
+sharp band the Gaussian covariance of delta_s^2 with g is twice the connected mode sum (filter once, as int P W for R_1),
+hence the 2; (1 + SN/P_s)^2 removes the band shot noise from the normaliser. R_2 is read off as the slope of
+(Q_conn)(k) = a P_l(k) + b over k = 0.12-0.3 (the constant absorbs the remaining k-independent discreteness; it is small once
+Qh and Qc are removed). Tree expectation in the SAME units (`r2_analysis.tree_expectation`, Monte Carlo over the estimator's
+configurations with the long-mode snake terms removed, as the beta projection does): 1.3-1.6 for LRG1, collapsed; x1.05-1.5
+at k_q = 0.02-0.03 for the 0.03-0.05 band (non-collapsed trispectrum is larger, not smaller).
+
+Lessons (each cost a round of six 12-min runs): (i) the disconnected term sum_q g(q) <F^*(k) F(k+q)> = P(k) int m^2 g is the
+m^2-weighted mean of the regressor (m- or galaxy-weighting gave R_2 = -0.4 to -2.4). (ii) The shared-galaxy term h is as
+large as the whole tree signal (0.7-1.9 in R_2 units per pair member); a- and b-sides agree to all digits, as they must.
+(iii) The delta_q self/partner term (0.4-1.1, opposite sign) comes from the beta projection. Neglected: both pair members
+inside the soft legs (P/n^2-type, 1-5 per cent). The weighted-randoms synthetic test (`--synthetic R g SEED`) is blind to
+(ii)-(iii) because its "galaxies" are the 16M randoms; the Poisson-sampled version (`--synthetic-poisson P0`, galaxies from
+half the randoms at the LRG1 density, the other half as randoms, exact R_2 = 2 R^2/g^2) is the right test.
+
+Results (LRG1 NGC; `responses/r2/`, `r2_*.csv`):
+- Poisson-sampled synthetic, exact R_2 = 1.183, two seeds, bands 0.02-0.035 / 0.035-0.05: k_q = 0.02: 1.53, 1.68 / 1.70,
+  0.31 (mean 1.61, 1.00) — unbiased within the single-realisation noise (+-0.6); k_q = 0.01: 3.7, -7.3 / 6.6, -2.7 and
+  k_q = 0.005: 9, -30 / 17, 2 — noise-dominated (few q modes; the per-k fit errors are 3-10x too small there). R_1 from
+  the same catalogues: 1.55-1.66 vs 1.538 exact.
+- Holi mocks 173-177 one at a time, all corrections, k_q = 0.02 (per-catalogue scatter in brackets; tree in the same units):
+  0.03-0.05: 1.24 +- 0.24 (0.54), tree 1.70 -> ratio 0.73;  0.05-0.075: 0.79 +- 0.26 (0.57), tree 1.57 -> 0.51;
+  0.075-0.1: 0.37 +- 0.24 (0.54), tree 1.56 -> 0.24.  Ensemble (848 mocks, section 13): 0.50-0.68 of tree.
+  k_q = 0.03 gives 0.47 / 0.41 / 0.03 of tree; k_q = 0.01 is noise-dominated. The 0.075-0.1 band falls with k_q to zero,
+  a trend absent from the Poisson synthetic and opposite to the tree's q-dependence: real-catalogue physics (the
+  response to a smoothed local soft power dies as the smoothing scale shrinks; non-Poisson discreteness is another
+  candidate) that is not understood.
+- Precision: +-0.55 per band per catalogue = 70 per cent of the expected signal (0.55 x tree ~ 0.8); ~40 per cent pooling
+  the bands, ~30 per cent with both caps — against the +-35 per cent that keeps the squeezed block's effect on sigma(f)
+  below 1-2 per cent (section 13). With the unresolved k_q dependence on top, this is a research project, not an
+  ingredient of Paper 2.
+
+Decision (publication plan, caveat a): Paper 2 = discreteness + SSC from the catalogue; the hard T0 block = the tree with
+the measured P (1.00 +- 0.08, section 13); the squeezed block = the tree with the mock-validated statement that it is
+overpredicted by ~2 and that this moves sigma(f) by 2-5 per cent — stated as a limitation, not tuned. The estimator, its
+discreteness terms, the Poisson synthetic test and the tree expectation are the material for the letter.
+
+Reproduce: mocks `python -u -m desi_validation.response_ibisp --bin LRG1 --region NGC --mock 173 --k-L 0.02 --soft-band 0.03 0.05
+0.05 0.075 0.075 0.1 --k-q 0.01 0.02 0.03`; synthetic `... --mock 173 --synthetic 1.0 1.3 4 --filter tophat --k-L 0.05
+--synthetic-poisson 0.085 --soft-band 0.02 0.035 0.035 0.05 --k-q 0.005 0.01 0.02` (one debug node, 8-12 min each; 5-job QOS
+limit); analysis `python -m desi_validation.r2_analysis responses/r2/corrected_*.npz --bundle <t0_inputs.npz>` (slope fit,
+ensemble reference for l = 0 and 2, tree expectation).
+
+### Update 2026-10-23 (b): theory cannot supply the squeezed block; the recipe that remains
+
+- Barreira & Schmidt 2017 (JCAP06(2017)053, eqs. 3.22, 4.7, 5.5-5.8) + Wagner et al. 2015 growth-only responses computed
+  here with CAMB halofit (Takahashi and Mead2020) at z = 0.51 (CAMB linear P = bundle plin to 0.1 per cent): G_1 rises
+  1.24 -> 1.51 and G_2 2.27 -> 3.4 over k = 0.1-0.3; with the nonlinear dilation terms the collapsed angle-averaged
+  coefficient Cbar = R_2/2 + 2/3 R_K2 + 2/9 R_K.K + 4/45 R_KK (tree: 2 Cbar = 4.19 for the test spectrum, = the
+  parallelogram Monte Carlo of section 13) is 0.9-1.3 of tree. For matter the tree squeezed covariance is right to ~20
+  per cent at these k; the mocks' factor 0.5 is galaxy-sector physics (bias/velocity responses, satellites).
+- In the collapsed limit (mu_12 = -1, f_12 = 1) the R_1 and R_K terms of eq. 3.22 vanish identically: the catalogue's
+  precise first-order response carries no information about this block. b_3 rescales squeezed and hard blocks alike
+  (dT0/db3 / T0 = 0.115 vs 0.126) and is excluded as the explanation.
+- Recipe if the block is to come from the catalogue (section 14 estimator, unbiased on the Poisson synthetic at
+  k_q = 0.02): a_sq = pooled slope amplitude over soft bands k_s <= 0.075, k_q = 0.02 and 0.03, both caps, l = 0,
+  divided by the tree expectation in estimator units (`r2_analysis.tree_expectation`); one 12-min debug-node run per
+  catalogue. Six-mock values: 0.73 / 0.51 of tree (k_q 0.02), 0.47 / 0.41 (0.03) for the two bands, ensemble 0.50-0.68.
+  Expected precision +-0.2 of tree per cap pair (= +-35 per cent of the true 0.55; 1-2 per cent on sigma(f));
+  systematic +-0.1 of tree from the k_q trend; the 0.075-0.1 band (0.24 -> 0.03 with k_q) is not used.
+- Zero-cost alternative: tree squeezed block at amplitude 1 with the 2x overprediction and its 2-5 per cent (sigma f) /
+  5-8 per cent (sigma sigma_v) effect stated as a limitation.
+
+## 15. Fibre assignment and the discreteness terms: Abacus complete vs altmtl (2026-10-24)
+
+Abacus 2nd-gen DR2 mock 0, LRG1 NGC, P0. Measured B/n and P/n^2 from the thinning closed form on each catalogue;
+thecov kernel Gaussian at shot-noise levels p = 1, 0.5, 0.25 splits G exactly into G_PP + G_PS + G_SS (G is quadratic in
+S = sum w^2 / p + randoms term); tree-level B/n, P/n^2 from thecov with the complete ssc_check inputs (b1 2.376, f 0.762,
+sigma_v 2.22) for both windows. All runs on the Perlmutter checkout 725d5ba (it cannot fast-forward: uncommitted edit in
+paper/thecov_walkthrough.ipynb there), identical for both versions. `thinning_cov.py` / `thinning_closed_form.py` now take
+`--cs-version`; `thinning_cov.py thecov --tree-params <ssc npz>`. Outputs: `responses/abacus_disc/`, figure
+`report_figures/abacus_fibre_discreteness_LRG1_NGC.png`.
+
+Galaxies 941k -> 704k (75 per cent); shot noise / norm 2290 -> 3359 (x1.47, more than 1/0.75 from the completeness-weight
+scatter). Band means of the diagonal, units of G(complete), k = 0.1-0.2 / 0.2-0.3:
+
+| term | complete | altmtl | ratio | measured / tree, complete | altmtl |
+|---|---|---|---|---|---|
+| G total | 1 / 1 | 1.27 / 1.42 | 1.27 / 1.42 | | |
+| G_PP | 0.63 / 0.40 | 0.68 / 0.43 | 1.08 | | |
+| G_PS | 0.33 / 0.46 | 0.48 / 0.67 | 1.46 | | |
+| G_SS | 0.044 / 0.135 | 0.107 / 0.316 | 2.4 | | |
+| B/n | 0.047 / 0.087 | 0.067 / 0.118 | 1.40 / 1.35 | 1.06 / 1.35 | 0.84 / 1.03 |
+| P/n^2 | 0.006 / 0.023 | 0.001 / 0.025 | 0.2 / 1.07 | 1.9 / 2.1 | 0.13 / 0.87 |
+
+- The Gaussian absorbs most of the fibre-assignment change and thecov models it (it is built from the altmtl weights):
+  G_PS scales as the shot noise (1.46 vs 1.47), G_SS as its square plus the w^4 window (2.4), G_PP rises 8 per cent
+  (weight scatter in the W^4 normalisation).
+- B/n rises 1.35-1.4x, the tree level predicts 1.76x (w^3 window): fibre collisions remove close pairs, the realised
+  one-shared-galaxy term grows less than the weights alone imply. Measured/tree drops from 1.06-1.35 (complete) to
+  0.84-1.03 (altmtl).
+- P/n^2 is suppressed in altmtl below k ~ 0.25 (0.001 vs tree 0.008 at 0.1-0.2), the signature of the collision
+  exclusion at small separation (sub-Poisson pairs); in complete it is 2x tree, as for holi (section 9.4).
+- Net: the discreteness NG term relative to the own Gaussian is unchanged (B/n + P/n^2 = 5.3 / 11 per cent of G complete,
+  5.3 / 10 per cent altmtl), but its ratio to the tree level is not: on fibre-assigned data the tree overpredicts B/n by
+  up to 20 per cent and P/n^2 by up to 8x at k < 0.2 — another reason to take these terms from the catalogue.
+- Caveats: one mock, one cap; G_SS and the B/n-P/n^2 split inherit the pair-count noise of the three thecov runs
+  (low-k P/n^2 below ~3e-3 of G is noise, hence the negative altmtl values at k < 0.12).
