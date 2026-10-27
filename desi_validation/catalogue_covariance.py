@@ -73,6 +73,109 @@ def poisson_loader(seed):
     dc.load_region = load_region
 
 
+GRF = {}
+
+
+def grf_loader(args, paths):
+    """Gaussian-field null test of thecov's P x S term. Galaxies = Poisson sample, p = p0 (1 + delta_s), of one half of the randoms;
+    delta_s is a band-limited (k_c) Gaussian field of rms sigma with the shape of b1^2 P_lin (damped, from --params) and linear
+    RSD with f at the true line of sight (as grf_randoms); the other half are the randoms. A Gaussian field has B = 0 (up to the
+    clipping of p < 0: 5 % of the points at sigma = 0.6, skewness ~0.1 of tree level), so in every (l, l') block
+        lin - 2 P/n^2(P_in) = (G_PS(P_in) + 2 G_SS) / r
+    to the accuracy of thecov's P x S and S x S terms (the S x S part is known from the Poisson test, HANDOFF 17). thecov receives
+    the Kaiser multipoles of P_in unmasked, the files' norm scaled by rho^2 (rho = sum w_gal / sum w_data), and the tree P/n^2
+    is recomputed with (P_in, b1 = 1, f) after the thecov stage."""
+    import dataclasses
+    import scipy.fft as sfft
+    import finufft
+    from desi_validation.grf_randoms import NTH, tensor_index
+    sigma, p0, seed = args.grf
+    f, k_c = args.grf_f, args.grf_kc
+    zp = np.load(os.path.expanduser(args.params)); key = lambda q: zp[f'{args.region}/{q}']
+    kl, PirA = key('plin_k'), key('plin_P_damped_normalised')
+    orig = dc.load_region
+
+    @functools.wraps(orig)
+    def load_region(paths_, tracer_bin, region, n_random_files=1, **kw):
+        rc = orig(paths_, tracer_bin, region, n_random_files=n_random_files, **kw)
+        if GRF.get('rho') is not None and n_random_files != GRF['n_random_files']:
+            return rc                                                   # other loads (kernel smoothing) use the randoms only
+        t0 = time.time()
+        rng = np.random.default_rng(int(seed))
+        R = rc.randoms; nr = len(R['Z'])
+        perm = rng.permutation(nr); par, est = perm[: nr // 2], perm[nr // 2:]
+        xr = dc.sky_to_cartesian(R['RA'], R['DEC'], R['Z'])
+        lo, hi = xr.min(0), xr.max(0)
+        L = 1.5 * float(np.max(hi - lo)); lo = 0.5 * (lo + hi) - 0.5 * L
+        kf = 2 * np.pi / L
+        n_gen = sfft.next_fast_len(2 * int(np.ceil(k_c / kf)) + 4)
+        kk = 2 * np.pi * np.fft.fftfreq(n_gen, d=L / n_gen)
+        KX, KY, KZ = np.meshgrid(kk, kk, kk, indexing='ij')
+        kg = np.sqrt(KX ** 2 + KY ** 2 + KZ ** 2)
+        Pg = np.where(kg < k_c, np.interp(kg, kl, PirA, left=PirA[0], right=0.0), 0.0)
+        vc = (L / n_gen) ** 3
+        s2 = float(Pg.sum() / (vc * n_gen ** 3))
+        A = sigma ** 2 / s2                                               # P_in = A * PirA (band-limited): rms sigma
+        Pg *= A
+        W = sfft.fftn(rng.standard_normal((n_gen,) * 3), workers=NTH) * (np.sqrt(Pg / vc) / n_gen ** 3)
+        del Pg
+        xp = xr[par]
+        thg = [np.ascontiguousarray(2 * np.pi * (xp[:, i] - lo[i]) / L) for i in range(3)]
+        xh = xp / np.linalg.norm(xp, axis=1)[:, None]
+        opts = dict(eps=1e-6, nthreads=NTH, modeord=1)
+        if f:
+            with np.errstate(invalid='ignore', divide='ignore'):
+                inv_k2 = np.where(kg > 0, 1.0 / kg ** 2, 0.0)
+            Kc = (KX, KY, KZ)
+            t2, _ = tensor_index(2)
+            stack = np.empty((7,) + W.shape, complex); stack[0] = W
+            for n_, (a_, b_) in enumerate(t2):
+                stack[n_ + 1] = W * Kc[a_] * Kc[b_] * inv_k2
+            del W, KX, KY, KZ, kg, inv_k2
+            g = finufft.nufft3d2(*thg, stack, isign=1, **opts).real
+            del stack
+            d = g[0].copy()
+            for n_, (a_, b_) in enumerate(t2):
+                d += f * (2.0 if a_ != b_ else 1.0) * xh[:, a_] * xh[:, b_] * g[n_ + 1]
+            del g
+        else:
+            del KX, KY, KZ, kg
+            d = finufft.nufft3d2(*thg, W, isign=1, **opts).real
+            del W
+        p = np.clip(p0 * (1 + d), 0, 1)
+        sel = par[rng.random(len(p)) < p]
+        data = {c: np.asarray(v)[sel] for c, v in R.items()}
+        rand = {c: np.asarray(v)[est] for c, v in R.items()}
+        rho = float(np.sum(dc.total_weight(data)) / np.sum(dc.total_weight(rc.data)))
+        GRF.update(rho=rho, A=A, f=f, k_c=k_c, kl=kl, P_in=np.where(kl < k_c, A * PirA, 0.0), sigma_realised=float(d.std()),
+                   clipped=float(np.mean(p0 * (1 + d) < 0)), n_random_files=n_random_files, n_gal=len(sel), L=L, n_gen=n_gen)
+        log(f'  GRF catalogue (sigma {sigma}, realised {d.std():.3f}; f {f}; k_c {k_c}; p0 {p0}; seed {seed}): {len(sel)} galaxies from '
+            f'{len(par)} randoms (clipped {GRF["clipped"]:.4f}), {len(est)} randoms; rho {rho:.4f}; box {L:.0f}, grid {n_gen}^3; {time.time() - t0:.0f} s')
+        return dataclasses.replace(rc, data=data, randoms=rand, n_randoms_all_z=rc.n_randoms_all_z // 2, info=dict(rc.info, grf=dict(GRF)))
+    dc.load_region = load_region
+
+    orig_rs = dc.read_spectra
+
+    @functools.wraps(orig_rs)
+    def read_spectra(fns, **kw):
+        spec = orig_rs(fns, **kw)
+        if GRF.get('rho') is None:
+            dc.load_region(paths, args.bin, args.region, n_random_files=4)
+        k = spec['k']; P = np.interp(k, GRF['kl'], GRF['P_in'])
+        kaiser = {0: 1 + 2 * f / 3 + f ** 2 / 5, 2: 4 * f / 3 + 4 * f ** 2 / 7, 4: 8 * f ** 2 / 35}
+        vec = np.concatenate([kaiser[l] * P for l in spec['ells']])
+        return dict(spec, vectors=vec[None, :], norm=np.asarray(spec['norm']) * GRF['rho'] ** 2)
+    dc.read_spectra = read_spectra
+
+    orig_tc = dc.thecov_covariance
+
+    @functools.wraps(orig_tc)
+    def thecov_covariance(*a, **kw):
+        kw['power_input'] = 'unmasked'                                   # P_in is the true (unconvolved) spectrum
+        return orig_tc(*a, **kw)
+    dc.thecov_covariance = thecov_covariance
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bin', default='LRG1'); ap.add_argument('--region', default='NGC')
@@ -86,11 +189,15 @@ def main(argv=None):
     ap.add_argument('--ssc-n-near', type=int, default=300000)
     ap.add_argument('--out-dir', default=None)
     ap.add_argument('--poisson', type=int, default=None, metavar='SEED', help='null test: unclustered catalogue drawn from the randoms')
+    ap.add_argument('--grf', type=float, nargs=3, default=None, metavar=('SIGMA', 'P0', 'SEED'), help='null test of the P x S term: Poisson sample of a Gaussian field (see grf_loader)')
+    ap.add_argument('--grf-f', type=float, default=0.762); ap.add_argument('--grf-kc', type=float, default=0.4)
     args = ap.parse_args(argv)
+    from desi_validation import thinning_closed_form as tcf, thinning_cov as tcv
     if args.poisson is not None:
         poisson_loader(args.poisson)                # wrapped first, so the memoised loader caches the Poisson catalogue
+    if args.grf is not None:
+        grf_loader(args, tcv.setup_mock(args)[0])
     memoise_loader()
-    from desi_validation import thinning_closed_form as tcf, thinning_cov as tcv
     tag = '' if not args.cs_version else f'_{args.cs_version}'
     od = args.out_dir or os.path.expanduser(f'~/thecov/catcov/{args.bin}_{args.region}_mock{args.mock}{tag}')
     os.makedirs(od, exist_ok=True)
@@ -110,6 +217,12 @@ def main(argv=None):
     tcv.main(['thecov'] + common + ['--frac', '1', '--tree-params', args.params, '--thecov-random-files', '4'])   # shares the 4-file load
     T['gaussian_split_tree_disc'] = time.time() - t0
     cov, tr, res = tcv.LAST['cov'], tcv.LAST['tracer'], tcv.LAST['res']
+    if args.grf is not None:                                          # tree P/n^2 (B = 0) of the Gaussian field: P_in, b1 = 1, f
+        from thecov.tree.discreteness import DiscretenessCovariance
+        D = DiscretenessCovariance(cov, (GRF['kl'], GRF['P_in']), b1=1.0, f=GRF['f'], b2=0.0, bs2=0.0)
+        comp = D.components([(tr.name, tr.name)], ells=tuple(sorted(set(args.ells) | {0})))
+        res = dict(res, disc_B=np.asarray(comp['B']), disc_P=np.asarray(comp['P']), **{f'grf_{q}': v for q, v in GRF.items()})
+        log('  tree P/n^2 recomputed with the Gaussian field inputs')
 
     zp = np.load(os.path.expanduser(args.params)); key = lambda q: zp[f'{args.region}/{q}']
     b1, b2, bs2, f, _ = (float(x) for x in key('params'))
