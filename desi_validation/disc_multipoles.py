@@ -108,6 +108,7 @@ def main():
     ap.add_argument('--bundle', default=None, help='t0_inputs.npz (mock vectors, production SSC, excluded mocks)')
     ap.add_argument('--tracer', default='LRG1'); ap.add_argument('--region', default='NGC')
     ap.add_argument('--kmax', type=float, default=0.3)
+    ap.add_argument('--files-shotnoise', type=float, default=None, help="the spectra files' num_shotnoise (e.g. 27650 for holi LRG1 NGC); rescales G_PS, G_SS for the mock comparison")
     ap.add_argument('--out', default=None)
     ap.add_argument('--fit-three', action='store_true', help='use the three-run quadratic fit even if the one-run split is present')
     args = ap.parse_args()
@@ -132,6 +133,10 @@ def main():
     nb, k = d['nb'], d['k']
     assert np.allclose(F('k'), k, rtol=1e-3)
     ssc = F('C_ssc')
+    if args.files_shotnoise:                         # the spectra files' S (their own number of random files) in the Gaussian
+        fs = args.files_shotnoise / d['sn']          # B/n, P/n^2 are galaxy-only; g1, g2 stay at the device catalogue's S
+        d = dict(d, G=d['GPP'] + fs * d['GPS'] + fs ** 2 * d['GSS'])
+        print(f'\nGaussian rescaled to the files\' shot noise: S_files / S_device = {fs:.4f}')
     models = {'G (catalogue Gaussian)': d['G'],
               'G + tree disc': d['G'] + d['tree_B'] + d['tree_P'],
               'G + measured disc': d['G'] + d['Bn'] + d['Pn2'],
