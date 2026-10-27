@@ -168,3 +168,97 @@ def test_local_average_statistics_and_norm_kinds(sphere_ssc):
         assert np.isclose(st['sigma_norm_clustering'] ** 2, (lam_M + lam_W) ** 2 * b1 ** 2 * s00, rtol=0.05)
     with pytest.raises(ValueError):
         SuperSampleCovariance(cov, p_lin(), b1=2.0, f=0.0, norm_kind='mesh')
+
+
+def test_sigma2_thin_shell_against_fourier_space():
+    """Thin shell segment seen from the observer (line of sight varies by 50 deg): all long-mode variances
+    sigma^2_{(X n)(Y n')}, X, Y in {W, M}, n, n' in {0, 2}, against the exact Fourier-space expression
+    int d^3q/(2pi)^3 P(q) W_X(q) W_Y^*(q) / (I_X I_Y) with W_{(X,n)}(q) = sum_r w_X,r L_n(q^.x^_r) e^{-iq.x_r} (type-1 NUFFTs,
+    Riemann sum on a box 8x the survey). Independent of the pair counts and of the tripolar expansion; checks the
+    lam = 2, 4 channels, the cross channels and the (W, M) ordering. 2026-10-27: all ten agree to 1 % (far-pair sampling)."""
+    finufft = pytest.importorskip('finufft')
+    from itertools import combinations_with_replacement
+    rng = np.random.default_rng(11)
+    Nr = 40_000
+    r = rng.uniform(800 ** 3, 1000 ** 3, 4 * Nr) ** (1 / 3)
+    ct = rng.uniform(np.cos(np.radians(50)), 1, 4 * Nr)
+    ph = rng.uniform(0, 2 * np.pi, 4 * Nr)
+    st = np.sqrt(1 - ct ** 2)
+    pos = np.stack([r * st * np.cos(ph), r * st * np.sin(ph), r * ct], 1)[:Nr]
+    r = r[:Nr]
+    wgt = 1.0 + (r - 900.0) / 200.0                                       # radial weights: W (w^2) and M (w) windows differ
+    nbar = 1e-3
+    Vs = 4 / 3 * np.pi * (1000 ** 3 - 800 ** 3) * (1 - np.cos(np.radians(50))) / 2
+    tr = Tracer('T', {'POSITION': pos, 'WEIGHT': wgt, 'NZ': np.full(Nr, nbar)}, nbar * Vs / Nr)
+    k, P = p_lin()
+    qmax = 0.06
+    Pcut = P * np.exp(-(k / qmax) ** 8)                                     # band limit shared by both sides
+    power = PowerSpectrum({0: (k, 4 * P), 2: (k, P)}, kedges=np.arange(0.02, 0.2001, 0.02))
+    cov = GaussianCovariance([tr], power, n_sub=8000, n_near=40000, ds_pair=10.0, smoothing=None)
+    ssc = SuperSampleCovariance(cov, (k, Pcut), b1=2.0, f=0.6, n_near=40000)
+    sig = ssc.sigma2('T')
+    # Fourier side
+    Lb = 12000.0
+    kf = 2 * np.pi / Lb
+    nq = 2 * int(np.ceil(0.075 / kf)) + 2
+    x0 = pos.min(0) - 10
+    th = [np.ascontiguousarray(2 * np.pi * (pos[:, i] - x0[i]) / Lb) for i in range(3)]
+    xh = pos / np.linalg.norm(pos, axis=1)[:, None]
+    qo = 2 * np.pi * np.fft.fftfreq(nq, d=Lb / nq)
+    QO = np.meshgrid(qo, qo, qo, indexing='ij')
+    qm = np.sqrt(sum(Q ** 2 for Q in QO))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        qh = [np.where(qm > 0, Q / qm, 0) for Q in QO]
+    Pq = np.interp(qm.ravel(), k, Pcut).reshape(qm.shape)
+    Pq[0, 0, 0] = 0.0
+    opts = dict(eps=1e-9, modeord=1)
+    wX = {'M': wgt, 'W': wgt * (nbar * wgt)}
+    Wq, I = {}, {}
+    for X, wx in wX.items():
+        F0 = finufft.nufft3d1(*th, wx.astype(complex), (nq,) * 3, isign=-1, **opts)
+        Q2 = np.zeros_like(F0)
+        for (i, j) in combinations_with_replacement(range(3), 2):
+            Fij = finufft.nufft3d1(*th, (wx * xh[:, i] * xh[:, j]).astype(complex), (nq,) * 3, isign=-1, **opts)
+            Q2 += (1 if i == j else 2) * qh[i] * qh[j] * Fij
+        Wq[(X, 0)], Wq[(X, 2)], I[X] = F0, 1.5 * Q2 - 0.5 * F0, wx.sum()
+    for key, v in sig.items():
+        (X, n), (Y, n2) = key
+        ref = np.sum(Pq * (Wq[(X, n)] * np.conj(Wq[(Y, n2)])).real) / Lb ** 3 / (I[X] * I[Y])
+        assert abs(v / ref - 1) < 0.04, (key, v, ref)
+
+
+@pytest.mark.slow
+def test_poisson_local_average_term_box():
+    """Poisson-sampled Gaussian field in a periodic box (sigma_delta = 0.26, no clipping), P_hat normalised by the realised
+    N^2 (pypower's norm: alpha and the data, lam_total = 2) versus the mean N: Cov_real - Cov_fixed = (-8 + 4) P_i P_j / N.
+    6000 realisations give the mean over all (i, j) of the ratio to -4/N as 1.06 +- 0.20 (2026-10-27); 3000 here."""
+    rng = np.random.default_rng(9)
+    n, L = 48, 1000.0
+    V = L ** 3
+    kfb = 2 * np.pi / L
+    kx = 2 * np.pi * np.fft.fftfreq(n, d=L / n)
+    KX, KY, KZ = np.meshgrid(kx, kx, kx, indexing='ij')
+    kk = np.sqrt(KX ** 2 + KY ** 2 + KZ ** 2)
+    Pk = 2e4 * (np.maximum(kk, 1e-4) / 0.05) ** -1.3 * np.exp(-(kk / 0.05) ** 8)
+    amp = np.sqrt(Pk / V) * n ** 3
+    amp[0, 0, 0] = 0
+    Nbar = 30000
+    edges = kfb * np.array([2.5, 3.5, 4.5, 5.5, 6.5, 7.5])
+    ib = np.digitize(kk.ravel(), edges) - 1
+    nbins = len(edges) - 1
+    ib[(ib < 0) | (ib >= nbins)] = nbins
+    nsh = np.bincount(ib, minlength=nbins + 1)[:nbins]
+    Ns, raw = [], []
+    for _ in range(3000):
+        d = np.fft.ifftn(np.fft.fftn(rng.normal(size=(n, n, n))) / n ** 1.5 * amp).real
+        cnt = rng.poisson(np.clip(Nbar / n ** 3 * (1 + d), 0, None)).astype(float)
+        F = np.fft.fftn(cnt - cnt.mean())
+        Ns.append(cnt.sum())
+        raw.append((np.bincount(ib, np.abs(F.ravel()) ** 2, nbins + 1)[:nbins] / nsh - cnt.sum()) * V)
+    Ns, raw = np.array(Ns), np.array(raw)
+    Nm = Ns.mean()
+    Pf, Pr = raw / Nm ** 2, raw / Ns[:, None] ** 2
+    Pb = Pf.mean(0)
+    Cf, Cr = np.cov(Pf.T), np.cov(Pr.T)
+    rel = np.mean([(Cr[i, j] - Cf[i, j]) / (Pb[i] * Pb[j]) for i in range(nbins) for j in range(nbins)])
+    assert abs(rel / (-4 / Nm) - 1) < 0.6

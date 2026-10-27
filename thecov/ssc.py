@@ -118,10 +118,17 @@ class SuperSampleCovariance:
                   'alpha': {'M': 1.0, 'W': 0.0}}          # norm = alpha x (fixed randoms integral, e.g. sum_r nbar w^2)
 
     def __init__(self, cov, p_lin, b1, f, b2=0.0, bs2=None, local_average=True, damping=1.0, n_mu=D.SSC_N_MU,
-                 n_near=D.SSC_N_NEAR, dilution=None, discreteness=True, p_dressed=None, norm_kind='data-randoms'):
+                 n_near=D.SSC_N_NEAR, dilution=None, discreteness=True, p_dressed=None, norm_kind='data-randoms',
+                 p_lin_long=None, responses=None):
         if norm_kind not in self.NORM_KINDS:
             raise ValueError(f'norm_kind must be one of {sorted(self.NORM_KINDS)}')
         self.cov, self.p_dressed, self.dilution, self.norm_kind = cov, p_dressed, dilution, norm_kind
+        # p_lin_long: the matter power of the long modes (sigma^2), by default p_lin. Keep them apart when p_lin carries an
+        # amplitude fitted to the galaxy spectrum (A_norm): the long-mode variance is set by the fiducial cosmology.
+        self.k_long, self.p_long = (np.asarray(x, float) for x in (p_lin_long if p_lin_long is not None else p_lin))
+        # responses: optional {(ell, n): per-bin array} overriding the model's R_ell^(n) (e.g. measured R_0^(0), R_2^(0)
+        # from the position-dependent power spectrum of the catalogue); the other entries keep the model values.
+        self.responses_override = {tuple(key): np.asarray(v, float) for key, v in (responses or {}).items()}
         opts = dict(cov.windows.opts)
         opts.update(n_mu=int(n_mu), n_near=min(int(n_near), int(opts['n_near'])))
         self.windows = WindowLibrary(cov.windows.s_edges, **opts)
@@ -180,10 +187,10 @@ class SuperSampleCovariance:
     def xi(self, lam, s):
         """xi_lam(s) = int q^2 dq / (2 pi^2) P_lin(q) j_lam(q s), on a linear q grid fine enough for s."""
         s = np.asarray(s, float)
-        qmax = min(self.k_lin[-1], 5.0 / max(self.damping, 1e-3))
+        qmax = min(self.k_long[-1], 5.0 / max(self.damping, 1e-3))
         dq = min(1e-3, 0.25 / s.max())
-        q = np.arange(max(self.k_lin[0], 1e-5), qmax, dq)
-        pq = np.exp(np.interp(np.log(q), np.log(self.k_lin), np.log(np.maximum(self.p_lin, 1e-300))))
+        q = np.arange(max(self.k_long[0], 1e-5), qmax, dq)
+        pq = np.exp(np.interp(np.log(q), np.log(self.k_long), np.log(np.maximum(self.p_long, 1e-300))))
         pq *= np.exp(-(q * self.damping) ** 2) * q ** 2 * dq / (2 * np.pi ** 2)
         out = np.empty(len(s))
         for i0 in range(0, len(s), 64):
@@ -228,10 +235,14 @@ class SuperSampleCovariance:
             K = self.cov.hankel
             kq = np.asarray(K.kq, float)
             R = response_multipoles(kq.ravel(), self.p_dressed, self.b1, self.f, self.b2, self.bs2)
-            return {key: np.sum(K.wq * v.reshape(kq.shape), axis=1) / K.norm for key, v in R.items()}
-        P, dP = self._linear_power()
-        Pb, dPb = self._bin_average(P), self._bin_average(dP)
-        return {(l, n): self.a[i, j] * Pb + self.c[i, j] * dPb for i, l in enumerate(ELLS) for j, n in enumerate(ELLS)}
+            out = {key: np.sum(K.wq * v.reshape(kq.shape), axis=1) / K.norm for key, v in R.items()}
+        else:
+            P, dP = self._linear_power()
+            Pb, dPb = self._bin_average(P), self._bin_average(dP)
+            out = {(l, n): self.a[i, j] * Pb + self.c[i, j] * dPb for i, l in enumerate(ELLS) for j, n in enumerate(ELLS)}
+        for key, v in self.responses_override.items():
+            out[key] = np.broadcast_to(v, (self.cov.nbins,)).copy()
+        return out
 
     def _dilution(self, A):
         """d_k = I_k / norm per bin (the `dilution` given, or the covariance's I_k / I)."""
@@ -268,6 +279,8 @@ class SuperSampleCovariance:
         a, w, W = T.alpha, np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
         w2 = a * self.cov.shotnoise_scale(A) * w ** 2                    # sum_g w^2 g  ->  sum_r w2_r g(x_r)
         I_M, I_W = a * np.sum(w), a * np.sum(w * W)
+        if abs(I_W / self.cov.I(A, A) - 1.0) > 1e-3:                        # W must be the window's own weighted density
+            raise RuntimeError(f'weighted density inconsistent with the window: alpha sum w W = {I_W:.6g}, int W^2 = {self.cov.I(A, A):.6g}')
         lM, lW = self.lam['M'], self.lam['W']
         var = np.sum(w2 * (lM / I_M + lW * W / I_W) ** 2)
         J = lM * np.sum(w2 * W) / I_M + lW * np.sum(w2 * W ** 2) / I_W
@@ -284,7 +297,9 @@ class SuperSampleCovariance:
         kaiser = {0: b1 ** 2 + 2 / 3 * b1 * f + f ** 2 / 5, 2: 4 / 3 * b1 * f + 4 / 7 * f ** 2, 4: 8 / 35 * f ** 2}
         collapsed = self.b2 + 2.0 / 3.0 * self.bs2                    # 2 Z2(k, -k) = b2 + 2 bs2 / 3
         measured = [self._measured(A, l) for l in ells]
-        T = [2.0 * p / d * J / norm + collapsed * kaiser.get(l, 0.0) * P2 * J3 / norm for p, l in zip(measured, ells)]
+        # both parts of <P_raw eps_N> are pair sums through the window: the two-point part is the measured spectrum
+        # (P_true x d) and the collapsed-bispectrum part carries the same dilution d
+        T = [2.0 * p / d * J / norm + collapsed * kaiser.get(l, 0.0) * P2 * d * J3 / norm for p, l in zip(measured, ells)]
         return np.concatenate(measured), np.concatenate(T), var
 
     def discreteness_covariance(self, A, ells):

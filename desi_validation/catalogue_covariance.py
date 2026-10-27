@@ -138,7 +138,8 @@ def main(argv=None):
         dil = key('dilution') if f'{args.region}/dilution' in zp.files else None
         ssc = SuperSampleCovariance(cov, (kl, A_norm * Pl), b1=b1, f=f, b2=b2, bs2=bs2, local_average=True,
                                     p_dressed=Dressed(kl, PirA, sigma_v), n_near=args.ssc_n_near, dilution=dil,
-                                    discreteness=True, norm_kind='data-randoms')
+                                    discreteness=True, norm_kind='data-randoms',
+                                    p_lin_long=(kl, Pl))         # long-mode variance from the fiducial P_lin, not A_norm P_lin
         ssc.compute_windows(tr.name, verbose=False)
         Cs, _ = ssc.covariance(spectra, ells=tuple(args.ells))
         out.update(C_ssc=Cs)

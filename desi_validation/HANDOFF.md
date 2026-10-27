@@ -1052,3 +1052,15 @@ for P0, (+10 +- 10, -1 +- 6, -1 +- 5, -5 +- 4) % for P2, (-3 +- 8, -8 +- 6, -1 +
 (P0xP4 0.1-0.3 at -3.2, -2.4 sigma: noise or the tree P/n^2 proxy). The exact l > 0 linear term is validated end to end on the real
 footprint at the ~5 % level of the thinning covariance. The MC cannot resolve the l > 0 P/n^2 (needs ~2000 thinnings at p = 0.25,
 ~450 at p = 0.1); the exact term for l > 0 remains the configuration-space route. (`responses/disc_multipoles/mc_thinning_vs_exact_*.csv`)
+
+**Tests run (2026-10-27, local, `tests/test_ssc.py`)**: (a) `test_sigma2_thin_shell_against_fourier_space`: thin shell
+segment with a 50-deg LOS spread and radial weights, all ten sigma^2_{(X n)(Y n')} (X, Y = W, M; n = 0, 2) against the exact
+Fourier-space sum int P |W_X W_Y^*| with NUFFT windows: thecov / exact = 0.990-0.992 for every channel, the 1 % being the
+far-pair sampling (changes by +-1 % with n_sub) -> lam = 2, 4 channels, cross channels and W/M ordering verified. (b) Poisson
+local-average term in a box (realised N^2 normalisation vs mean, sigma_delta 0.26, 6000 realisations): (Cov_real - Cov_fixed)
+/ (P_i P_j) = 1.06 +- 0.20 x (-4/N), Cov(P_hat, eps) = (0.9-1.2) x 2P/N -> the term is right (marked slow). (c)
+`discreteness_integrals` on a uniform cube: var N = 4.000, J = 2 nbar, J3 = 2 nbar^2; alpha sum w W = int W^2 to 1e-5.
+No bug found in ssc.py. Code changes: `p_lin_long=` (sigma^2 from the fiducial P_lin; catalogue_covariance now passes it:
+clustering SSC x 1.35), `responses=` override ({(ell, n): per-bin}), d_k on the collapsed-bispectrum part of T, I_W
+consistency check (RuntimeError). ssc_check.py still passes A_norm P_lin to sigma^2 (add p_lin_long there before the next
+production run).
