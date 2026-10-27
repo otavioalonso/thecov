@@ -48,6 +48,31 @@ def memoise_loader():
     dc.load_region = load_region
 
 
+def poisson_loader(seed):
+    """Replace every catalogue the stages load by an unclustered one in the same footprint: galaxies drawn from one half
+    of the randoms with p0 = N_data / N_half (same count, weights and n(z) as the real catalogue), the other half as the
+    randoms. Its discreteness terms vanish in expectation, so measured lin, quad must equal thecov's 2 G_SS / r^2,
+    G_SS / r^2 (the null test of thecov's shot-noise covariance, HANDOFF 16)."""
+    import dataclasses
+    orig = dc.load_region
+
+    @functools.wraps(orig)
+    def load_region(paths, tracer_bin, region, n_random_files=1, **kw):
+        rc = orig(paths, tracer_bin, region, n_random_files=n_random_files, **kw)
+        rng = np.random.default_rng(seed + 1000 * n_random_files)
+        R = rc.randoms; nr = len(R['Z'])
+        perm = rng.permutation(nr); par, est = perm[: nr // 2], perm[nr // 2:]
+        p0 = len(rc.data['Z']) / len(par)
+        sel = par[rng.random(len(par)) < p0]
+        data = {c: np.asarray(v)[sel] for c, v in R.items()}
+        rand = {c: np.asarray(v)[est] for c, v in R.items()}
+        log(f'  Poisson catalogue (seed {seed}): {len(sel)} galaxies from {len(par)} randoms (p0 = {p0:.4f}; real catalogue '
+            f'{len(rc.data["Z"])}), {len(est)} randoms')
+        return dataclasses.replace(rc, data=data, randoms=rand, n_randoms_all_z=rc.n_randoms_all_z // 2,
+                                   info=dict(rc.info, poisson_seed=seed))
+    dc.load_region = load_region
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bin', default='LRG1'); ap.add_argument('--region', default='NGC')
@@ -60,7 +85,10 @@ def main(argv=None):
     ap.add_argument('--workers', type=int, default=min(64, os.cpu_count() or 1))
     ap.add_argument('--ssc-n-near', type=int, default=300000)
     ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--poisson', type=int, default=None, metavar='SEED', help='null test: unclustered catalogue drawn from the randoms')
     args = ap.parse_args(argv)
+    if args.poisson is not None:
+        poisson_loader(args.poisson)                # wrapped first, so the memoised loader caches the Poisson catalogue
     memoise_loader()
     from desi_validation import thinning_closed_form as tcf, thinning_cov as tcv
     tag = '' if not args.cs_version else f'_{args.cs_version}'
