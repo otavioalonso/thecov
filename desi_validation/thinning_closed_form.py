@@ -45,6 +45,7 @@ def main():
     ap.add_argument('--pad', type=float, default=1.1)
     ap.add_argument('--eps', type=float, default=1e-4)
     ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
     args = ap.parse_args()
     paths, cfg, od = setup_mock(args)
     b, r = args.bin, args.region

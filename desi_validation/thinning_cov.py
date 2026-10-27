@@ -33,13 +33,19 @@ from desi_validation.grf_randoms import NTH, T0, log, tensor_index  # noqa: E402
 KR = ((0.02, 0.05), (0.05, 0.1), (0.1, 0.2), (0.2, 0.3))
 
 
+SPECTRA_BASE = '/dvs_ro/cfs/cdirs/desi/science/cai/desi-clustering/dr2/summary_statistics/full_shape/base'
+
+
 def setup_mock(args):
     paths = dc.Paths(kind='holi_v3', mock=args.mock)
     paths.catalog_names.update({'ELG_LOPnotqso': 'ELGnotqso', 'LRG+ELG_LOPnotqso': 'LRG+ELGnotqso'})
     paths.loader = 'auto'
-    paths.cs_version, paths.cs_parent_version = 'holi-v3-altmtl', 'data-dr2-v2'
+    cs = getattr(args, 'cs_version', None) or 'holi-v3-altmtl'
+    paths.cs_version, paths.cs_parent_version = cs, 'data-dr2-v2'
+    paths.spectra_dir = f'{SPECTRA_BASE}/{cs}'                 # spectra (norm, k grid) of the same mock family
     cfg = pl.Config()
-    od = args.out_dir or os.path.expanduser(f'~/thecov/thinning/{args.bin}_{args.region}_mock{args.mock}')
+    tag = '' if cs == 'holi-v3-altmtl' else f'_{cs}'          # holi keeps its old directory names
+    od = args.out_dir or os.path.expanduser(f'~/thecov/thinning/{args.bin}_{args.region}_mock{args.mock}{tag}')
     os.makedirs(od, exist_ok=True)
     return paths, cfg, od
 
@@ -172,15 +178,27 @@ def thecov_stage(args):
                                   windows_file=os.path.join(od, f'windows_{name}.npz'), power_input='masked', smoothing=sm)
     log(f'  done in {time.time() - t0:.0f} s')
     res = dict(C_G=C, sn=sn, n_near=n_near)
-    try:                                                                    # tree-level discreteness terms (proxy inputs)
-        from thecov.tree.discreteness import DiscretenessCovariance
-        nb = len(spec['k'])
-        P0 = spec['vectors'][:, :nb].mean(0) * g['norm'] / cov.I_randoms
-        kk = np.concatenate([[spec['k_edges'][0] / 4], spec['k'], [spec['k_edges'][-1]]])
-        D = DiscretenessCovariance(cov, (kk, np.concatenate([[P0[0]], P0, [P0[-1]]])), b1=1.0, f=0.0)
-        comps, index = D.components(spec, ells=spec['ells'], return_index=True)
-        res['disc_components'], res['disc_index'] = np.asarray(comps), np.asarray(index, dtype=object)
-        log(f'  discreteness components (b1 = 1, f = 0, measured P): {list(index)}')
+    try:                                                                    # tree-level discreteness terms
+        try:
+            from thecov.tree.discreteness import DiscretenessCovariance
+        except ImportError:                                                 # thecov before the tree/ split
+            from thecov.discreteness import DiscretenessCovariance
+        if getattr(args, 'tree_params', None):                              # production inputs (ssc_check output): bias, f, P_ir A, FoG
+            zt = np.load(os.path.expanduser(args.tree_params)); key = lambda q: zt[f'{r}/{q}']
+            b1_, b2_, bs2_, f_, _ = key('params'); sv = float(key('damping')[1])
+            D = DiscretenessCovariance(cov, (key('plin_k'), key('plin_P_damped_normalised')), b1=float(b1_), f=float(f_), b2=float(b2_),
+                                       bs2=float(bs2_), sigma_fog=sv, **(dict(n_mu=16, n_phi=24) if sv else {}))
+            dcomp = D.components([(tr.name, tr.name)], ells=ells)
+            res['disc_B'], res['disc_P'] = np.asarray(dcomp['B']), np.asarray(dcomp['P'])
+            log(f'  tree discreteness with production inputs from {args.tree_params}: b1 {float(b1_):.3f} f {float(f_):.3f} sigma_v {sv:.2f}')
+        else:                                                               # proxy inputs: b1 = 1, f = 0, measured P
+            nb = len(spec['k'])
+            P0 = spec['vectors'][:, :nb].mean(0) * g['norm'] / cov.I_randoms
+            kk = np.concatenate([[spec['k_edges'][0] / 4], spec['k'], [spec['k_edges'][-1]]])
+            D = DiscretenessCovariance(cov, (kk, np.concatenate([[P0[0]], P0, [P0[-1]]])), b1=1.0, f=0.0)
+            comps, index = D.components(spec, ells=spec['ells'], return_index=True)
+            res['disc_components'], res['disc_index'] = np.asarray(comps), np.asarray(index, dtype=object)
+            log(f'  discreteness components (b1 = 1, f = 0, measured P): {list(index)}')
     except Exception as e:  # noqa: BLE001
         log(f'  discreteness terms not computed: {e!r}')
     fn = os.path.join(od, f'thecov_p{p:g}.npz')
@@ -240,6 +258,8 @@ def main():
     ap.add_argument('--n-randoms-max', type=float, default=8e6)
     ap.add_argument('--target-near-pairs', type=float, default=5e9)
     ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--tree-params', default=None, help='ssc_check npz (<region>/params, damping, plin_*) for the tree discreteness terms')
+    ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
     args = ap.parse_args()
     {'thin': thin, 'thecov': thecov_stage, 'report': report}[args.stage](args)
 
