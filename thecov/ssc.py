@@ -279,8 +279,13 @@ class SuperSampleCovariance:
         a, w, W = T.alpha, np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
         w2 = a * self.cov.shotnoise_scale(A) * w ** 2                    # sum_g w^2 g  ->  sum_r w2_r g(x_r)
         I_M, I_W = a * np.sum(w), a * np.sum(w * W)
-        if abs(I_W / self.cov.I(A, A) - 1.0) > 1e-3:                        # W must be the window's own weighted density
-            raise RuntimeError(f'weighted density inconsistent with the window: alpha sum w W = {I_W:.6g}, int W^2 = {self.cov.I(A, A):.6g}')
+        # alpha sum w W is the randoms' int W^2; cov.I(A, A) may instead be the estimator's own norm (DESI: the cell-based
+        # alpha sum_c D_c R_c / V_c, ~ 0.82 int W^2 for LRG1). The Poisson weights below use the randoms' integrals in both
+        # numerator and denominator, so a uniform ratio cancels; report it when it is not 1.
+        ratio = I_W / self.cov.I(A, A)
+        if abs(ratio - 1.0) > 1e-3:
+            import warnings
+            warnings.warn(f'SSC local average: alpha sum w W / norm = {ratio:.4f} (randoms int W^2 vs the covariance normalisation)', stacklevel=2)
         lM, lW = self.lam['M'], self.lam['W']
         var = np.sum(w2 * (lM / I_M + lW * W / I_W) ** 2)
         J = lM * np.sum(w2 * W) / I_M + lW * np.sum(w2 * W ** 2) / I_W
