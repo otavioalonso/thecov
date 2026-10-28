@@ -1201,3 +1201,24 @@ discreteness terms of a fibre-assigned catalogue are NOT tree level (tree overpr
 by 0.01-0.03 G); the measured terms carry it, but with the realisation scatter of section 18 (~0.01 G at k > 0.2 between mocks).
 The mock comparison (hybrid best, measured l > 0 worse) then says the mocks' extra l > 0 variance is elsewhere (T0, P2 hard block
 1.6-1.8x tree in section 13), not in B/n. GRF-Poisson test of thecov's P x S term still queued (two power inputs, sigma_s 0.3).
+
+**Box thinning done (job 75c8b6ca, 302 s on one node; `responses/box_t0/box_thinning_ph000_z.npz`).** Caveat: the
+`abacus_HF_cubic/DR2_v1.0` HODDIES LRG catalogue of ph000 has 5.60M galaxies (nbar 7.0e-4) while the pipeline's hod-base_B
+spectra have 7.27M (nbar 9.1e-4) and P0 3.2 % higher: a different HOD realisation. lin was scaled by (nbar_cat/nbar) (P_pipe/P_cat)^2
+= 0.82 and quad by (nbar_cat/nbar)^2 (P_pipe/P_cat) = 0.61; the NUFFT P0 of the catalogue matches the pipeline shape to 0.6 % rms.
+- Measured discreteness = tree with nonlinear P inside the kernels: off-diagonal k >= 0.15 means in correlation units
+  P0xP0 0.0352 vs 0.0361, P2xP2 0.0076 vs 0.0070; P/n^2 measured / tree 1.044; diagonal P0 0.046 vs 0.043 of G at 0.2-0.3
+  (P2 0.014 vs 0.009, P4 0.009 vs 0.003). The HOD galaxies' discreteness terms are Poisson-like at the 5 % level, and the
+  prescription "tree B/n, P/n^2 with the measured nonlinear P" is validated in the box.
+- **T0 isolated (base = exact Gaussian + measured discreteness; `box_t0_block_amplitudes_measured_disc_LRG_c000.csv`):**
+  P0xP0 hard (k >= 0.15, off-diagonal) 0.31 +- 0.11 of the tree T0 with nonlinear P (0.67 +- 0.23 of the tree with linear P);
+  los-z only 0.15 +- 0.21 / 0.35 +- 0.42. P0xP0 squeezed 0.06 +- 0.08 (0.12 +- 0.14): excluded. P2xP2 hard 0.77 +- 0.30
+  (1.16 +- 0.44 los-z), squeezed 0.79 +- 0.22, adjacent 1.3 +- 0.5. P0xP2 blocks consistent with zero (negative, 1 sigma).
+- Diagonal: mocks / (G + measured disc) = 0.81 / 0.94 / 0.88 (P0, k bands), 0.97 / 1.00 / 1.07 (P2), 0.98 / 1.01 / 1.03 (P4):
+  the P0 diagonal is 6-19 % below the Poisson-S Gaussian + measured discreteness (1.5-2 sigma with 25 independent boxes);
+  a sub-Poisson stochastic power (halo exclusion) would do this and would also lower thecov's PS and SS terms for the data.
+- Conclusion for Paper 1: in a box with no window and no SSC, the tree-level T0 with nonlinear P is right for P2xP2 (0.8-1.2),
+  too large by ~3x for the P0xP0 hard block and by >10x for the squeezed P0xP0 block; with linear P the P0 hard block is 0.7
+  +- 0.2. The cutsky "P2xP2 hard wants 2-3x" (section 21) is therefore not T0. Next: a second box (ph001) to check the
+  realisation dependence of the measured discreteness and the P0 diagonal deficit; a sub-Poisson S test (fit S_eff from the
+  box P0 diagonal); then the cutsky P2 excess with the box-calibrated T0 (hard P0 x0.3-0.7, squeezed x0, P2 x1).
