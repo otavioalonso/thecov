@@ -1164,3 +1164,21 @@ Robust in both mocks and both P inputs: negative l > 0 B/n at k < 0.1 (P2xP2 -0.
 Candidates: thecov's P x S term for l > 0 (GRF-Poisson test queued) or fibre assignment (altmtl removes close pairs transverse
 to the line of sight, an anisotropic one-shared-galaxy term: Abacus complete vs altmtl, queued, decides).
 (`responses/disc_multipoles/bn_own_power_173_174.csv`)
+
+**Measured Poisson local-average term, mock 173 (2026-10-28, catcov/LRG1_NGC_mock173_v5; W(x_g) = NX WEIGHT_FKP <WEIGHT>)**:
+Var(eps) pieces x N_gal = 1.165 (alpha) / 1.155 (cross) / 1.146 (data in norm), total 4.62/N vs tree 4.18/N (the data's
+<w^2>/<w>^2 = 1.165 vs the randoms' 1.05); T_0 measured / tree = 1.02 / 0.94 / 0.93 (k 0.05-0.1 / 0.1-0.2 / 0.2-0.3), T_2
+1.02 / 0.92 / 0.97. Resulting LA covariance on the P0 diagonal: measured -0.013 / -0.035 / -0.054 of G vs tree -0.014 /
+-0.043 / -0.068; coherent P0 mode -5.1 % (measured) vs -5.2 % (tree). => the tree Poisson-LA term is confirmed from the
+catalogue (10-20 % high at k > 0.1 because of the randoms' W vs the galaxies' pair density; use the measured one). The
+first attempt with W = NX w_g (the galaxy's own weight twice) gave var_WW 2.25/N: wrong, fixed.
+The v4/v5 Gaussian uses sigma2 from the fiducial P_lin (clustering SSC x 1.35) and the padded P/n^2: (0,0) P/n^2 at
+0.2-0.3 is now 0.0212 of G (tree 0.0209; the earlier 0.027 was the aliasing), ratio_off 1.12, B/n (0,0) 0.069 / 0.136
+(tree 0.064 / 0.083). Wishart (N-1)D vs 848 mocks, G(files' S) + hybrid disc + ..., P0 / P2 / P4 / P0+P2 / P0+P2+P4:
+no SSC 872 / 1003 / 827 / 3624 / 8193; + clustering SSC 844 / 882 / 826 / 3485 / 8057; + tree Poisson LA 866 / 884 / 826 /
+3531 / 8102; + measured Poisson LA 860 / 883 / 826 / 3520 / 8092; + measured LA + tree T0 with the squeezed blocks halved
+851 / 838 / 791 / 3489 / 8470 (min eig 0.36: the low-k T0 structure). P0 diagonal mock/model at k > 0.1: clustering SSC
+only 0.986 / 0.986 (model high); + LA 1.018 / 1.032; + LA + T0 0.986 / 1.011; T0 without LA 0.956 / 0.967. So the P0
+budget at k > 0.1 closes with G + measured disc + clustering SSC + Poisson LA + hard T0; the Wishart preference against
+the LA term in LA-only models is the missing hard T0. Files: `catalogue_covariance_LRG1_NGC_mock173_v5.npz`,
+`wishart_LRG1_NGC_mock173_v5.csv` (artifacts).
