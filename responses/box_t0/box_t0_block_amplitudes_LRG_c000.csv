@@ -1,0 +1,145 @@
+P_in,samples,ells,block,a,err,T0_corr,excess,n
+lin,75 (3 LOS x 25 boxes),P0xP0,diag,-2.44,0.46,0.0806,-0.1696,11
+lin,75 (3 LOS x 25 boxes),P0xP0,adjacent,0.16,0.26,0.1111,0.0541,10
+lin,75 (3 LOS x 25 boxes),P0xP0,low-low <0.1 off,-1.24,0.49,0.0947,-0.1282,3
+lin,75 (3 LOS x 25 boxes),P0xP0,squeezed <0.1 x >=0.1,0.08,0.09,0.2096,0.0219,24
+lin,75 (3 LOS x 25 boxes),P0xP0,hard >=0.1 off,0.58,0.13,0.1424,0.1124,28
+lin,75 (3 LOS x 25 boxes),P0xP0,hard >=0.15 off,1.18,0.23,0.1133,0.1485,15
+lin,75 (3 LOS x 25 boxes),P2xP2,diag,0.56,1.34,0.0363,0.0483,11
+lin,75 (3 LOS x 25 boxes),P2xP2,adjacent,1.66,0.58,0.0642,0.1243,10
+lin,75 (3 LOS x 25 boxes),P2xP2,low-low <0.1 off,1.12,1.19,0.0486,0.0227,3
+lin,75 (3 LOS x 25 boxes),P2xP2,squeezed <0.1 x >=0.1,0.73,0.21,0.1086,0.0786,24
+lin,75 (3 LOS x 25 boxes),P2xP2,hard >=0.1 off,1.49,0.28,0.0833,0.1288,28
+lin,75 (3 LOS x 25 boxes),P2xP2,hard >=0.15 off,1.41,0.48,0.0665,0.0987,15
+lin,75 (3 LOS x 25 boxes),P0xP2,diag,-1.8,2.14,0.0068,-0.0745,11
+lin,75 (3 LOS x 25 boxes),P0xP2,adjacent,-0.39,0.72,0.0222,-0.0343,20
+lin,75 (3 LOS x 25 boxes),P0xP2,low-low <0.1 off,-0.46,0.92,0.0373,-0.0257,6
+lin,75 (3 LOS x 25 boxes),P0xP2,squeezed <0.1 x >=0.1,-0.08,0.21,0.0689,-0.0079,48
+lin,75 (3 LOS x 25 boxes),P0xP2,hard >=0.1 off,-0.02,0.44,0.0255,-0.0241,56
+lin,75 (3 LOS x 25 boxes),P0xP2,hard >=0.15 off,-1.03,1.22,0.009,-0.0489,30
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,diag,-1.84,0.46,0.0857,-0.1144,11
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,adjacent,0.59,0.26,0.1178,0.125,10
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,low-low <0.1 off,-1.12,0.49,0.0961,-0.1183,3
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,squeezed <0.1 x >=0.1,0.21,0.09,0.2196,0.0524,24
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,hard >=0.1 off,1.02,0.13,0.1534,0.1993,28
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,hard >=0.15 off,1.84,0.23,0.1235,0.2522,15
+lin,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,diag,0.92,1.34,0.0368,0.0646,11
+lin,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,adjacent,1.86,0.58,0.0651,0.143,10
+lin,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,low-low <0.1 off,1.15,1.19,0.0487,0.0245,3
+lin,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,squeezed <0.1 x >=0.1,0.77,0.21,0.1098,0.0839,24
+lin,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,hard >=0.1 off,1.68,0.28,0.0848,0.1497,28
+lin,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,hard >=0.15 off,1.74,0.48,0.0681,0.1253,15
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,diag,-1.49,2.14,0.0068,-0.0788,11
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,adjacent,-0.26,0.72,0.0226,-0.0351,20
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,low-low <0.1 off,-0.4,0.92,0.0375,-0.0235,6
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,squeezed <0.1 x >=0.1,-0.03,0.21,0.0708,-0.0047,48
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,hard >=0.1 off,0.09,0.44,0.0266,-0.024,56
+lin,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,hard >=0.15 off,-0.89,1.22,0.0094,-0.0532,30
+lin,25 (los-z),P0xP0,diag,-2.14,0.85,0.0806,-0.13,11
+lin,25 (los-z),P0xP0,adjacent,0.27,0.48,0.1111,0.0668,10
+lin,25 (los-z),P0xP0,low-low <0.1 off,-1.17,0.84,0.0947,-0.116,3
+lin,25 (los-z),P0xP0,squeezed <0.1 x >=0.1,0.12,0.16,0.2096,0.0224,24
+lin,25 (los-z),P0xP0,hard >=0.1 off,0.53,0.24,0.1424,0.1159,28
+lin,25 (los-z),P0xP0,hard >=0.15 off,0.86,0.42,0.1133,0.1119,15
+lin,25 (los-z),P2xP2,diag,-4.85,2.01,0.0363,-0.0105,11
+lin,25 (los-z),P2xP2,adjacent,2.15,0.96,0.0642,0.1581,10
+lin,25 (los-z),P2xP2,low-low <0.1 off,1.04,1.87,0.0486,-0.0032,3
+lin,25 (los-z),P2xP2,squeezed <0.1 x >=0.1,1.04,0.33,0.1086,0.1104,24
+lin,25 (los-z),P2xP2,hard >=0.1 off,2.24,0.47,0.0833,0.1836,28
+lin,25 (los-z),P2xP2,hard >=0.15 off,2.28,0.75,0.0665,0.1431,15
+lin,25 (los-z),P0xP2,diag,-11.21,3.53,0.0068,-0.0848,11
+lin,25 (los-z),P0xP2,adjacent,-0.24,1.29,0.0222,-0.0083,20
+lin,25 (los-z),P0xP2,low-low <0.1 off,1.82,1.52,0.0373,0.0174,6
+lin,25 (los-z),P0xP2,squeezed <0.1 x >=0.1,-0.14,0.35,0.0689,-0.0068,48
+lin,25 (los-z),P0xP2,hard >=0.1 off,-1.35,0.79,0.0255,-0.0429,56
+lin,25 (los-z),P0xP2,hard >=0.15 off,-2.33,2.13,0.009,-0.0466,30
+lin,25 (los-z) [no disc in base],P0xP0,diag,-1.54,0.85,0.0857,-0.0716,11
+lin,25 (los-z) [no disc in base],P0xP0,adjacent,0.71,0.48,0.1178,0.138,10
+lin,25 (los-z) [no disc in base],P0xP0,low-low <0.1 off,-1.06,0.84,0.0961,-0.1057,3
+lin,25 (los-z) [no disc in base],P0xP0,squeezed <0.1 x >=0.1,0.25,0.16,0.2196,0.0531,24
+lin,25 (los-z) [no disc in base],P0xP0,hard >=0.1 off,0.97,0.24,0.1534,0.2025,28
+lin,25 (los-z) [no disc in base],P0xP0,hard >=0.15 off,1.52,0.42,0.1235,0.2122,15
+lin,25 (los-z) [no disc in base],P2xP2,diag,-4.45,2.01,0.0368,0.0035,11
+lin,25 (los-z) [no disc in base],P2xP2,adjacent,2.37,0.96,0.0651,0.177,10
+lin,25 (los-z) [no disc in base],P2xP2,low-low <0.1 off,1.07,1.87,0.0487,-0.0014,3
+lin,25 (los-z) [no disc in base],P2xP2,squeezed <0.1 x >=0.1,1.08,0.33,0.1098,0.1159,24
+lin,25 (los-z) [no disc in base],P2xP2,hard >=0.1 off,2.45,0.47,0.0848,0.2053,28
+lin,25 (los-z) [no disc in base],P2xP2,hard >=0.15 off,2.64,0.75,0.0681,0.1703,15
+lin,25 (los-z) [no disc in base],P0xP2,diag,-10.91,3.53,0.0068,-0.0876,11
+lin,25 (los-z) [no disc in base],P0xP2,adjacent,-0.11,1.29,0.0226,-0.0077,20
+lin,25 (los-z) [no disc in base],P0xP2,low-low <0.1 off,1.88,1.52,0.0375,0.0198,6
+lin,25 (los-z) [no disc in base],P0xP2,squeezed <0.1 x >=0.1,-0.09,0.35,0.0708,-0.0031,48
+lin,25 (los-z) [no disc in base],P0xP2,hard >=0.1 off,-1.24,0.79,0.0266,-0.0433,56
+lin,25 (los-z) [no disc in base],P0xP2,hard >=0.15 off,-2.2,2.13,0.0094,-0.0505,30
+meas,75 (3 LOS x 25 boxes),P0xP0,diag,-1.51,0.27,0.1388,-0.2076,11
+meas,75 (3 LOS x 25 boxes),P0xP0,adjacent,0.03,0.17,0.1669,0.0104,10
+meas,75 (3 LOS x 25 boxes),P0xP0,low-low <0.1 off,-1.29,0.5,0.0933,-0.1277,3
+meas,75 (3 LOS x 25 boxes),P0xP0,squeezed <0.1 x >=0.1,0.05,0.08,0.2269,0.013,24
+meas,75 (3 LOS x 25 boxes),P0xP0,hard >=0.1 off,0.18,0.08,0.2272,0.0551,28
+meas,75 (3 LOS x 25 boxes),P0xP0,hard >=0.15 off,0.29,0.11,0.2212,0.0686,15
+meas,75 (3 LOS x 25 boxes),P2xP2,diag,0.41,0.86,0.057,0.0424,11
+meas,75 (3 LOS x 25 boxes),P2xP2,adjacent,1.36,0.46,0.0836,0.1193,10
+meas,75 (3 LOS x 25 boxes),P2xP2,low-low <0.1 off,1.01,1.22,0.0488,0.0228,3
+meas,75 (3 LOS x 25 boxes),P2xP2,squeezed <0.1 x >=0.1,0.8,0.22,0.1043,0.0782,24
+meas,75 (3 LOS x 25 boxes),P2xP2,hard >=0.1 off,1.03,0.21,0.1126,0.1235,28
+meas,75 (3 LOS x 25 boxes),P2xP2,hard >=0.15 off,0.8,0.3,0.1084,0.0901,15
+meas,75 (3 LOS x 25 boxes),P0xP2,diag,0.16,1.28,0.0012,-0.0689,11
+meas,75 (3 LOS x 25 boxes),P0xP2,adjacent,0.01,0.66,0.0179,-0.0304,20
+meas,75 (3 LOS x 25 boxes),P0xP2,low-low <0.1 off,-0.49,0.92,0.0374,-0.0256,6
+meas,75 (3 LOS x 25 boxes),P0xP2,squeezed <0.1 x >=0.1,-0.06,0.2,0.0679,-0.0081,48
+meas,75 (3 LOS x 25 boxes),P0xP2,hard >=0.1 off,0.05,0.37,0.0266,-0.021,56
+meas,75 (3 LOS x 25 boxes),P0xP2,hard >=0.15 off,-0.08,0.8,0.0061,-0.0423,30
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,diag,-0.8,0.27,0.1578,-0.1144,11
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,adjacent,0.61,0.17,0.188,0.125,10
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,low-low <0.1 off,-1.18,0.5,0.0946,-0.1183,3
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,squeezed <0.1 x >=0.1,0.19,0.08,0.2457,0.0524,24
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,hard >=0.1 off,0.68,0.08,0.2607,0.1993,28
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP0,hard >=0.15 off,0.92,0.11,0.2602,0.2522,15
+meas,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,diag,0.8,0.86,0.0585,0.0646,11
+meas,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,adjacent,1.62,0.46,0.0855,0.143,10
+meas,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,low-low <0.1 off,1.04,1.22,0.0489,0.0245,3
+meas,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,squeezed <0.1 x >=0.1,0.84,0.22,0.1059,0.0839,24
+meas,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,hard >=0.1 off,1.23,0.21,0.1157,0.1497,28
+meas,75 (3 LOS x 25 boxes) [no disc in base],P2xP2,hard >=0.15 off,1.08,0.3,0.1121,0.1253,15
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,diag,0.65,1.28,0.0002,-0.0788,11
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,adjacent,0.22,0.66,0.0178,-0.0351,20
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,low-low <0.1 off,-0.43,0.92,0.0376,-0.0235,6
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,squeezed <0.1 x >=0.1,-0.0,0.2,0.0709,-0.0047,48
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,hard >=0.1 off,0.19,0.37,0.0281,-0.024,56
+meas,75 (3 LOS x 25 boxes) [no disc in base],P0xP2,hard >=0.15 off,0.16,0.8,0.0063,-0.0532,30
+meas,25 (los-z),P0xP0,diag,-1.3,0.49,0.1388,-0.1705,11
+meas,25 (los-z),P0xP0,adjacent,0.1,0.32,0.1669,0.0233,10
+meas,25 (los-z),P0xP0,low-low <0.1 off,-1.25,0.84,0.0933,-0.1154,3
+meas,25 (los-z),P0xP0,squeezed <0.1 x >=0.1,0.11,0.14,0.2269,0.0132,24
+meas,25 (los-z),P0xP0,hard >=0.1 off,0.13,0.15,0.2272,0.059,28
+meas,25 (los-z),P0xP0,hard >=0.15 off,0.12,0.21,0.2212,0.0349,15
+meas,25 (los-z),P2xP2,diag,-3.2,1.22,0.057,-0.0152,11
+meas,25 (los-z),P2xP2,adjacent,1.51,0.73,0.0836,0.1533,10
+meas,25 (los-z),P2xP2,low-low <0.1 off,0.99,1.94,0.0488,-0.0031,3
+meas,25 (los-z),P2xP2,squeezed <0.1 x >=0.1,1.11,0.33,0.1043,0.11,24
+meas,25 (los-z),P2xP2,hard >=0.1 off,1.47,0.34,0.1126,0.1781,28
+meas,25 (los-z),P2xP2,hard >=0.15 off,1.19,0.44,0.1084,0.1345,15
+meas,25 (los-z),P0xP2,diag,-5.37,2.11,0.0012,-0.0812,11
+meas,25 (los-z),P0xP2,adjacent,-0.39,1.19,0.0179,-0.0057,20
+meas,25 (los-z),P0xP2,low-low <0.1 off,1.74,1.54,0.0374,0.0175,6
+meas,25 (los-z),P0xP2,squeezed <0.1 x >=0.1,-0.0,0.34,0.0679,-0.0078,48
+meas,25 (los-z),P0xP2,hard >=0.1 off,-1.32,0.65,0.0266,-0.0396,56
+meas,25 (los-z),P0xP2,hard >=0.15 off,-1.87,1.36,0.0061,-0.04,30
+meas,25 (los-z) [no disc in base],P0xP0,diag,-0.6,0.49,0.1578,-0.0716,11
+meas,25 (los-z) [no disc in base],P0xP0,adjacent,0.68,0.32,0.188,0.138,10
+meas,25 (los-z) [no disc in base],P0xP0,low-low <0.1 off,-1.14,0.84,0.0946,-0.1057,3
+meas,25 (los-z) [no disc in base],P0xP0,squeezed <0.1 x >=0.1,0.25,0.14,0.2457,0.0531,24
+meas,25 (los-z) [no disc in base],P0xP0,hard >=0.1 off,0.63,0.15,0.2607,0.2025,28
+meas,25 (los-z) [no disc in base],P0xP0,hard >=0.15 off,0.76,0.21,0.2602,0.2122,15
+meas,25 (los-z) [no disc in base],P2xP2,diag,-2.74,1.22,0.0585,0.0035,11
+meas,25 (los-z) [no disc in base],P2xP2,adjacent,1.8,0.73,0.0855,0.177,10
+meas,25 (los-z) [no disc in base],P2xP2,low-low <0.1 off,1.02,1.94,0.0489,-0.0014,3
+meas,25 (los-z) [no disc in base],P2xP2,squeezed <0.1 x >=0.1,1.15,0.33,0.1059,0.1159,24
+meas,25 (los-z) [no disc in base],P2xP2,hard >=0.1 off,1.7,0.34,0.1157,0.2053,28
+meas,25 (los-z) [no disc in base],P2xP2,hard >=0.15 off,1.49,0.44,0.1121,0.1703,15
+meas,25 (los-z) [no disc in base],P0xP2,diag,-4.87,2.11,0.0002,-0.0876,11
+meas,25 (los-z) [no disc in base],P0xP2,adjacent,-0.15,1.19,0.0178,-0.0077,20
+meas,25 (los-z) [no disc in base],P0xP2,low-low <0.1 off,1.79,1.54,0.0376,0.0198,6
+meas,25 (los-z) [no disc in base],P0xP2,squeezed <0.1 x >=0.1,0.05,0.34,0.0709,-0.0031,48
+meas,25 (los-z) [no disc in base],P0xP2,hard >=0.1 off,-1.19,0.65,0.0281,-0.0433,56
+meas,25 (los-z) [no disc in base],P0xP2,hard >=0.15 off,-1.62,1.36,0.0063,-0.0505,30

@@ -1117,3 +1117,34 @@ bound treating all of it as locally radial (nu = 1, lam_W = 2) gives an SSC 1.3x
 at k > 0.1 and a better Wishart (P2 914 -> 889; with responses x 1.3: 862) -- the n(z) data fix the variance, not its
 n = 0/2 split, so this only says the mocks want the larger end. Measured Poisson-LA term and SSC pieces: job
 catcov/LRG1_NGC_mock173_v4 (regular queue).
+
+## 22. T0 in the Abacus cubic boxes, window-free (2026-10-28; `box_t0.py`, `box_thinning.py`, `responses/box_t0/`)
+
+Data: 25 AbacusSummit base c000 LRG z = 0.5 HOD boxes (hod-base_B, L = 2000 Mpc/h, N = 7.27M, nbar 9.1e-4), 3 lines of sight
+each, P0/P2/P4 at dk = 0.001 (rebinned to the 56 bins) and the Sugiyama (0,0,0), (2,0,2) diagonal bispectra
+(`mock_challenge_box/abacus-hf-v2`; `responses/box_t0/box_LRG_z0.500_c000_hod-base_B.npz`). c000 P_lin at z = 0.5 from CAMB
+(sigma8 0.6214, f 0.7623).
+- Inputs from the boxes themselves (A = 1): b1 1.855, sigma_v 4.25 from P0, P2 at k 0.02-0.08 (chi2 9/24, 1 % floor);
+  b2 = 0.38 from B_000(k) at k 0.03-0.08 with the tree RSD bispectrum (+FoG, bs2 = -4/7(b1-1)): data/tree 1.01 (k < 0.05),
+  1.04 (0.05-0.1), 1.22 (0.1-0.15). Lazeyras(1.855) = -0.32: the HOD galaxies' b2 is positive, consistent with the cutsky
+  B/n value 0.52 (section 21). The holi/Abacus LRG inputs agree (cutsky b1 1.87, sigma_v 3.75).
+- Exact box Gaussian (diagonal in k; 2 (2l+1)(2l'+1)/N_k int L_l L_l' (P(k,mu) + 1/nbar)^2 with the box-mean multipoles,
+  N_k = all modes): sample variance / Gaussian = 0.82-1.0 (P0), 0.97-1.09 (P2), 0.98-1.10 (P4) in k bands (75 correlated
+  samples; the P0 k < 0.1 deficit is 2 sigma).
+- Off-diagonal (k != k') covariance is non-Gaussian only: tree discreteness (J_SWW = 1/(nbar V), J_SS = 1/(nbar^2 V)) + T0
+  (J4 = 1/V, exact). Rebinned to dk 0.025, correlation units, 75 samples (per-element noise 0.12), nonlinear P in the kernels
+  (P0/K0 P_lin smoothed: 1.04 at k 0.1, 1.45 at 0.2, 1.82 at 0.3):
+  P0xP0 hard (k >= 0.15): excess over Gaussian 0.25, tree disc 0.18, T0 template 0.22 -> T0 amplitude 0.29 +- 0.11 with disc at
+  tree (joint fit: a_disc 1.03 +- 0.46, a_T0 0.17 +- 0.24, corr -0.94; with linear P in the kernels: a_disc 2.7, a_T0 ~ 0 or
+  1.2 +- 0.2 with disc fixed). **P0xP0 squeezed (k < 0.1 x k >= 0.1): excess 0.05, disc 0.04, T0 template 0.23 -> amplitude
+  0.05 +- 0.08: the tree squeezed T0 is excluded at ~10 sigma with no window and no SSC** (cutsky section 13: 0.5).
+  P2xP2: hard 0.80 +- 0.30 (75) / 1.19 +- 0.44 (los-z only), squeezed 0.80 +- 0.22 / 1.1 +- 0.3, joint fit a_T0 1.3 +- 0.4
+  (disc unconstrained). P0xP2 blocks: small negative excess (-0.02 to -0.05) against T0 0.01-0.07.
+  (`box_t0_block_amplitudes_LRG_c000.csv`, `report_figures/box_offdiagonal_LRG_c000.png`.)
+- Reading: the cutsky P2xP2 "2-3x tree" of section 21 is not reproduced in the boxes (0.8-1.3): it is cutsky-specific
+  (window / LOS / SSC / the l = 2 Gaussian), not T0. The P0 hard block is degenerate between B/n (nonlinear bispectrum) and T0;
+  the squeezed T0 is a tree-level failure for these galaxies, not a window or SSC effect.
+- Pending: `box_thinning.py` (exact lin, quad of box ph000 los z; regular-queue job 75c8b6ca / SLURM 60414433, ~1 h) gives the
+  measured discreteness in the box; Cov_box(k != k') - (lin - quad) = T0 exactly in the (0, 0) block, which breaks the
+  P0 hard degeneracy. Then: all 25 boxes' measured disc is unnecessary (weak realisation dependence); the three LOS of a box
+  are correlated, so quote the los-z-only errors.
