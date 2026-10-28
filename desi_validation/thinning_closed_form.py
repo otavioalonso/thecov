@@ -164,7 +164,12 @@ def main(argv=None):
     k, edges, nb, norm = g['k'], g['k_edges'], len(g['k']), float(g['norm'])
     rc = dc.load_region(paths, b, r, n_random_files=args.random_files)
     wd, wr = dc.total_weight(rc.data), dc.total_weight(rc.randoms)
-    Wd = np.asarray(rc.data['NX'], float) * wd if 'NX' in rc.data else None      # W(x_g) = nbar(z_g) w_g for the local-average vectors
+    # W(x_g) = nbar(z_g) <w>(z_g) for the local-average vectors: the randoms' weighted density at the galaxy (norm = alpha sum_c
+    # D_c R_c: a galaxy enters with its own w_g times the RANDOMS' density there), i.e. NX x WEIGHT_FKP(z) x <WEIGHT>, not
+    # NX x w_g (which would count the galaxy's own completeness weight twice: 2026-10-28 fix, var_WW 2.25/N -> ~1.3/N)
+    Wd = None
+    if 'NX' in rc.data and 'WEIGHT_FKP' in rc.data and 'WEIGHT' in rc.data:
+        Wd = np.asarray(rc.data['NX'], float) * np.asarray(rc.data['WEIGHT_FKP'], float) * float(np.mean(np.asarray(rc.data['WEIGHT'], float)))
     xd = dc.sky_to_cartesian(rc.data['RA'], rc.data['DEC'], rc.data['Z'])
     xr = dc.sky_to_cartesian(rc.randoms['RA'], rc.randoms['DEC'], rc.randoms['Z'])
     del rc

@@ -242,7 +242,8 @@ def main(argv=None):
     cf_name = 'thinning_closed_form.npz' if max(args.ells) == 0 else 'thinning_closed_form_ell' + ''.join(map(str, sorted(set(args.ells) | {0}))) + '.npz'
     cf = np.load(os.path.join(od, cf_name))
     out.update(k=cf['k'], lin_ell=cf['lin_ell'] if 'lin_ell' in cf.files else cf['lin'], quad=cf['quad'],
-               P1_ell=cf['P1_ell'] if 'P1_ell' in cf.files else cf['P1'])
+               P1_ell=cf['P1_ell'] if 'P1_ell' in cf.files else cf['P1'],
+               **{key: cf[key] for key in cf.files if key.startswith('la_')})      # measured local-average Poisson vectors
     spectra = [(tr.name, tr.name)]
     if not args.no_t0:
         from thecov import TrispectrumCovariance
