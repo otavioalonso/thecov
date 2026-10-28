@@ -115,7 +115,8 @@ def grf_loader(args, paths):
         Pg = np.where(kg < k_c, np.interp(kg, kl, PirA, left=PirA[0], right=0.0), 0.0)
         vc = (L / n_gen) ** 3
         s2 = float(Pg.sum() / (vc * n_gen ** 3))
-        A = sigma ** 2 / s2                                               # P_in = A * PirA (band-limited): rms sigma
+        kaiser0 = 1 + 2 * f / 3 + f ** 2 / 5                                # sigma is the REDSHIFT-SPACE rms (clipping is set by it)
+        A = sigma ** 2 / s2 / kaiser0                                     # P_in = A * PirA (band-limited): real-space rms sigma / sqrt(kaiser0)
         Pg *= A
         W = sfft.fftn(rng.standard_normal((n_gen,) * 3), workers=NTH) * (np.sqrt(Pg / vc) / n_gen ** 3)
         del Pg
@@ -164,6 +165,11 @@ def grf_loader(args, paths):
         k = spec['k']; P = np.interp(k, GRF['kl'], GRF['P_in'])
         kaiser = {0: 1 + 2 * f / 3 + f ** 2 / 5, 2: 4 * f / 3 + 4 * f ** 2 / 7, 4: 8 * f ** 2 / 35}
         vec = np.concatenate([kaiser[l] * P for l in spec['ells']])
+        if args.grf_power == 'realised' and GRF.get('out_dir'):          # the catalogue's own P_l from the closed-form stage (masked)
+            cf = os.path.join(GRF['out_dir'], 'thinning_closed_form_ell024.npz')
+            if os.path.exists(cf):
+                vec = np.load(cf)['P1_ell']
+                log('  thecov power: the GRF catalogue\'s realised P_l (masked input)')
         return dict(spec, vectors=vec[None, :], norm=np.asarray(spec['norm']) * GRF['rho'] ** 2)
     dc.read_spectra = read_spectra
 
@@ -171,7 +177,7 @@ def grf_loader(args, paths):
 
     @functools.wraps(orig_tc)
     def thecov_covariance(*a, **kw):
-        kw['power_input'] = 'unmasked'                                   # P_in is the true (unconvolved) spectrum
+        kw['power_input'] = 'masked' if args.grf_power == 'realised' else 'unmasked'   # P_in is the true (unconvolved) spectrum
         return orig_tc(*a, **kw)
     dc.thecov_covariance = thecov_covariance
 
@@ -192,6 +198,7 @@ def main(argv=None):
     ap.add_argument('--grf', type=float, nargs=3, default=None, metavar=('SIGMA', 'P0', 'SEED'), help='null test of the P x S term: Poisson sample of a Gaussian field (see grf_loader)')
     ap.add_argument('--own-power', action='store_true', help="thecov Gaussian with the catalogue's own P_l (Paper 2 rule; removes the realised-P leakage into B/n)")
     ap.add_argument('--grf-f', type=float, default=0.762); ap.add_argument('--grf-kc', type=float, default=0.4)
+    ap.add_argument('--grf-power', default='input', choices=['input', 'realised'], help='thecov P for the GRF test: P_in unmasked, or the catalogue\'s realised P_l masked')
     args = ap.parse_args(argv)
     from desi_validation import thinning_closed_form as tcf, thinning_cov as tcv
     if args.poisson is not None:
@@ -202,6 +209,7 @@ def main(argv=None):
     tag = '' if not args.cs_version else f'_{args.cs_version}'
     od = args.out_dir or os.path.expanduser(f'~/thecov/catcov/{args.bin}_{args.region}_mock{args.mock}{tag}')
     os.makedirs(od, exist_ok=True)
+    GRF['out_dir'] = od
     common = ['--bin', args.bin, '--region', args.region, '--mock', str(args.mock), '--out-dir', od]
     if args.cs_version:
         common += ['--cs-version', args.cs_version]
