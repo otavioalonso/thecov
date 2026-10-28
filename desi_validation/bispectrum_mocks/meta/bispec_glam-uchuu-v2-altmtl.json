@@ -1,0 +1,96 @@
+{
+ "suite": "glam-uchuu-v2-altmtl",
+ "groups": {
+  "LRG_z0.4-0.6_NGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "LRG_z0.4-0.6_SGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "LRG_z0.4-0.6_GCcomb": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "LRG_z0.6-0.8_NGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "LRG_z0.6-0.8_SGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "LRG_z0.6-0.8_GCcomb": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "LRG_z0.8-1.1_NGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "LRG_z0.8-1.1_SGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "LRG_z0.8-1.1_GCcomb": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "ELG_LOPnotqso_z0.8-1.1_NGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "ELG_LOPnotqso_z0.8-1.1_SGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "ELG_LOPnotqso_z0.8-1.1_GCcomb": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "ELG_LOPnotqso_z1.1-1.6_NGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "ELG_LOPnotqso_z1.1-1.6_SGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "ELG_LOPnotqso_z1.1-1.6_GCcomb": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "QSO_z0.8-2.1_NGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "QSO_z0.8-2.1_SGC": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  },
+  "QSO_z0.8-2.1_GCcomb": {
+   "n": 1007,
+   "n_with_P": 1007,
+   "n_dirs": 1007
+  }
+ },
+ "errors": []
+}
