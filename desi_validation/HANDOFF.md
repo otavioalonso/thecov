@@ -1182,3 +1182,22 @@ only 0.986 / 0.986 (model high); + LA 1.018 / 1.032; + LA + T0 0.986 / 1.011; T0
 budget at k > 0.1 closes with G + measured disc + clustering SSC + Poisson LA + hard T0; the Wishart preference against
 the LA term in LA-only models is the missing hard T0. Files: `catalogue_covariance_LRG1_NGC_mock173_v5.npz`,
 `wishart_LRG1_NGC_mock173_v5.csv` (artifacts).
+
+**Abacus complete vs altmtl with the padded quad and the one-run split (2026-10-28; `catcov/LRG1_NGC_mock0_abacus-{complete,altmtl}_v3`,
+`responses/abacus_disc/abacus_fibre_discreteness_padded_LRG1_NGC.csv`; supersedes the section 15 split).** Units: the COMPLETE
+catalogue's Gaussian diagonal; bands 0.02-0.05 / 0.05-0.1 / 0.1-0.2 / 0.2-0.3; tree with the complete-catalogue params for both.
+- P0xP0: B/n complete 0.0039/0.0185/0.0603/0.1076 (tree 0.0042/0.0172/0.0464/0.0659: 1.3x / 1.6x at k > 0.1); altmtl 
+  -0.0009/0.0169/0.0712/0.1301 (tree 0.0073/0.0304/0.0819/0.1164: 0.87x / 1.12x). P/n^2 complete 0.0179 vs tree 0.0111 (1.6x) at
+  0.2-0.3; altmtl 0.0313 vs 0.0292 (1.07x; holi altmtl 1.01x).
+- P2xP2: B/n complete +0.0023/+0.0032/+0.0170/+0.0433 (tree 0.0104/0.0202 at k > 0.1: 1.6-2.1x); altmtl -0.0022/-0.0087/0.0000/+0.0272
+  (tree 0.0184/0.0356). P4xP4: complete -0.0017/+0.0022/+0.0117/+0.0273 (tree 0.0035/0.0101: ~3x); altmtl -0.0069/-0.0094/-0.0108/-0.0083.
+=> **Fibre assignment flips the l > 0 one-shared-galaxy term from positive (1.6-3x tree, like the P0 excess) to zero / negative**, and
+removes the P/n^2 excess. Same footprint, same code, same windows; the complete catalogue has MORE galaxies (941k vs 704k) and less
+shot noise, so this is not a thecov P x S artefact: fibre collisions remove close pairs preferentially transverse to the line of
+sight, which (i) removes the one-halo pairs that drive the l = 0 excesses over tree and (ii) makes the collapsed bispectrum
+anisotropic with a negative L_2, L_4 weighting. The negative l > 0 B/n of the holi (altmtl) mocks 173/174 (section 18, own-power:
+P2xP2 -0.004/-0.005, P4xP4 -0.004 to -0.012 of G) is the same signature. Consequence for the DESI covariance: the l > 0
+discreteness terms of a fibre-assigned catalogue are NOT tree level (tree overpredicts P2xP2 by ~0.02-0.04 G at k > 0.1 and P4xP4
+by 0.01-0.03 G); the measured terms carry it, but with the realisation scatter of section 18 (~0.01 G at k > 0.2 between mocks).
+The mock comparison (hybrid best, measured l > 0 worse) then says the mocks' extra l > 0 variance is elsewhere (T0, P2 hard block
+1.6-1.8x tree in section 13), not in B/n. GRF-Poisson test of thecov's P x S term still queued (two power inputs, sigma_s 0.3).
