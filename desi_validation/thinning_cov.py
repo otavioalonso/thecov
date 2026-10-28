@@ -163,6 +163,11 @@ def thecov_stage(args):
     ells = tuple(int(e) for e in g['ells'])
     cfg = dataclasses.replace(cfg, ells=ells)
     spec = dc.read_spectra(paths.spectra_fns(tracer, zr, r), kmin=cfg.kmin, kmax=cfg.kmax, rebin=cfg.rebin, ells=ells)
+    if getattr(args, 'own_power', False):                                   # the catalogue's own P_l in thecov (no ensemble mean):
+        own = [i for i, fn in enumerate(spec['files']) if f'mock{args.mock}/' in str(fn)]   # the realised-P part of lin then
+        assert len(own) == 1, (args.mock, len(own))                         # cancels against g1 (HANDOFF 18, finding 3)
+        spec = dict(spec, vectors=spec['vectors'][own])                     # norm stays the files' mean, as in the thinning
+        log(f'  thecov power: mock {args.mock} own P_l ({os.path.basename(str(spec["files"][own[0]]))})')
     sn = float(g[f'SN_p{p:g}'].mean()) if f'SN_p{p:g}' in g else float(g['sum_w2'] / p + g['sn_randoms'])   # MC mean, else expected
     spec = dict(spec, num_shotnoise=np.full(len(spec['norm']), sn))          # the files' norm; the thinned shot noise
     cfg = dataclasses.replace(cfg, n_randoms_max=int(args.n_randoms_max), target_near_pairs=args.target_near_pairs)
@@ -268,6 +273,7 @@ def main(argv=None):
     ap.add_argument('--thecov-random-files', type=int, default=None, help='random files for the thecov stage (default: the pipeline config)')
     ap.add_argument('--tree-params', default=None, help='ssc_check npz (<region>/params, damping, plin_*) for the tree discreteness terms')
     ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
+    ap.add_argument('--own-power', action='store_true', help="thecov stage: the mock's own measured P_l instead of the mocks' mean")
     args = ap.parse_args(argv)
     {'thin': thin, 'thecov': thecov_stage, 'report': report}[args.stage](args)
 

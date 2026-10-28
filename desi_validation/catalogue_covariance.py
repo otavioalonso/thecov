@@ -190,6 +190,7 @@ def main(argv=None):
     ap.add_argument('--out-dir', default=None)
     ap.add_argument('--poisson', type=int, default=None, metavar='SEED', help='null test: unclustered catalogue drawn from the randoms')
     ap.add_argument('--grf', type=float, nargs=3, default=None, metavar=('SIGMA', 'P0', 'SEED'), help='null test of the P x S term: Poisson sample of a Gaussian field (see grf_loader)')
+    ap.add_argument('--own-power', action='store_true', help="thecov Gaussian with the catalogue's own P_l (Paper 2 rule; removes the realised-P leakage into B/n)")
     ap.add_argument('--grf-f', type=float, default=0.762); ap.add_argument('--grf-kc', type=float, default=0.4)
     args = ap.parse_args(argv)
     from desi_validation import thinning_closed_form as tcf, thinning_cov as tcv
@@ -214,7 +215,8 @@ def main(argv=None):
     tcf.main(common + ['--ells'] + ells + (['--single'] if args.single else []))
     T['measured_discreteness'] = time.time() - t0
     t0 = time.time()
-    tcv.main(['thecov'] + common + ['--frac', '1', '--tree-params', args.params, '--thecov-random-files', '4'])   # shares the 4-file load
+    tcv.main(['thecov'] + common + ['--frac', '1', '--tree-params', args.params, '--thecov-random-files', '4']
+             + (['--own-power'] if args.own_power else []))   # shares the 4-file load
     T['gaussian_split_tree_disc'] = time.time() - t0
     cov, tr, res = tcv.LAST['cov'], tcv.LAST['tracer'], tcv.LAST['res']
     if args.grf is not None:                                          # tree P/n^2 (B = 0) of the Gaussian field: P_in, b1 = 1, f
