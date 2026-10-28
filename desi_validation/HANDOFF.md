@@ -1148,3 +1148,19 @@ each, P0/P2/P4 at dk = 0.001 (rebinned to the 56 bins) and the Sugiyama (0,0,0),
   measured discreteness in the box; Cov_box(k != k') - (lin - quad) = T0 exactly in the (0, 0) block, which breaks the
   P0 hard degeneracy. Then: all 25 boxes' measured disc is unnecessary (weak realisation dependence); the three LOS of a box
   are correlated, so quote the los-z-only errors.
+
+**Mock 174 with the padded quad, and the realised-P leakage confirmed (2026-10-28).** `catcov/LRG1_NGC_mock174_v3` (its SSC stage
+fails the ssc.py window-consistency check "alpha sum w W = 10.43 vs int W^2 = 8.49", ratio 1.228 = int m^2 / norm; mock 173 passes
+in the same code: open, SSC side). Decomposed with the SAME thecov Gaussian as mock 173: P/n^2 (0,0) identical to 0.5 %
+(0.0212 vs 0.0213 of G at 0.2-0.3); B/n (0,0) 0.0690/0.1357 (173) vs 0.0677/0.1267 (174) at 0.1-0.2/0.2-0.3; P2xP2 0.0010/0.0240 vs
+-0.0002/0.0119; P4xP4 -0.0065/0.0021 vs -0.0103/-0.0130. The differences follow the realised spectra (174's P0 0.9 % and P2 16 %
+below 173's at 0.2-0.3; lin(0,0) 0.8 % lower): finding 3 of section 18 at work, through P2/P4 as much as P0.
+**`--own-power`** (thinning_cov thecov stage / catalogue_covariance): thecov's Gaussian with the mock's own measured P_l (file row
+of that mock; the Paper 2 rule). Rerun of the thecov stage for both mocks (`catcov/LRG1_NGC_mock17{3,4}_own`): the cross blocks and the
+low-k diagonal blocks now agree between the mocks to ~0.003 of G (thecov's pair-count sampling floor) and the cross blocks follow
+tree level (P0xP2 0.0091/0.0081 vs 0.0087/0.0053, tree 0.0102/0.0091); (0,0) B/n 0.0701/0.1363 vs 0.0651/0.1276; the high-k
+P2xP2 (0.0217 vs 0.0141; tree 0.0253) and P4xP4 (-0.0003 vs -0.0124; tree 0.0124) still differ by ~0.01 of G between the mocks.
+Robust in both mocks and both P inputs: negative l > 0 B/n at k < 0.1 (P2xP2 -0.004/-0.005 to -0.006, P4xP4 -0.004 to -0.009 of G).
+Candidates: thecov's P x S term for l > 0 (GRF-Poisson test queued) or fibre assignment (altmtl removes close pairs transverse
+to the line of sight, an anisotropic one-shared-galaxy term: Abacus complete vs altmtl, queued, decides).
+(`responses/disc_multipoles/bn_own_power_173_174.csv`)
