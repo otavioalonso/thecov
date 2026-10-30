@@ -131,6 +131,7 @@ def main():
     per, norms, vecs = {}, {}, {}
     for r in CAPS + ('GCcomb',):
         V, ids = R[f'{b}/{r}/x1/V'].astype(float), R[f'{b}/{r}/x1/mock_ids']
+        ids = np.array([int(str(i).replace('mock', '')) for i in ids])          # ids are 'mock<N>' strings
         keep = ~np.isin(ids, EXCLUDED_LRG1) if b == 'LRG1' else np.ones(len(ids), bool)
         vecs[r] = V[keep]
         norms[r] = float(R[f'{b}/{r}/x1/norm'][keep].mean())
