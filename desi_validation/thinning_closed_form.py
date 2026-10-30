@@ -35,7 +35,7 @@ from desi_validation.grf_randoms import NTH, log  # noqa: E402
 from desi_validation.thinning_cov import KR, setup_mock  # noqa: E402
 
 
-def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum0, Wd=None):
+def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum0, Wd=None, shells=None, part_fn=None):
     """Linear (one shared galaxy, B/n-like) thinning term for the multipoles, all (l, l') blocks.
 
     With the end-point line of sight of the estimator, F_l(k) = sum w L_l(k.x_g) e_g(k) (galaxies minus alpha randoms)
@@ -103,7 +103,7 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
     Gb = {l: np.empty((nb, len(wd))) for l in ells}
     thd = [t.astype(np.float32) for t in th(xd)] if single else th(xd)
     opts2 = dict(opts, eps=max(opts['eps'], 1e-5)) if single else opts
-    for i in range(nb):
+    for i in (range(nb) if shells is None else shells):
         m = io3 == i
         stack = [np.where(m, Flc[l], 0) for l in ells] + [np.where(m, F0c * kt, 0) for o in (2, 4) for kt in ktens[o]]
         v = finufft.nufft3d2(*thd, np.ascontiguousarray(np.array(stack, dtype=cdt)), isign=-1, **opts2).astype(np.complex128)
@@ -121,6 +121,15 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
         if i in (0, nb - 1):
             log(f'    shell {i}: {time.time() - t0:.0f} s')
         del stack, v
+    if part_fn is not None:                            # one job of a shell-split run: save these shells' rows, combine later
+        sh = np.asarray(list(shells))
+        part = dict(shells=sh, P1_ell=np.concatenate([P1[l] for l in ells]), ells=np.array(ells),
+                    **{f'Gb_{l}': Gb[l][sh].astype(np.float32 if single else np.float64) for l in ells})
+        if Wd is not None:
+            part.update(u_M=wd / np.sum(wd), u_W=wd * Wd / np.sum(wd * Wd), la_I_M=float(np.sum(wd)), la_I_W=float(np.sum(wd * Wd)))
+        np.savez(part_fn, **part)
+        log(f'  shells {sh[0]}-{sh[-1]} saved to {part_fn} ({time.time() - t0:.0f} s)')
+        return None
     G = np.vstack([Gb[l] for l in ells])
     lin = G @ G.T
     out_la = {}
@@ -143,6 +152,30 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
     return dict(ells=np.array(ells), lin_ell=lin, P1_ell=np.concatenate([P1[l] for l in ells]), **out_la)
 
 
+def combine_parts(od, nb):
+    """assemble the multipole linear term of a shell-split run (tcf_part_*.npz) into the dict multipole_linear returns"""
+    import glob
+    fns = sorted(glob.glob(os.path.join(od, 'tcf_part_*.npz')))
+    parts = [np.load(fn) for fn in fns]
+    ells = tuple(int(l) for l in parts[0]['ells'])
+    Gb = {l: np.zeros((nb, len(parts[0][f'Gb_{l}'][0]))) for l in ells}
+    done = np.zeros(nb, bool)
+    for q in parts:
+        for l in ells:
+            Gb[l][q['shells']] = q[f'Gb_{l}']
+        done[q['shells']] = True
+    assert done.all(), f'shells missing from the parts: {np.flatnonzero(~done)}'
+    G = np.vstack([Gb[l] for l in ells])
+    out = dict(ells=np.array(ells), lin_ell=G @ G.T, P1_ell=parts[0]['P1_ell'])
+    if 'u_M' in parts[0].files:
+        u = {'M': parts[0]['u_M'], 'W': parts[0]['u_W']}
+        out.update({f'la_T_{X}': G @ u[X] for X in u})
+        out.update({f'la_var_{X}{Y}': float(np.sum(u[X] * u[Y])) for X in u for Y in u if X <= Y})
+        out.update(la_I_M=float(parts[0]['la_I_M']), la_I_W=float(parts[0]['la_I_W']))
+    log(f'  combined {len(fns)} shell parts ({nb} shells, {G.shape[1]} galaxies)')
+    return out
+
+
 def main(argv=None):
     import finufft
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -157,11 +190,24 @@ def main(argv=None):
     ap.add_argument('--single', action='store_true', help='single-precision NUFFTs for the multipole linear term (~2x faster; eps >= 1e-5)')
     ap.add_argument('--ells', type=int, nargs='+', default=[0], help='multipoles of the linear (B/n) term; 0 2 4 gives all nine blocks')
     ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
+    ap.add_argument('--resume', action='store_true', help='reuse tcf_mono.npz (monopole linear + quadratic terms) from an earlier job')
+    ap.add_argument('--stop-after-mono', action='store_true', help='save tcf_mono.npz and stop (first job of a split run)')
+    ap.add_argument('--shells', type=int, nargs=2, default=None, metavar=('I0', 'I1'), help='multipole linear term for shells I0..I1-1 only, saved to tcf_part_I0_I1.npz')
+    ap.add_argument('--combine', action='store_true', help='assemble the final file from tcf_mono.npz and the tcf_part_*.npz (no catalogue load)')
     args = ap.parse_args(argv)
     paths, cfg, od = setup_mock(args)
     b, r = args.bin, args.region
     g = dict(np.load(os.path.join(od, 'thinning.npz')))
     k, edges, nb, norm = g['k'], g['k_edges'], len(g['k']), float(g['norm'])
+    mono_fn = os.path.join(od, 'tcf_mono.npz')
+    if args.combine:
+        out = dict(np.load(mono_fn))
+        ells = tuple(sorted(set(args.ells) | {0}))
+        out.update(combine_parts(od, nb))
+        fn = os.path.join(od, 'thinning_closed_form_ell' + ''.join(map(str, ells)) + '.npz')
+        np.savez(fn, **out)
+        log(f'saved {fn} (combined)')
+        return
     rc = dc.load_region(paths, b, r, n_random_files=args.random_files)
     wd, wr = dc.total_weight(rc.data), dc.total_weight(rc.randoms)
     # W(x_g) = nbar(z_g) <w>(z_g) for the local-average vectors: the randoms' weighted density at the galaxy (norm = alpha sum_c
@@ -189,67 +235,80 @@ def main(argv=None):
     nsh = np.bincount(io, minlength=nb + 1)[:nb]
     opts = dict(eps=args.eps, nthreads=NTH, modeord=1)
     th = lambda x: [np.ascontiguousarray(2 * np.pi * (x[:, i] - lo[i]) / L) for i in range(3)]
-    t0 = time.time()
-    F1 = finufft.nufft3d1(*th(xd), wd.astype(complex), (n,) * 3, isign=-1, **opts).ravel() \
-        - alpha * finufft.nufft3d1(*th(xr), wr.astype(complex), (n,) * 3, isign=-1, **opts).ravel()
-    P1 = (np.bincount(io, np.abs(F1) ** 2, nb + 1)[:nb] / nsh - float(np.sum(wd ** 2)) - alpha ** 2 * float(np.sum(wr ** 2))) / norm
-    log(f'  F_1 done ({time.time() - t0:.0f} s); P_1 vs thinning_cov P1: max rel dev {np.max(np.abs(P1 / g["P1"][:nb] - 1)):.2e}')
+    if (args.resume or args.shells is not None) and os.path.exists(mono_fn):
+        out = dict(np.load(mono_fn)); Gsum = out['lin']
+        log(f'  resume: monopole linear and quadratic terms from {mono_fn}')
+    else:
+        t0 = time.time()
+        F1 = finufft.nufft3d1(*th(xd), wd.astype(complex), (n,) * 3, isign=-1, **opts).ravel() \
+            - alpha * finufft.nufft3d1(*th(xr), wr.astype(complex), (n,) * 3, isign=-1, **opts).ravel()
+        P1 = (np.bincount(io, np.abs(F1) ** 2, nb + 1)[:nb] / nsh - float(np.sum(wd ** 2)) - alpha ** 2 * float(np.sum(wr ** 2))) / norm
+        log(f'  F_1 done ({time.time() - t0:.0f} s); P_1 vs thinning_cov P1: max rel dev {np.max(np.abs(P1 / g["P1"][:nb] - 1)):.2e}')
 
-    # linear term: Cov_lin(k,k') = a sum_g Gbar_g(k) Gbar_g(k'), Gbar_g(i) = [2 Re(w_g sum_{k in i} F_1^*(k) e_g(k)) / nsh_i - 2 w_g^2] / norm.
-    # sum_{k in i} F_1^*(k) e_g(k) is a type-2 NUFFT of F_1^* restricted to shell i, evaluated at the galaxies: one transform per shell,
-    # all galaxies at once (N_g x nb doubles = 56 x 0.7M x 8 B = 0.3 GB), no N_g x N_modes array.
-    t0 = time.time()
-    thd = th(xd)
-    F1c = np.conj(F1).reshape(n, n, n)
-    io3 = io.reshape(n, n, n)
-    Gb = np.empty((nb, len(wd)))
-    for i in range(nb):
-        v = finufft.nufft3d2(*thd, np.where(io3 == i, F1c, 0), isign=-1, **opts)
-        Gb[i] = (2 * v.real * wd / nsh[i] - 2 * wd ** 2) / norm
-        if i in (0, nb - 1):
-            log(f'    shell {i}: {time.time() - t0:.0f} s')
-    Gsum = Gb @ Gb.T
-    del F1c, Gb
-    log(f'  linear (B/n-like) term done ({time.time() - t0:.0f} s)')
+        # linear term: Cov_lin(k,k') = a sum_g Gbar_g(k) Gbar_g(k'), Gbar_g(i) = [2 Re(w_g sum_{k in i} F_1^*(k) e_g(k)) / nsh_i - 2 w_g^2] / norm.
+        # sum_{k in i} F_1^*(k) e_g(k) is a type-2 NUFFT of F_1^* restricted to shell i, evaluated at the galaxies: one transform per shell,
+        # all galaxies at once (N_g x nb doubles = 56 x 0.7M x 8 B = 0.3 GB), no N_g x N_modes array.
+        t0 = time.time()
+        thd = th(xd)
+        F1c = np.conj(F1).reshape(n, n, n)
+        io3 = io.reshape(n, n, n)
+        Gb = np.empty((nb, len(wd)))
+        for i in range(nb):
+            v = finufft.nufft3d2(*thd, np.where(io3 == i, F1c, 0), isign=-1, **opts)
+            Gb[i] = (2 * v.real * wd / nsh[i] - 2 * wd ** 2) / norm
+            if i in (0, nb - 1):
+                log(f'    shell {i}: {time.time() - t0:.0f} s')
+        Gsum = Gb @ Gb.T
+        del F1c, Gb
+        log(f'  linear (B/n-like) term done ({time.time() - t0:.0f} s)')
 
-    # quadratic term: a^2 [ <|W2(k' - k)|^2>_{k in i, k' in j} + <|W2(k' + k)|^2> - 2 sum w^4 ] / norm^2, W2 = transform of the w^2 galaxies.
-    # Shell-pair averages are correlations of shell indicators with |W2|^2: corr_i(d) = sum_k ind_i(k) pw(k + d) by FFT, then
-    # Q_ij = sum_d corr_i(d) ind_j(d) (pw(k + k') summed over k in i, k' in j; = the k' - k piece since the shells are symmetric).
-    # |k + k'| reaches 2 k_max, beyond the output grid's Nyquist (k_max + 2 k_f): the FFT correlation is circular, so W2 is
-    # transformed on a grid `quad_pad` times finer in index (same k_f, Nyquist x quad_pad) and the shell indicators are embedded
-    # in it (quad_pad = 1 reproduces the aliased version used before 2026-10-27, which overestimates the clustering part of
-    # the term by ~6 % at k = 0.22 and ~40 % at k = 0.3 for LRG1).
-    t0 = time.time()
-    qp = int(getattr(args, 'quad_pad', 2))
-    n2 = qp * n
-    W2 = finufft.nufft3d1(*thd, (wd ** 2).astype(complex), (n2,) * 3, isign=-1, **opts)
-    pw = (np.abs(W2) ** 2).astype(np.float64)
-    del W2
-    PW = sfft.rfftn(pw, workers=NTH)
-    del pw
-    ko2 = 2 * np.pi * np.fft.fftfreq(n2, d=L / n2)
-    KO2 = np.meshgrid(ko2, ko2, ko2, indexing='ij')
-    kom2 = np.sqrt(KO2[0] ** 2 + KO2[1] ** 2 + KO2[2] ** 2).ravel()
-    del KO2
-    io2 = np.digitize(kom2, edges) - 1
-    io2[(io2 < 0) | (io2 >= nb)] = nb
-    del kom2
-    assert np.array_equal(np.bincount(io2, minlength=nb + 1)[:nb], nsh), 'shells on the padded grid differ from the output grid'
-    io23 = io2.reshape(n2, n2, n2)
-    Q = np.zeros((nb, nb))
-    for i in range(nb):
-        INDi = sfft.rfftn((io23 == i).astype(np.float64), workers=NTH)
-        corr = sfft.irfftn(np.conj(INDi) * PW, s=(n2,) * 3, workers=NTH).ravel()
-        Q[i] = np.bincount(io2, corr, nb + 1)[:nb]
-    Q = Q / np.outer(nsh, nsh)
-    del PW, io2, io23
-    quad = (Q + Q - 2 * float(np.sum(wd ** 4))) / norm ** 2          # M_1 and M_2 pieces (shells are symmetric under k -> -k), each minus g = h
-    log(f'  quadratic (P/n^2-like) term done ({time.time() - t0:.0f} s)')
+        # quadratic term: a^2 [ <|W2(k' - k)|^2>_{k in i, k' in j} + <|W2(k' + k)|^2> - 2 sum w^4 ] / norm^2, W2 = transform of the w^2 galaxies.
+        # Shell-pair averages are correlations of shell indicators with |W2|^2: corr_i(d) = sum_k ind_i(k) pw(k + d) by FFT, then
+        # Q_ij = sum_d corr_i(d) ind_j(d) (pw(k + k') summed over k in i, k' in j; = the k' - k piece since the shells are symmetric).
+        # |k + k'| reaches 2 k_max, beyond the output grid's Nyquist (k_max + 2 k_f): the FFT correlation is circular, so W2 is
+        # transformed on a grid `quad_pad` times finer in index (same k_f, Nyquist x quad_pad) and the shell indicators are embedded
+        # in it (quad_pad = 1 reproduces the aliased version used before 2026-10-27, which overestimates the clustering part of
+        # the term by ~6 % at k = 0.22 and ~40 % at k = 0.3 for LRG1).
+        t0 = time.time()
+        qp = int(getattr(args, 'quad_pad', 2))
+        n2 = qp * n
+        W2 = finufft.nufft3d1(*thd, (wd ** 2).astype(complex), (n2,) * 3, isign=-1, **opts)
+        pw = (np.abs(W2) ** 2).astype(np.float64)
+        del W2
+        PW = sfft.rfftn(pw, workers=NTH)
+        del pw
+        ko2 = 2 * np.pi * np.fft.fftfreq(n2, d=L / n2)
+        KO2 = np.meshgrid(ko2, ko2, ko2, indexing='ij')
+        kom2 = np.sqrt(KO2[0] ** 2 + KO2[1] ** 2 + KO2[2] ** 2).ravel()
+        del KO2
+        io2 = np.digitize(kom2, edges) - 1
+        io2[(io2 < 0) | (io2 >= nb)] = nb
+        del kom2
+        assert np.array_equal(np.bincount(io2, minlength=nb + 1)[:nb], nsh), 'shells on the padded grid differ from the output grid'
+        io23 = io2.reshape(n2, n2, n2)
+        Q = np.zeros((nb, nb))
+        for i in range(nb):
+            INDi = sfft.rfftn((io23 == i).astype(np.float64), workers=NTH)
+            corr = sfft.irfftn(np.conj(INDi) * PW, s=(n2,) * 3, workers=NTH).ravel()
+            Q[i] = np.bincount(io2, corr, nb + 1)[:nb]
+        Q = Q / np.outer(nsh, nsh)
+        del PW, io2, io23
+        quad = (Q + Q - 2 * float(np.sum(wd ** 4))) / norm ** 2          # M_1 and M_2 pieces (shells are symmetric under k -> -k), each minus g = h
+        log(f'  quadratic (P/n^2-like) term done ({time.time() - t0:.0f} s)')
 
-    out = dict(k=k, P1=P1, lin=Gsum, quad=quad, alpha=alpha, norm=norm, n_gal=len(wd), quad_pad=qp)
+        out = dict(k=k, P1=P1, lin=Gsum, quad=quad, alpha=alpha, norm=norm, n_gal=len(wd), quad_pad=qp)
+        np.savez(mono_fn, **out)
+    if args.stop_after_mono:
+        log(f'saved {mono_fn}; stopping (--stop-after-mono)')
+        return
     ells = tuple(args.ells)
     if max(ells) > 0:
         ells = tuple(sorted(set(ells) | {0}))
+        if args.shells is not None:
+            i0, i1 = args.shells
+            multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum, Wd=Wd,
+                             shells=range(i0, i1), part_fn=os.path.join(od, f'tcf_part_{i0:02d}_{i1:02d}.npz'))
+            return
         out.update(multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum, Wd=Wd))
     fn = os.path.join(od, 'thinning_closed_form.npz' if max(ells) == 0 else 'thinning_closed_form_ell' + ''.join(map(str, ells)) + '.npz')
     np.savez(fn, **out)
