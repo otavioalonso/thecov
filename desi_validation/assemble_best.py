@@ -6,7 +6,10 @@ combine the caps into GCcomb, and validate all three against the mocks.
 
 Per cap (catcov/best_<bin>_<cap>/catalogue_covariance.npz, decomposed with disc_multipoles.decompose):
     G      = G_PP + s G_PS + s^2 G_SS, s = <num_shotnoise of the files> / S of the catalogue run (the files' shot noise)
-    disc   = hybrid: measured B/n + P/n^2 in P0xP0, tree elsewhere (disc_multipoles.hybrid)
+    disc   = measured B/n + P/n^2 in every block (P/n^2 outside P0xP0: tree x measured/tree ratio; P0xP0 |i-j|<=1 by
+             continuity). The hybrid (measured P0xP0, tree elsewhere; disc_hybrid) is stored too: for LRG2 it is not
+             positive definite with P4 (min eig of G^-1/2 C G^-1/2 -0.8 NGC, -3.5 SGC), while the measured terms are
+             (0.92 / 0.88) and fit the mocks best (P0+P2+P4 <chi2>/n 0.98 / 0.99, lowest Wishart deviance)
     SSC    = clustering SSC + measured Poisson local average, C_LA = -T P^T - P T^T + Var P P^T with T = T_M + T_W and
              Var = var_MM + 2 var_MW + var_WW from the thinning (HANDOFF 22, v5), P = the SSC's P_hat
     C_best = G + disc + SSC
@@ -65,7 +68,8 @@ def cap_terms(d_cat, s_files):
     meas = dict(d)
     meas['Bn'] = continuity(d['Bn'], nb)
     meas['Pn2'] = continuity(d['Pn2'], nb)
-    disc = dm.hybrid(meas)
+    hyb = dm.hybrid(meas)
+    disc = meas['Bn'] + meas['Pn2']
     P = z['ssc_P_hat']
     T = z['la_T_M'] + z['la_T_W']
     var = float(z['la_var_MM'] + 2 * z['la_var_MW'] + z['la_var_WW'])
@@ -77,7 +81,7 @@ def cap_terms(d_cat, s_files):
                 la_var_meas_over_tree=var / float(z['ssc_var_tree']), J4=float(z['J4']),
                 params_b1_b2_bs2_f=[float(x) for x in z['params']], damping_ir_sigmav_A=[float(x) for x in z['damping']],
                 timings={q[5:]: float(z[q]) for q in z.files if q.startswith('time_')})
-    terms = dict(G=G, disc=disc, disc_B_meas=meas['Bn'], disc_P_meas=meas['Pn2'], disc_B_tree=d['tree_B'], disc_P_tree=d['tree_P'],
+    terms = dict(G=G, disc=disc, disc_hybrid=hyb, disc_B_meas=meas['Bn'], disc_P_meas=meas['Pn2'], disc_B_tree=d['tree_B'], disc_P_tree=d['tree_P'],
                  SSC=ssc, SSC_clustering=z['C_ssc_clustering'], SSC_LA_measured=C_la, SSC_LA_tree=z['C_ssc_poisson'],
                  T0_tree=T0, T0_box=t0_box(T0, k, nb))
     return k, nb, terms, info
@@ -147,7 +151,8 @@ def main():
         V = vecs[r]
         Gd = np.sqrt(np.diag(terms['G']))
         unit = lambda C: C / np.outer(Gd, Gd)                           # for the min-eigenvalue check in G units
-        models = {'G': terms['G'], 'G+disc': terms['G'] + terms['disc'], 'best': best, 'best+T0_box': best + terms['T0_box']}
+        models = {'G': terms['G'], 'G+disc': terms['G'] + terms['disc'], 'best': best, 'best_hybrid_disc': terms['G'] + terms['disc_hybrid'] + terms['SSC'],
+                  'best+T0_box': best + terms['T0_box']}
         val = validate(V, k, nb, {nm: C for nm, C in models.items()})
         for nm, C in models.items():
             Gi = np.linalg.cholesky(terms['G']); Li = np.linalg.inv(Gi)
