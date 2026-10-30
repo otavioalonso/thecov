@@ -198,6 +198,14 @@ def min_whitened_eig(C, M):
 
 
 def summarize(tag, V, C, Cssc, k, nb):
+    """diagnostic printout; skipped (not fatal) when a matrix involved is not positive definite"""
+    try:
+        _summarize(tag, V, C, Cssc, k, nb)
+    except np.linalg.LinAlgError as ex:
+        print(f'  {tag}: summary skipped ({ex})')
+
+
+def _summarize(tag, V, C, Cssc, k, nb):
     Cm = np.cov(V.T)
     P0 = V[:, :nb].mean(0)
     A_m, _ = fit_rank1(Cm, C, P0, nb)
