@@ -16,7 +16,7 @@ Per cap (catcov/best_<bin>_<cap>/catalogue_covariance.npz, decomposed with disc_
     T0_tree (snake + star) and T0_box (P0xP0 squeezed, k < 0.1 <= k', x0; rest of P0xP0 x0.3; l > 0 blocks x1) are stored
     separately. GCcomb: dc.combine_regions with the files' mean norms (the GCcomb spectra are the norm-weighted average of the
     caps); caps treated as independent (no NGC x SGC super-sample term).
-Validation against the mocks of report_data_<label>.npz (LRG1: the 12 defective-n(z) mocks removed): <chi2>/n and
+Validation against the mocks of report_data_<label>.npz (LRG bins: the 12 defective-n(z) mocks removed): <chi2>/n and
 Var(chi2)/2n for P0, P0+P2, P0+P2+P4 at kmax 0.2 and 0.3, and the P0 diagonal ratio mock/model in k bands, for G only,
 G + disc, C_best and C_best + T0_box.
 Output: <out>/<bin>_<region>.npz (+ .json with the numbers), and rows appended to <out>/summary.csv.
@@ -36,7 +36,8 @@ from desi_validation import disc_multipoles as dm  # noqa: E402
 
 CAPS = ('NGC', 'SGC')
 ELLS = (0, 2, 4)
-EXCLUDED_LRG1 = [122, 131, 166, 218, 470, 573, 664, 667, 699, 746, 793, 880]   # HANDOFF 8.4 (defective n(z), LRG1 slice)
+EXCLUDED_LRG = [122, 131, 166, 218, 470, 573, 664, 667, 699, 746, 793, 880]    # HANDOFF 8.4 (defective n(z)); also the >5-sigma
+                                                                               # high-k P0 outliers of LRG3 (and LRG2): excluded for every LRG bin
 KB = ((0.02, 0.1), (0.1, 0.2), (0.2, 0.3))
 
 
@@ -132,7 +133,7 @@ def main():
     for r in CAPS + ('GCcomb',):
         V, ids = R[f'{b}/{r}/x1/V'].astype(float), R[f'{b}/{r}/x1/mock_ids']
         ids = np.array([int(str(i).replace('mock', '')) for i in ids])          # ids are 'mock<N>' strings
-        keep = ~np.isin(ids, EXCLUDED_LRG1) if b == 'LRG1' else np.ones(len(ids), bool)
+        keep = ~np.isin(ids, EXCLUDED_LRG) if b.startswith('LRG') else np.ones(len(ids), bool)
         vecs[r] = V[keep]
         norms[r] = float(R[f'{b}/{r}/x1/norm'][keep].mean())
         if r in CAPS:
