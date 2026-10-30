@@ -198,6 +198,9 @@ def main(argv=None):
     ap.add_argument('--grf', type=float, nargs=3, default=None, metavar=('SIGMA', 'P0', 'SEED'), help='null test of the P x S term: Poisson sample of a Gaussian field (see grf_loader)')
     ap.add_argument('--own-power', action='store_true', help="thecov Gaussian with the catalogue's own P_l (Paper 2 rule; removes the realised-P leakage into B/n)")
     ap.add_argument('--grf-f', type=float, default=0.762); ap.add_argument('--grf-kc', type=float, default=0.4)
+    ap.add_argument('--resume', action='store_true', help='skip the thinning stub and the measured discreteness when their outputs '
+                    'are already in --out-dir (split one catalogue over several short jobs, e.g. the 30-min debug queue)')
+    ap.add_argument('--discreteness-only', action='store_true', help='stop after the measured discreteness (first job of a split run)')
     ap.add_argument('--grf-power', default='input', choices=['input', 'realised'], help='thecov P for the GRF test: P_in unmasked, or the catalogue\'s realised P_l masked')
     args = ap.parse_args(argv)
     from desi_validation import thinning_closed_form as tcf, thinning_cov as tcv
@@ -216,12 +219,22 @@ def main(argv=None):
     ells = [str(l) for l in args.ells]
     T, t00 = {}, time.time()
 
+    cf_name = 'thinning_closed_form.npz' if max(args.ells) == 0 else 'thinning_closed_form_ell' + ''.join(map(str, sorted(set(args.ells) | {0}))) + '.npz'
     t0 = time.time()
-    tcv.main(['thin'] + common + ['--ells'] + ells + ['--fracs', '0.5', '--nthin', '2'])
+    if args.resume and os.path.exists(os.path.join(od, 'thinning.npz')):
+        log('  resume: thinning stub found, skipped')
+    else:
+        tcv.main(['thin'] + common + ['--ells'] + ells + ['--fracs', '0.5', '--nthin', '2'])
     T['thin_stub'] = time.time() - t0
     t0 = time.time()
-    tcf.main(common + ['--ells'] + ells + (['--single'] if args.single else []))
+    if args.resume and os.path.exists(os.path.join(od, cf_name)):
+        log(f'  resume: {cf_name} found, skipped')
+    else:
+        tcf.main(common + ['--ells'] + ells + (['--single'] if args.single else []))
     T['measured_discreteness'] = time.time() - t0
+    if args.discreteness_only:
+        log('timings [s]: ' + ', '.join(f'{k_} {v:.0f}' for k_, v in T.items()) + ' (--discreteness-only: stopping here)')
+        return
     t0 = time.time()
     tcv.main(['thecov'] + common + ['--frac', '1', '--tree-params', args.params, '--thecov-random-files', '4']
              + (['--own-power'] if args.own_power else []))   # shares the 4-file load
@@ -239,7 +252,6 @@ def main(argv=None):
     ir_sigma, sigma_v, A_norm = (float(x) for x in key('damping'))
     kl, Pl, PirA = key('plin_k'), key('plin_P'), key('plin_P_damped_normalised')
     out = dict(res)
-    cf_name = 'thinning_closed_form.npz' if max(args.ells) == 0 else 'thinning_closed_form_ell' + ''.join(map(str, sorted(set(args.ells) | {0}))) + '.npz'
     cf = np.load(os.path.join(od, cf_name))
     out.update(k=cf['k'], lin_ell=cf['lin_ell'] if 'lin_ell' in cf.files else cf['lin'], quad=cf['quad'],
                P1_ell=cf['P1_ell'] if 'P1_ell' in cf.files else cf['P1'],
