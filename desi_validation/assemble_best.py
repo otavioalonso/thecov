@@ -154,10 +154,15 @@ def main():
         unit = lambda C: C / np.outer(Gd, Gd)                           # for the min-eigenvalue check in G units
         models = {'G': terms['G'], 'G+disc': terms['G'] + terms['disc'], 'best': best, 'best_hybrid_disc': terms['G'] + terms['disc_hybrid'] + terms['SSC'],
                   'best+T0_box': best + terms['T0_box']}
-        val = validate(V, k, nb, {nm: C for nm, C in models.items()})
+        val = validate(V, k, nb, {nm: C for nm, C in models.items()})   # chi2 of a non-PD model (e.g. G alone for LRG3) is not meaningful
         for nm, C in models.items():
-            Gi = np.linalg.cholesky(terms['G']); Li = np.linalg.inv(Gi)
-            val[nm]['min_eig_over_G'] = round(float(np.linalg.eigvalsh(Li @ C @ Li.T).min()), 4)
+            try:
+                Li = np.linalg.inv(np.linalg.cholesky(terms['G']))
+                val[nm]['min_eig_over_G'] = round(float(np.linalg.eigvalsh(Li @ C @ Li.T).min()), 4)
+            except np.linalg.LinAlgError:              # G not PD: report the correlation-matrix eigenvalue instead
+                val[nm]['min_eig_over_G'] = float('nan')
+            dd = np.sqrt(np.diag(C))
+            val[nm]['min_eig_corr'] = round(float(np.linalg.eigvalsh(C / np.outer(dd, dd)).min()), 5)
         meta = dict(bin=b, region=r, n_mocks=int(len(V)), ells=list(ELLS), k=k.tolist(), commit=commit, label=label,
                     mock_catalogue=173, power='mock mean', **info, validation=val)
         np.savez(os.path.join(args.out, f'{b}_{r}.npz'), C_best=best, k=k, ells=np.array(ELLS), mock_mean=V.mean(0),
@@ -167,7 +172,7 @@ def main():
             rows.append(dict(bin=b, region=r, model=nm, n_mocks=len(V), **{q: v for q, v in row.items() if q != 'P0diag'},
                              **{f'P0diag_{lo}-{hi}': v for (lo, hi), v in zip(KB, row['P0diag'])}))
         print(f'{b} {r} ({len(V)} mocks): ' + ' | '.join(f'{nm} <chi2>/n P0+P2 k0.3 {val[nm]["chi2n_P0+P2_k0.3"]:.3f} '
-                                                       f'P0+P2+P4 {val[nm]["chi2n_P0+P2+P4_k0.3"]:.3f} min eig {val[nm]["min_eig_over_G"]:+.3f}'
+                                                       f'P0+P2+P4 {val[nm]["chi2n_P0+P2+P4_k0.3"]:.3f} min eig {val[nm]["min_eig_over_G"]:+.3f} (corr {val[nm]["min_eig_corr"]:+.4f})'
                                                        for nm in models), flush=True)
     fn = os.path.join(args.out, 'summary.csv')
     import csv

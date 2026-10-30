@@ -189,7 +189,10 @@ def kernel_dilution(out_dir, b, r, k_edges, norm, cache_tag):
 
 def min_whitened_eig(C, M):
     """smallest eigenvalue of C^-1/2 M C^-1/2 (M positive definite iff > 0)"""
-    L = np.linalg.cholesky(C)
+    try:
+        L = np.linalg.cholesky(C)
+    except np.linalg.LinAlgError:                      # the Gaussian itself is not PD (near-null radial modes with P4, LRG3)
+        return float('nan')
     Li = np.linalg.inv(L)
     return float(np.linalg.eigvalsh(Li @ M @ Li.T).min())
 
