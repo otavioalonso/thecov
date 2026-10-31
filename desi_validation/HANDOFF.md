@@ -1272,3 +1272,22 @@ external field). Box inputs fixed by the boxes (b1 1.855, b2 0.378, sigma_v 4.25
   one-loop bispectrum.
 - Status: no parameter-free model change reproduces the box. Best physically motivated model: tree T0 with nonlinear P in the
   kernels and the Lazeyras b3, which leaves P0 hard at ~0.6 of tree and the squeezed P0 block at ~0.1 of tree; P2 correct.
+
+### T0 measured INSIDE the boxes (2026-10-31; `box_itrisp.py`, `responses/box_t0/box_itrisp_*`, `report_figures/box_itrisp_amplitudes_LRG_c000.png`)
+Estimator: integrated trispectrum at small q (|q| <= 2.5 k_f, 80 modes) between non-adjacent 0.025-wide bands, galaxies split in
+halves (one per leg: no shared galaxies), self pairs removed exactly, beat-coupling term (internal momentum q, absent from the q = 0
+covariance) removed with the measured in-box integrated bispectra and long-mode power (no model). All 25 Abacus c000 LRG z0.5
+HODDIES boxes x 3 LOS (x/y/z_rsd), 75 files, ~1 min each on one node.
+- Checks: the measured first-order response <D delta>/(P_L P) equals the tree response (1.6-1.9 at k < 0.2, both q orientations);
+  the TREE prediction of the same estimator (finite q, same band constraints and subtraction, Monte Carlo) recovers the q = 0
+  template to 0.97 (P0 hard), 0.90 (P0 squeezed), 0.93 (P2 squeezed), 1.03 (P2 hard): the estimator targets the covariance's T0.
+- Result (measured / tree prediction of the estimator, nonlinear P in the kernels, b1 1.855, b2 0.378, sigma_v 4.25, b3 0):
+  P0xP0 squeezed 0.44 +- 0.04 (0.36 at |q| <= 1.5 k_f), P0xP2 squeezed 0.46 +- 0.04, P2xP2 squeezed 0.69 +- 0.04,
+  P2xP2 hard 1.00 +- 0.05, P0xP0 hard 0.49 +- 0.10 (q-dependent, 0.13 / 0.24 / 0.49 at |q| <= 1 / 1.5 / 2.5 k_f: the subtracted
+  beat-coupling is 5-7x T0 there, so P0 hard is 0.2-0.5), P0xP2 hard 0.41 +- 0.26.
+- The box-to-box covariance values (squeezed P0 0.12 +- 0.14 los-z) are 2-4 sigma lower; they use the same 25 low-k realisations whose
+  P0 diagonal is 2.3 sigma low at k < 0.1 and are ~4x noisier. The in-box numbers supersede them. They agree with the 848-mock cutsky
+  squeezed amplitudes of section 13 (0.50 P0, 0.68 P2), from a different simulation and a different method.
+- Status of T0: the tree shape is right where it is perturbative (P2 hard 1.00); the squeezed blocks are 0.45 (P0, P0xP2) and 0.7 (P2)
+  of tree; P0 hard 0.2-0.5. Measured per catalogue the squeezed amplitude would be ~ +-0.4 (one cutsky volume), so as a Paper 1/2
+  input it is a simulation calibration (Abacus boxes), to be tested out of sample on the holi cutsky ensemble.
