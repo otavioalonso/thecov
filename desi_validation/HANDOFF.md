@@ -1137,7 +1137,8 @@ each, P0/P2/P4 at dk = 0.001 (rebinned to the 56 bins) and the Sugiyama (0,0,0),
   P0xP0 hard (k >= 0.15): excess over Gaussian 0.25, tree disc 0.18, T0 template 0.22 -> T0 amplitude 0.29 +- 0.11 with disc at
   tree (joint fit: a_disc 1.03 +- 0.46, a_T0 0.17 +- 0.24, corr -0.94; with linear P in the kernels: a_disc 2.7, a_T0 ~ 0 or
   1.2 +- 0.2 with disc fixed). **P0xP0 squeezed (k < 0.1 x k >= 0.1): excess 0.05, disc 0.04, T0 template 0.23 -> amplitude
-  0.05 +- 0.08: the tree squeezed T0 is excluded at ~10 sigma with no window and no SSC** (cutsky section 13: 0.5).
+  0.05 +- 0.08: the tree squeezed T0 is rejected with no window and no SSC** (cutsky section 13: 0.5). [Corrected 2026-10-31: use the los-z-only
+  value 0.12 +- 0.14 (~6 sigma); the three LOS of a box are 92 % correlated at k < 0.1, so '~10 sigma' from 75 samples overstated it.]
   P2xP2: hard 0.80 +- 0.30 (75) / 1.19 +- 0.44 (los-z only), squeezed 0.80 +- 0.22 / 1.1 +- 0.3, joint fit a_T0 1.3 +- 0.4
   (disc unconstrained). P0xP2 blocks: small negative excess (-0.02 to -0.05) against T0 0.01-0.07.
   (`box_t0_block_amplitudes_LRG_c000.csv`, `report_figures/box_offdiagonal_LRG_c000.png`.)
@@ -1215,8 +1216,11 @@ spectra have 7.27M (nbar 9.1e-4) and P0 3.2 % higher: a different HOD realisatio
   los-z only 0.15 +- 0.21 / 0.35 +- 0.42. P0xP0 squeezed 0.06 +- 0.08 (0.12 +- 0.14): excluded. P2xP2 hard 0.77 +- 0.30
   (1.16 +- 0.44 los-z), squeezed 0.79 +- 0.22, adjacent 1.3 +- 0.5. P0xP2 blocks consistent with zero (negative, 1 sigma).
 - Diagonal: mocks / (G + measured disc) = 0.81 / 0.94 / 0.88 (P0, k bands), 0.97 / 1.00 / 1.07 (P2), 0.98 / 1.01 / 1.03 (P4):
-  the P0 diagonal is 6-19 % below the Poisson-S Gaussian + measured discreteness (1.5-2 sigma with 25 independent boxes);
-  a sub-Poisson stochastic power (halo exclusion) would do this and would also lower thecov's PS and SS terms for the data.
+  [Corrected 2026-10-31] per-LOS variance over the 25 independent boxes / exact Gaussian, bootstrap errors: P0 los z
+  0.84 +- 0.05 / 0.99 +- 0.06 / 0.99 +- 0.07 (k 0.02-0.1 / 0.1-0.2 / 0.2-0.3; x, y similar), P2 and P4 consistent with 1.
+  No P0 deficit at k > 0.1; at k < 0.1 a 2.3 sigma low fluctuation of these 25 ICs (P0 92 % correlated across LOS, so one
+  detection, not three). The 'sub-Poisson' explanation is withdrawn (shot noise < 5 % of P at k < 0.1). The 848-mock cutsky
+  P0 diagonal (+-0.5 %, section 16) remains the precise test and agrees.
 - Conclusion for Paper 1: in a box with no window and no SSC, the tree-level T0 with nonlinear P is right for P2xP2 (0.8-1.2),
   too large by ~3x for the P0xP0 hard block and by >10x for the squeezed P0xP0 block; with linear P the P0 hard block is 0.7
   +- 0.2. The cutsky "P2xP2 hard wants 2-3x" (section 21) is therefore not T0. Next: a second box (ph001) to check the
