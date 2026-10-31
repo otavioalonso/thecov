@@ -1,0 +1,217 @@
+template,samples,ells,block,a,err,T0_corr,excess
+"tree, linear P",75,P0xP0,diag,-2.78,0.46,0.0777,-0.2067
+"tree, linear P",75,P0xP0,adjacent,-0.05,0.26,0.1076,0.0132
+"tree, linear P",75,P0xP0,low-low <0.1 off,-1.24,0.49,0.0947,-0.1277
+"tree, linear P",75,P0xP0,squeezed <0.1 x >=0.1,0.05,0.09,0.2035,0.0151
+"tree, linear P",75,P0xP0,hard >=0.1 off,0.33,0.13,0.1352,0.0608
+"tree, linear P",75,P0xP0,hard >=0.15 off,0.67,0.23,0.1056,0.0742
+"tree, linear P",75,P2xP2,diag,0.38,1.34,0.036,0.0396
+"tree, linear P",75,P2xP2,adjacent,1.6,0.58,0.0639,0.1175
+"tree, linear P",75,P2xP2,low-low <0.1 off,1.12,1.19,0.0486,0.023
+"tree, linear P",75,P2xP2,squeezed <0.1 x >=0.1,0.72,0.21,0.1081,0.0775
+"tree, linear P",75,P2xP2,hard >=0.1 off,1.43,0.28,0.0825,0.1209
+"tree, linear P",75,P2xP2,hard >=0.15 off,1.27,0.48,0.0656,0.0868
+"tree, linear P",75,P0xP2,diag,-1.71,2.14,0.007,-0.0783
+"tree, linear P",75,P0xP2,adjacent,-0.41,0.72,0.0222,-0.0379
+"tree, linear P",75,P0xP2,low-low <0.1 off,-0.45,0.92,0.0373,-0.0255
+"tree, linear P",75,P0xP2,squeezed <0.1 x >=0.1,-0.1,0.21,0.0679,-0.0094
+"tree, linear P",75,P0xP2,hard >=0.1 off,-0.15,0.44,0.025,-0.031
+"tree, linear P",75,P0xP2,hard >=0.15 off,-1.35,1.22,0.0088,-0.057
+"tree, linear P",25 los-z,P0xP0,diag,-2.48,0.85,0.0777,-0.1697
+"tree, linear P",25 los-z,P0xP0,adjacent,0.06,0.48,0.1076,0.0261
+"tree, linear P",25 los-z,P0xP0,low-low <0.1 off,-1.17,0.84,0.0947,-0.1155
+"tree, linear P",25 los-z,P0xP0,squeezed <0.1 x >=0.1,0.09,0.16,0.2035,0.0152
+"tree, linear P",25 los-z,P0xP0,hard >=0.1 off,0.27,0.24,0.1352,0.0648
+"tree, linear P",25 los-z,P0xP0,hard >=0.15 off,0.35,0.42,0.1056,0.0406
+"tree, linear P",25 los-z,P2xP2,diag,-5.09,2.01,0.036,-0.0175
+"tree, linear P",25 los-z,P2xP2,adjacent,2.08,0.96,0.0639,0.1516
+"tree, linear P",25 los-z,P2xP2,low-low <0.1 off,1.04,1.87,0.0486,-0.0029
+"tree, linear P",25 los-z,P2xP2,squeezed <0.1 x >=0.1,1.03,0.33,0.1081,0.1092
+"tree, linear P",25 los-z,P2xP2,hard >=0.1 off,2.16,0.47,0.0825,0.1754
+"tree, linear P",25 los-z,P2xP2,hard >=0.15 off,2.12,0.75,0.0656,0.1311
+"tree, linear P",25 los-z,P0xP2,diag,-11.1,3.53,0.007,-0.091
+"tree, linear P",25 los-z,P0xP2,adjacent,-0.25,1.29,0.0222,-0.0133
+"tree, linear P",25 los-z,P0xP2,low-low <0.1 off,1.83,1.52,0.0373,0.0177
+"tree, linear P",25 los-z,P0xP2,squeezed <0.1 x >=0.1,-0.16,0.35,0.0679,-0.0092
+"tree, linear P",25 los-z,P0xP2,hard >=0.1 off,-1.49,0.79,0.025,-0.0496
+"tree, linear P",25 los-z,P0xP2,hard >=0.15 off,-2.66,2.13,0.0088,-0.0547
+"tree, nonlinear P",75,P0xP0,diag,-1.5,0.27,0.139,-0.2067
+"tree, nonlinear P",75,P0xP0,adjacent,0.05,0.17,0.1674,0.0132
+"tree, nonlinear P",75,P0xP0,low-low <0.1 off,-1.29,0.5,0.0933,-0.1277
+"tree, nonlinear P",75,P0xP0,squeezed <0.1 x >=0.1,0.06,0.08,0.2269,0.0151
+"tree, nonlinear P",75,P0xP0,hard >=0.1 off,0.21,0.08,0.2276,0.0608
+"tree, nonlinear P",75,P0xP0,hard >=0.15 off,0.31,0.11,0.2214,0.0742
+"tree, nonlinear P",75,P2xP2,diag,0.36,0.86,0.0568,0.0396
+"tree, nonlinear P",75,P2xP2,adjacent,1.34,0.46,0.0834,0.1175
+"tree, nonlinear P",75,P2xP2,low-low <0.1 off,1.01,1.22,0.0488,0.023
+"tree, nonlinear P",75,P2xP2,squeezed <0.1 x >=0.1,0.79,0.22,0.1041,0.0775
+"tree, nonlinear P",75,P2xP2,hard >=0.1 off,1.01,0.21,0.1121,0.1209
+"tree, nonlinear P",75,P2xP2,hard >=0.15 off,0.77,0.3,0.1079,0.0868
+"tree, nonlinear P",75,P0xP2,diag,0.58,1.28,0.0013,-0.0783
+"tree, nonlinear P",75,P0xP2,adjacent,0.11,0.66,0.018,-0.0379
+"tree, nonlinear P",75,P0xP2,low-low <0.1 off,-0.48,0.92,0.0374,-0.0255
+"tree, nonlinear P",75,P0xP2,squeezed <0.1 x >=0.1,-0.07,0.2,0.0679,-0.0094
+"tree, nonlinear P",75,P0xP2,hard >=0.1 off,-0.01,0.37,0.0266,-0.031
+"tree, nonlinear P",75,P0xP2,hard >=0.15 off,-0.05,0.8,0.0062,-0.057
+"tree, nonlinear P",25 los-z,P0xP0,diag,-1.29,0.49,0.139,-0.1697
+"tree, nonlinear P",25 los-z,P0xP0,adjacent,0.11,0.32,0.1674,0.0261
+"tree, nonlinear P",25 los-z,P0xP0,low-low <0.1 off,-1.25,0.84,0.0933,-0.1155
+"tree, nonlinear P",25 los-z,P0xP0,squeezed <0.1 x >=0.1,0.12,0.14,0.2269,0.0152
+"tree, nonlinear P",25 los-z,P0xP0,hard >=0.1 off,0.15,0.15,0.2276,0.0648
+"tree, nonlinear P",25 los-z,P0xP0,hard >=0.15 off,0.15,0.21,0.2214,0.0406
+"tree, nonlinear P",25 los-z,P2xP2,diag,-3.26,1.22,0.0568,-0.0175
+"tree, nonlinear P",25 los-z,P2xP2,adjacent,1.48,0.73,0.0834,0.1516
+"tree, nonlinear P",25 los-z,P2xP2,low-low <0.1 off,0.99,1.94,0.0488,-0.0029
+"tree, nonlinear P",25 los-z,P2xP2,squeezed <0.1 x >=0.1,1.1,0.33,0.1041,0.1092
+"tree, nonlinear P",25 los-z,P2xP2,hard >=0.1 off,1.45,0.34,0.1121,0.1754
+"tree, nonlinear P",25 los-z,P2xP2,hard >=0.15 off,1.16,0.44,0.1079,0.1311
+"tree, nonlinear P",25 los-z,P0xP2,diag,-4.92,2.11,0.0013,-0.091
+"tree, nonlinear P",25 los-z,P0xP2,adjacent,-0.27,1.19,0.018,-0.0133
+"tree, nonlinear P",25 los-z,P0xP2,low-low <0.1 off,1.74,1.54,0.0374,0.0177
+"tree, nonlinear P",25 los-z,P0xP2,squeezed <0.1 x >=0.1,-0.02,0.34,0.0679,-0.0092
+"tree, nonlinear P",25 los-z,P0xP2,hard >=0.1 off,-1.38,0.65,0.0266,-0.0496
+"tree, nonlinear P",25 los-z,P0xP2,hard >=0.15 off,-1.82,1.36,0.0062,-0.0547
+"nonlinear P external, linear P internal",75,P0xP0,diag,-1.7,0.3,0.1239,-0.2067
+"nonlinear P external, linear P internal",75,P0xP0,adjacent,0.04,0.19,0.1554,0.0132
+"nonlinear P external, linear P internal",75,P0xP0,low-low <0.1 off,-1.19,0.46,0.0988,-0.1277
+"nonlinear P external, linear P internal",75,P0xP0,squeezed <0.1 x >=0.1,-0.04,0.03,-0.1338,0.0151
+"nonlinear P external, linear P internal",75,P0xP0,hard >=0.1 off,0.25,0.1,0.1799,0.0608
+"nonlinear P external, linear P internal",75,P0xP0,hard >=0.15 off,0.38,0.14,0.185,0.0742
+"nonlinear P external, linear P internal",75,P2xP2,diag,0.45,0.9,0.0534,0.0396
+"nonlinear P external, linear P internal",75,P2xP2,adjacent,1.35,0.46,0.0838,0.1175
+"nonlinear P external, linear P internal",75,P2xP2,low-low <0.1 off,1.1,1.14,0.0513,0.023
+"nonlinear P external, linear P internal",75,P2xP2,squeezed <0.1 x >=0.1,-0.1,0.09,-0.0813,0.0775
+"nonlinear P external, linear P internal",75,P2xP2,hard >=0.1 off,1.21,0.24,0.098,0.1209
+"nonlinear P external, linear P internal",75,P2xP2,hard >=0.15 off,0.86,0.31,0.1012,0.0868
+"nonlinear P external, linear P internal",75,P0xP2,diag,0.82,1.39,-0.0002,-0.0783
+"nonlinear P external, linear P internal",75,P0xP2,adjacent,0.07,0.68,0.0174,-0.0379
+"nonlinear P external, linear P internal",75,P0xP2,low-low <0.1 off,-0.41,0.84,0.04,-0.0255
+"nonlinear P external, linear P internal",75,P0xP2,squeezed <0.1 x >=0.1,0.01,0.07,-0.0728,-0.0094
+"nonlinear P external, linear P internal",75,P0xP2,hard >=0.1 off,0.23,0.46,0.0177,-0.031
+"nonlinear P external, linear P internal",75,P0xP2,hard >=0.15 off,0.31,0.92,0.003,-0.057
+"nonlinear P external, linear P internal",25 los-z,P0xP0,diag,-1.46,0.55,0.1239,-0.1697
+"nonlinear P external, linear P internal",25 los-z,P0xP0,adjacent,0.11,0.35,0.1554,0.0261
+"nonlinear P external, linear P internal",25 los-z,P0xP0,low-low <0.1 off,-1.16,0.79,0.0988,-0.1155
+"nonlinear P external, linear P internal",25 los-z,P0xP0,squeezed <0.1 x >=0.1,-0.14,0.06,-0.1338,0.0152
+"nonlinear P external, linear P internal",25 los-z,P0xP0,hard >=0.1 off,0.16,0.19,0.1799,0.0648
+"nonlinear P external, linear P internal",25 los-z,P0xP0,hard >=0.15 off,0.19,0.25,0.185,0.0406
+"nonlinear P external, linear P internal",25 los-z,P2xP2,diag,-3.35,1.29,0.0534,-0.0175
+"nonlinear P external, linear P internal",25 los-z,P2xP2,adjacent,1.52,0.73,0.0838,0.1516
+"nonlinear P external, linear P internal",25 los-z,P2xP2,low-low <0.1 off,1.06,1.79,0.0513,-0.0029
+"nonlinear P external, linear P internal",25 los-z,P2xP2,squeezed <0.1 x >=0.1,-0.22,0.14,-0.0813,0.1092
+"nonlinear P external, linear P internal",25 los-z,P2xP2,hard >=0.1 off,1.68,0.38,0.098,0.1754
+"nonlinear P external, linear P internal",25 los-z,P2xP2,hard >=0.15 off,1.32,0.48,0.1012,0.1311
+"nonlinear P external, linear P internal",25 los-z,P0xP2,diag,-5.12,2.3,-0.0002,-0.091
+"nonlinear P external, linear P internal",25 los-z,P0xP2,adjacent,-0.29,1.21,0.0174,-0.0133
+"nonlinear P external, linear P internal",25 los-z,P0xP2,low-low <0.1 off,1.58,1.41,0.04,0.0177
+"nonlinear P external, linear P internal",25 los-z,P0xP2,squeezed <0.1 x >=0.1,-0.23,0.12,-0.0728,-0.0092
+"nonlinear P external, linear P internal",25 los-z,P0xP2,hard >=0.1 off,-1.73,0.82,0.0177,-0.0496
+"nonlinear P external, linear P internal",25 los-z,P0xP2,hard >=0.15 off,-1.59,1.55,0.003,-0.0547
+"nonlinear P external, linear internal + propagator damping",75,P0xP0,diag,-6.89,1.09,0.0276,-0.2067
+"nonlinear P external, linear internal + propagator damping",75,P0xP0,adjacent,-0.89,0.62,0.0372,0.0132
+"nonlinear P external, linear internal + propagator damping",75,P0xP0,low-low <0.1 off,-1.63,0.62,0.0738,-0.1277
+"nonlinear P external, linear internal + propagator damping",75,P0xP0,squeezed <0.1 x >=0.1,-0.22,0.24,0.003,0.0151
+"nonlinear P external, linear internal + propagator damping",75,P0xP0,hard >=0.1 off,1.77,0.72,0.0194,0.0608
+"nonlinear P external, linear internal + propagator damping",75,P0xP0,hard >=0.15 off,5.31,1.8,0.0117,0.0742
+"nonlinear P external, linear internal + propagator damping",75,P2xP2,diag,-2.41,4.42,0.0093,0.0396
+"nonlinear P external, linear internal + propagator damping",75,P2xP2,adjacent,1.78,1.76,0.0165,0.1175
+"nonlinear P external, linear internal + propagator damping",75,P2xP2,low-low <0.1 off,1.44,1.7,0.0347,0.023
+"nonlinear P external, linear internal + propagator damping",75,P2xP2,squeezed <0.1 x >=0.1,0.76,0.99,0.0043,0.0775
+"nonlinear P external, linear internal + propagator damping",75,P2xP2,hard >=0.1 off,14.69,2.68,0.0077,0.1209
+"nonlinear P external, linear internal + propagator damping",75,P2xP2,hard >=0.15 off,16.64,5.51,0.0054,0.0868
+"nonlinear P external, linear internal + propagator damping",75,P0xP2,diag,1.65,4.86,-0.0016,-0.0783
+"nonlinear P external, linear internal + propagator damping",75,P0xP2,adjacent,-1.73,1.82,0.0018,-0.0379
+"nonlinear P external, linear internal + propagator damping",75,P0xP2,low-low <0.1 off,-0.73,1.35,0.0252,-0.0255
+"nonlinear P external, linear internal + propagator damping",75,P0xP2,squeezed <0.1 x >=0.1,0.13,0.65,0.0023,-0.0094
+"nonlinear P external, linear internal + propagator damping",75,P0xP2,hard >=0.1 off,4.56,2.38,-0.0056,-0.031
+"nonlinear P external, linear internal + propagator damping",75,P0xP2,hard >=0.15 off,7.63,3.14,-0.0059,-0.057
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP0,diag,-6.6,1.98,0.0276,-0.1697
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP0,adjacent,-0.71,1.14,0.0372,0.0261
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP0,low-low <0.1 off,-1.61,1.05,0.0738,-0.1155
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP0,squeezed <0.1 x >=0.1,-0.86,0.44,0.003,0.0152
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP0,hard >=0.1 off,1.62,1.38,0.0194,0.0648
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP0,hard >=0.15 off,3.67,3.22,0.0117,0.0406
+"nonlinear P external, linear internal + propagator damping",25 los-z,P2xP2,diag,-16.21,6.48,0.0093,-0.0175
+"nonlinear P external, linear internal + propagator damping",25 los-z,P2xP2,adjacent,2.96,3.02,0.0165,0.1516
+"nonlinear P external, linear internal + propagator damping",25 los-z,P2xP2,low-low <0.1 off,1.46,2.72,0.0347,-0.0029
+"nonlinear P external, linear internal + propagator damping",25 los-z,P2xP2,squeezed <0.1 x >=0.1,-0.39,1.73,0.0043,0.1092
+"nonlinear P external, linear internal + propagator damping",25 los-z,P2xP2,hard >=0.1 off,22.98,4.79,0.0077,0.1754
+"nonlinear P external, linear internal + propagator damping",25 los-z,P2xP2,hard >=0.15 off,30.42,9.03,0.0054,0.1311
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP2,diag,-10.18,8.1,-0.0016,-0.091
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP2,adjacent,0.06,3.2,0.0018,-0.0133
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP2,low-low <0.1 off,2.1,2.28,0.0252,0.0177
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP2,squeezed <0.1 x >=0.1,-0.47,1.03,0.0023,-0.0092
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP2,hard >=0.1 off,7.31,4.04,-0.0056,-0.0496
+"nonlinear P external, linear internal + propagator damping",25 los-z,P0xP2,hard >=0.15 off,2.89,5.25,-0.0059,-0.0547
+linear P + propagator damping,75,P0xP0,diag,-6.88,1.18,0.0236,-0.2067
+linear P + propagator damping,75,P0xP0,adjacent,-1.1,0.64,0.0332,0.0132
+linear P + propagator damping,75,P0xP0,low-low <0.1 off,-1.73,0.67,0.0699,-0.1277
+linear P + propagator damping,75,P0xP0,squeezed <0.1 x >=0.1,0.31,0.29,0.0527,0.0151
+linear P + propagator damping,75,P0xP0,hard >=0.1 off,2.07,0.85,0.0157,0.0608
+linear P + propagator damping,75,P0xP0,hard >=0.15 off,8.39,2.88,0.0069,0.0742
+linear P + propagator damping,75,P2xP2,diag,-3.7,4.51,0.0079,0.0396
+linear P + propagator damping,75,P2xP2,adjacent,1.41,1.72,0.0153,0.1175
+linear P + propagator damping,75,P2xP2,low-low <0.1 off,1.58,1.84,0.0322,0.023
+linear P + propagator damping,75,P2xP2,squeezed <0.1 x >=0.1,2.2,0.95,0.0201,0.0775
+linear P + propagator damping,75,P2xP2,hard >=0.1 off,15.29,2.92,0.0066,0.1209
+linear P + propagator damping,75,P2xP2,hard >=0.15 off,24.88,8.55,0.0033,0.0868
+linear P + propagator damping,75,P0xP2,diag,-2.11,6.33,0.0002,-0.0783
+linear P + propagator damping,75,P0xP2,adjacent,-2.34,1.98,0.0036,-0.0379
+linear P + propagator damping,75,P0xP2,low-low <0.1 off,-0.83,1.52,0.0228,-0.0255
+linear P + propagator damping,75,P0xP2,squeezed <0.1 x >=0.1,0.55,1.05,0.0048,-0.0094
+linear P + propagator damping,75,P0xP2,hard >=0.1 off,6.15,3.39,-0.0037,-0.031
+linear P + propagator damping,75,P0xP2,hard >=0.15 off,12.59,5.39,-0.0033,-0.057
+linear P + propagator damping,25 los-z,P0xP0,diag,-6.53,2.12,0.0236,-0.1697
+linear P + propagator damping,25 los-z,P0xP0,adjacent,-0.91,1.17,0.0332,0.0261
+linear P + propagator damping,25 los-z,P0xP0,low-low <0.1 off,-1.66,1.14,0.0699,-0.1155
+linear P + propagator damping,25 los-z,P0xP0,squeezed <0.1 x >=0.1,0.27,0.53,0.0527,0.0152
+linear P + propagator damping,25 los-z,P0xP0,hard >=0.1 off,2.03,1.63,0.0157,0.0648
+linear P + propagator damping,25 los-z,P0xP0,hard >=0.15 off,5.86,5.2,0.0069,0.0406
+linear P + propagator damping,25 los-z,P2xP2,diag,-16.2,6.36,0.0079,-0.0175
+linear P + propagator damping,25 los-z,P2xP2,adjacent,2.33,2.88,0.0153,0.1516
+linear P + propagator damping,25 los-z,P2xP2,low-low <0.1 off,1.52,2.92,0.0322,-0.0029
+linear P + propagator damping,25 los-z,P2xP2,squeezed <0.1 x >=0.1,3.42,1.66,0.0201,0.1092
+linear P + propagator damping,25 los-z,P2xP2,hard >=0.1 off,24.31,5.38,0.0066,0.1754
+linear P + propagator damping,25 los-z,P2xP2,hard >=0.15 off,49.02,14.43,0.0033,0.1311
+linear P + propagator damping,25 los-z,P0xP2,diag,-20.17,10.25,0.0002,-0.091
+linear P + propagator damping,25 los-z,P0xP2,adjacent,0.39,3.44,0.0036,-0.0133
+linear P + propagator damping,25 los-z,P0xP2,low-low <0.1 off,2.63,2.55,0.0228,0.0177
+linear P + propagator damping,25 los-z,P0xP2,squeezed <0.1 x >=0.1,-1.19,1.94,0.0048,-0.0092
+linear P + propagator damping,25 los-z,P0xP2,hard >=0.1 off,11.52,5.77,-0.0037,-0.0496
+linear P + propagator damping,25 los-z,P0xP2,hard >=0.15 off,7.11,9.11,-0.0033,-0.0547
+nonlinear P + propagator damping,75,P0xP0,diag,-6.6,1.02,0.0296,-0.2067
+nonlinear P + propagator damping,75,P0xP0,adjacent,-0.84,0.62,0.0377,0.0132
+nonlinear P + propagator damping,75,P0xP0,low-low <0.1 off,-1.77,0.66,0.0697,-0.1277
+nonlinear P + propagator damping,75,P0xP0,squeezed <0.1 x >=0.1,0.37,0.29,0.0553,0.0151
+nonlinear P + propagator damping,75,P0xP0,hard >=0.1 off,1.61,0.65,0.0229,0.0608
+nonlinear P + propagator damping,75,P0xP0,hard >=0.15 off,4.78,1.6,0.0135,0.0742
+nonlinear P + propagator damping,75,P2xP2,diag,-2.58,3.88,0.0105,0.0396
+nonlinear P + propagator damping,75,P2xP2,adjacent,1.7,1.76,0.0165,0.1175
+nonlinear P + propagator damping,75,P2xP2,low-low <0.1 off,1.27,1.82,0.0331,0.023
+nonlinear P + propagator damping,75,P2xP2,squeezed <0.1 x >=0.1,2.71,1.08,0.0178,0.0775
+nonlinear P + propagator damping,75,P2xP2,hard >=0.1 off,14.38,2.61,0.0083,0.1209
+nonlinear P + propagator damping,75,P2xP2,hard >=0.15 off,15.67,5.3,0.0057,0.0868
+nonlinear P + propagator damping,75,P0xP2,diag,0.86,4.33,-0.0014,-0.0783
+nonlinear P + propagator damping,75,P0xP2,adjacent,-1.67,1.83,0.0016,-0.0379
+nonlinear P + propagator damping,75,P0xP2,low-low <0.1 off,-0.86,1.47,0.0235,-0.0255
+nonlinear P + propagator damping,75,P0xP2,squeezed <0.1 x >=0.1,0.58,1.04,0.0032,-0.0094
+nonlinear P + propagator damping,75,P0xP2,hard >=0.1 off,4.1,2.01,-0.0065,-0.031
+nonlinear P + propagator damping,75,P0xP2,hard >=0.15 off,7.02,2.81,-0.0066,-0.057
+nonlinear P + propagator damping,25 los-z,P0xP0,diag,-6.35,1.86,0.0296,-0.1697
+nonlinear P + propagator damping,25 los-z,P0xP0,adjacent,-0.66,1.14,0.0377,0.0261
+nonlinear P + propagator damping,25 los-z,P0xP0,low-low <0.1 off,-1.73,1.13,0.0697,-0.1155
+nonlinear P + propagator damping,25 los-z,P0xP0,squeezed <0.1 x >=0.1,0.4,0.51,0.0553,0.0152
+nonlinear P + propagator damping,25 los-z,P0xP0,hard >=0.1 off,1.5,1.23,0.0229,0.0648
+nonlinear P + propagator damping,25 los-z,P0xP0,hard >=0.15 off,3.17,2.87,0.0135,0.0406
+nonlinear P + propagator damping,25 los-z,P2xP2,diag,-14.38,5.71,0.0105,-0.0175
+nonlinear P + propagator damping,25 los-z,P2xP2,adjacent,2.85,3.02,0.0165,0.1516
+nonlinear P + propagator damping,25 los-z,P2xP2,low-low <0.1 off,1.32,2.95,0.0331,-0.0029
+nonlinear P + propagator damping,25 los-z,P2xP2,squeezed <0.1 x >=0.1,4.32,1.9,0.0178,0.1092
+nonlinear P + propagator damping,25 los-z,P2xP2,hard >=0.1 off,22.29,4.61,0.0083,0.1754
+nonlinear P + propagator damping,25 los-z,P2xP2,hard >=0.15 off,27.85,8.59,0.0057,0.1311
+nonlinear P + propagator damping,25 los-z,P0xP2,diag,-10.23,7.19,-0.0014,-0.091
+nonlinear P + propagator damping,25 los-z,P0xP2,adjacent,0.06,3.21,0.0016,-0.0133
+nonlinear P + propagator damping,25 los-z,P0xP2,low-low <0.1 off,2.31,2.49,0.0235,0.0177
+nonlinear P + propagator damping,25 los-z,P0xP2,squeezed <0.1 x >=0.1,-0.91,1.87,0.0032,-0.0092
+nonlinear P + propagator damping,25 los-z,P0xP2,hard >=0.1 off,5.94,3.38,-0.0065,-0.0496
+nonlinear P + propagator damping,25 los-z,P0xP2,hard >=0.15 off,2.28,4.69,-0.0066,-0.0547

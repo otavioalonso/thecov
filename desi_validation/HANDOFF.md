@@ -1246,3 +1246,29 @@ undamped holi P_lin, bs2 = -4/7(b1-1)); B_202 is too weak to constrain b2 (box: 
   0.3 of tree) gets worse, not better. No bias value inside the catalogue's allowed range removes the box pattern (P0 hard 0.3,
   P0 squeezed ~0, P2 ~1): this is a model failure, to be addressed by model changes tested in the box (internal-leg damping,
   measured-response squeezed limit, measured P throughout), not by bias tuning.
+
+### T0 model variants tested in the boxes (2026-10-31; `responses/box_t0/box_t0_model_variants_LRG_c000.csv`, `box_t0_b3_LRG_c000.csv`)
+New options in `thecov.tree.trispectrum` (defaults unchanged, tests pass): `p_ext` (power on the external legs P(k1), P(k2);
+internal P(|k1 +- k2|) stays p_lin) and `sigma_prop` (RPT-like propagator damping exp(-k^2 sigma^2 (1 + f(2+f) mu^2)/2) per
+external field). Box inputs fixed by the boxes (b1 1.855, b2 0.378, sigma_v 4.25, bs2 -4/7(b1-1), b3 0); base = exact Gaussian
++ measured discreteness (ph000 thinning). T0 amplitude wanted (75 samples / los-z only), 1 = model right:
+
+| variant (no free parameter) | P0 hard | P0 squeezed | P2 hard | P2 squeezed |
+|---|---|---|---|---|
+| tree, linear P | 0.67 +- 0.23 / 0.35 +- 0.42 | 0.05 +- 0.09 / 0.09 +- 0.16 | 1.27 +- 0.48 / 2.1 +- 0.8 | 0.72 / 1.03 |
+| tree, nonlinear P | 0.31 +- 0.11 / 0.15 +- 0.21 | 0.06 +- 0.08 / 0.12 +- 0.14 | 0.77 +- 0.30 / 1.16 +- 0.44 | 0.79 / 1.10 |
+| nonlinear P external, linear internal | 0.38 +- 0.14 / 0.19 +- 0.25 | -0.04 +- 0.03 / -0.14 +- 0.06 | 0.86 +- 0.31 / 1.32 +- 0.48 | -0.10 / -0.22 |
+| + propagator damping (sigma_d 4.48 from P_lin), any P | 3-8 | ~0.3 | 16-50 | 1-4 |
+
+- Propagator damping is excluded (it suppresses the hard T0 by 15-50x in P2). Mixing nonlinear/linear P moves nothing.
+- The robust pattern under every variant: P0 hard 0.2-0.7, P0 squeezed ~0-0.1, P2 ~1. Snake / star split of the (nonlinear-P)
+  template in correlation units: P0 hard 0.298 / -0.038, P0 squeezed 1.285 / -1.039 (near-cancellation), P2 hard 0.155 / -0.043.
+- **b3 is the only bias that moves P0 and not P2** (d template / d b3: P0 hard 0.055, squeezed 0.038; P2 ~0.0002). The b3 that
+  would make each block right: P0 hard -3.2 +- 0.5, P0 squeezed -6.0 +- 0.5 (75 samples; ~ +-1 los-z): inconsistent at ~2-4
+  sigma, so b3 cannot fix both. The external separate-universe relation (Lazeyras et al. 2016, b3(1.855) = -2.45; not fitted to any
+  mock) gives P0 hard 0.63 +- 0.23 (0.28 +- 0.42 los-z), squeezed 0.11 +- 0.12, P2 unchanged. Caveat: Lazeyras b2(b1) was wrong for
+  these HOD LRGs (-0.29 vs measured +0.38-0.75), so its b3 is not a measurement either. b3 does not enter P at one loop
+  (renormalised into b1) nor B at tree level; the catalogue's own handle is the second-order response R_2 (section 14) or the
+  one-loop bispectrum.
+- Status: no parameter-free model change reproduces the box. Best physically motivated model: tree T0 with nonlinear P in the
+  kernels and the Lazeyras b3, which leaves P0 hard at ~0.6 of tree and the squeezed P0 block at ~0.1 of tree; P2 correct.

@@ -299,13 +299,13 @@ def trispectrum(ks, P, bias, f, parts=('snake', 'star')):
     return out
 
 
-def parallelogram(k1, k2, P, bias, f, parts=('snake', 'star', 'star_b3')):
+def parallelogram(k1, k2, P, bias, f, parts=('snake', 'star', 'star_b3'), P_ext=None):
     """T(k1, -k1, k2, -k2) = trispectrum([k1, -k1, k2, -k2]) using its symmetries (kernels are even under
     q -> -q of all arguments; the P(0) terms dropped): 6 snake terms instead of 24, 2 Z3 instead of 4."""
     if not isinstance(k1, _Momentum):
         k1, k2 = _MomentumBasis(k1, k2).basis()
     m1, m2 = np.sqrt(_dot(k1, k1)), np.sqrt(_dot(k2, k2))
-    P1, P2 = P(m1), P(m2)
+    P1, P2 = (P if P_ext is None else P_ext)(m1), (P if P_ext is None else P_ext)(m2)   # external legs; internal P(|k1 +- k2|) is P
     za, zb = Z1(k1, bias, f), Z1(k2, bias, f)
     out = {}
     if 'snake' in parts:
@@ -347,7 +347,7 @@ def mu12_nodes(n_mid=64, n_end=32, delta=0.05, eps=1e-12):
 
 
 def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None, parts=('snake', 'star', 'star_b3'),
-               sigma_fog=0.0, k_collapse=None, symmetric=True):
+               sigma_fog=0.0, k_collapse=None, symmetric=True, P_ext=None, sigma_prop=0.0):
     """{part: {(l1, l2): (2 l1 + 1)(2 l2 + 1) < L_l1(mu1) L_l2(mu2) T(k1, -k1, k2, -k2) >}} at |k1|, |k2|.
 
     sigma_fog: Gaussian fingers-of-God damping of the four external fields, T -> T exp(-(k1 mu1 s)^2 - (k2 mu2 s)^2)
@@ -382,7 +382,10 @@ def multipoles(k1, k2, P, bias, f, ells=(0, 2, 4), n_mu=12, n_psi=24, mu12=None,
     eb = np.stack([np.zeros_like(C1), np.ones_like(C1), np.zeros_like(C1)])
     e2 = M * e1 + SM * (np.cos(PS) * ea + np.sin(PS) * eb)          # k2^ at angle mu12 from k1^
     mu1, mu2 = C1, e2[2]
-    T = parallelogram(k1 * e1, k2 * e2, P, bias, f, parts=parts)
+    T = parallelogram(k1 * e1, k2 * e2, P, bias, f, parts=parts, P_ext=P_ext)
+    if sigma_prop:                     # RPT-like propagator damping of the four external fields, exp(-k^2 sigma^2 (1 + f (2 + f) mu^2) / 2) each
+        Dp = np.exp(-sigma_prop ** 2 * (k1 ** 2 * (1 + f * (2 + f) * mu1 ** 2) + k2 ** 2 * (1 + f * (2 + f) * mu2 ** 2)))
+        T = {p: t * Dp for p, t in T.items()}
     if sigma_fog:
         D = np.exp(-(k1 * mu1 * sigma_fog) ** 2 - (k2 * mu2 * sigma_fog) ** 2)
         T = {p: t * D for p, t in T.items()}
@@ -424,7 +427,7 @@ class TrispectrumCovariance:
     """
 
     def __init__(self, cov, p_lin, bias, f, n_mu=12, n_psi=24, n_mid=64, n_end=32, n_k=1, J4=None, n_workers=1,
-                 sigma_fog=0.0, k_collapse=None, **bias_kw):
+                 sigma_fog=0.0, k_collapse=None, p_ext=None, sigma_prop=0.0, **bias_kw):
         self.cov = cov
         self.P = LinearPower(*p_lin)
         self.bias = bias if isinstance(bias, Bias) else Bias(bias, **bias_kw)
@@ -434,6 +437,8 @@ class TrispectrumCovariance:
         self._J4 = J4
         self.n_workers = int(n_workers)
         self.sigma_fog = float(sigma_fog)
+        self.P_ext = None if p_ext is None else LinearPower(*p_ext)     # power on the external legs (default: p_lin)
+        self.sigma_prop = float(sigma_prop)                              # propagator damping [Mpc/h] (default 0: none)
         self.k_collapse = None if k_collapse is None else float(k_collapse)
 
     def window_integral(self, A):
@@ -461,7 +466,8 @@ class TrispectrumCovariance:
         kn, kw = self._nodes()
         nb, nl = len(kn), len(ells)
         settings = dict(k_nodes=kn, k_weights=kw, P=self.P, bias=self.bias, f=self.f, ells=ells, n_mu=self.n_mu,
-                        n_psi=self.n_psi, mu12=self.mu12, sigma_fog=self.sigma_fog, k_collapse=self.k_collapse)
+                        n_psi=self.n_psi, mu12=self.mu12, sigma_fog=self.sigma_fog, k_collapse=self.k_collapse,
+                        P_ext=self.P_ext, sigma_prop=self.sigma_prop)
         if self.n_workers > 1:
             from concurrent.futures import ProcessPoolExecutor
             import multiprocessing as mp
