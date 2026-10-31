@@ -62,7 +62,7 @@ def main(argv=None):
     m = np.fft.fftfreq(n, d=1.0 / n)                                   # integer mode numbers, FFT order
     M = np.meshgrid(m, m, m, indexing='ij')
     kmag = kf * np.sqrt(M[0] ** 2 + M[1] ** 2 + M[2] ** 2)
-    assert 2 * edges[-1] + args.qmax * kf < 2 * np.pi * n / L - edges[-1], 'grid too small: products alias into small q'
+    assert 2 * edges[-1] + args.qmax * kf < 2 * np.pi * n / L and edges[-1] < np.pi * n / L, 'grid too small: products alias into small q'
     qsel = (kmag > 0) & (kmag <= args.qmax * kf + 1e-12)
     qidx = np.flatnonzero(qsel.ravel())
     qvec = np.stack([M[i].ravel()[qidx] for i in range(3)], 1)
