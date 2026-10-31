@@ -260,9 +260,87 @@ def stage_j4(args):
     log(f'saved {out}/j4_cells.npz')
 
 
+def stage_bispectrum(args):
+    """Inputs for b2 from the catalogue's own bispectrum: the mock's Sugiyama diagonal B_000, B_202 (value, shot noise,
+    norm, nmodes) and its P norm; the window dilutions d_n = int W^n (painted at `cells`, unbiased: n disjoint random
+    subsets) / norm_n for n = 2 (P; to be validated against the window matrix's row sums) and n = 3 (B)."""
+    import lsstypes as types
+    paths, cfg, od = setup_mock(args)
+    out = args.out_dir or od
+    os.makedirs(out, exist_ok=True)
+    b, r = args.bin, args.region
+    tracer, zr = dc.TRACER_SPECS[b]
+    res = {}
+    d3 = os.path.join(paths.spectra_dir, f'mock{args.mock}')
+    fn3 = os.path.join(d3, f'mesh3_spectrum_sugiyama-diagonal_poles_{tracer}_z{zr[0]}-{zr[1]}_{r}_weight-default-FKP.h5')
+    B = types.read(fn3)
+    log(f'{os.path.basename(fn3)}: {type(B).__name__}')
+    for kk, vv in _attrs_any(B).items():
+        log(f'  attr {kk}: {str(vv)[:150]}')
+    for lab, leaf in B.items():
+        key = str(lab).replace(' ', '').replace("'", '').replace('{', '').replace('}', '').replace(':', '-').replace(',', '_')
+        vals = leaf.values() if callable(getattr(leaf, 'values', None)) else {}
+        log(f'  leaf {key}: value shape {np.shape(leaf.value())}; values keys {list(vals.keys()) if hasattr(vals, "keys") else vals}')
+        res[f'B/{key}/value'] = np.real(np.asarray(leaf.value()))
+        res[f'B/{key}/k'] = np.asarray(leaf.coords('k'))
+        for q in ('shotnoise', 'num_shotnoise', 'norm', 'nmodes'):
+            try:
+                res[f'B/{key}/{q}'] = np.asarray(leaf.values(q))
+            except Exception:  # noqa: BLE001
+                pass
+    S = read_one_spectrum(os.path.join(d3, paths.spectra_name.format(tracer=tracer, zmin=zr[0], zmax=zr[1], region=r)))
+    res.update(P_norm=S['norm'], P_shotnoise=S['shotnoise'], P_k=S['k'], P0=S['P'][0], P2=S['P'][2], P_nmodes=S['nmodes'])
+    log(f'P norm {S["norm"]:.5g}, shotnoise {S["shotnoise"]:.1f}; B norm (first leaf) {np.ravel(res[[k for k in res if k.endswith("/norm")][0]])[:2]}')
+    # window-matrix row sums (l = 0 -> l = 0) at the observable k: the P dilution the window matrix implies
+    wfn = os.path.join(WINDOW_DIR, f'window_mesh2_spectrum_poles_{tracer}_z{zr[0]}-{zr[1]}_{r}_weight-default-FKP_smooth_mesh.h5')
+    wm = types.read(wfn); M = np.asarray(wm.value())
+    n_o = [len(np.asarray(wm.observable.get(l).coords('k'))) for l in (0, 2, 4)]
+    n_t = M.shape[1] // 3
+    rowsum = M[:n_o[0], :n_t].sum(1)
+    res.update(wm_rowsum00=rowsum, wm_k=np.asarray(wm.observable.get(0).coords('k')))
+    for kk in (0.05, 0.1, 0.15, 0.2):
+        j = np.argmin(np.abs(res['wm_k'] - kk))
+        log(f'  window matrix: sum_k\' M_00(k = {res["wm_k"][j]:.3f}, k\') = {rowsum[j]:.4f}')
+    # cell dilutions with disjoint random subsets
+    rc = dc.load_region(paths, b, r, n_random_files=args.random_files)
+    wd, wr = dc.total_weight(rc.data), dc.total_weight(rc.randoms)
+    xr = dc.sky_to_cartesian(rc.randoms['RA'], rc.randoms['DEC'], rc.randoms['Z'])
+    alpha = float(np.sum(wd) / np.sum(wr))
+    del rc
+    lo, hi = xr.min(0), xr.max(0)
+    rng = np.random.default_rng(args.seed)
+    q6 = rng.integers(0, 6, len(wr))
+    for cell in args.cells:
+        n = np.ceil((hi - lo) / cell).astype(int) + 1
+        idx = np.floor((xr - lo) / cell).astype(int)
+        flat = np.ravel_multi_index((idx[:, 0], idx[:, 1], idx[:, 2]), n)
+        Vc = cell ** 3
+        Wq = [np.bincount(flat[q6 == a], 6 * alpha * wr[q6 == a], minlength=int(np.prod(n))) / Vc for a in range(6)]
+        I2 = float(np.mean([np.sum(Wq[2 * a] * Wq[2 * a + 1]) for a in range(3)]) * Vc)
+        I3 = float(np.mean([np.sum(Wq[0] * Wq[1] * Wq[2]), np.sum(Wq[3] * Wq[4] * Wq[5])]) * Vc)
+        res[f'cell/{cell:g}'] = np.array([cell, I2, I3])
+        log(f'  cell {cell:5.1f}: int W^2 {I2:.5g} (/P norm {I2 / S["norm"]:.4f})  int W^3 {I3:.5g}')
+        del Wq, flat, idx
+    res['alpha'] = alpha
+    fn = os.path.join(out, f'bispectrum_inputs_mock{args.mock}.npz')
+    np.savez(fn, **res)
+    log(f'saved {fn}')
+
+
+def _attrs_any(obj):
+    out = {}
+    try:
+        a = obj.attrs
+        a = a() if callable(a) else a
+        out.update({k: v for k, v in dict(a).items()})
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--stage', choices=['fit', 'j4'], required=True)
+    ap.add_argument('--stage', choices=['fit', 'j4', 'bispectrum'], required=True)
     ap.add_argument('--bin', default='LRG1'); ap.add_argument('--region', default='NGC'); ap.add_argument('--mock', type=int, default=173)
     ap.add_argument('--cs-version', default=None)
     ap.add_argument('--params', default=None, help='ssc_check npz with <region>/params, damping, plin_* (fit)')
@@ -273,7 +351,7 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out-dir', default=None)
     args = ap.parse_args(argv)
-    (stage_fit if args.stage == 'fit' else stage_j4)(args)
+    {'fit': stage_fit, 'j4': stage_j4, 'bispectrum': stage_bispectrum}[args.stage](args)
 
 
 if __name__ == '__main__':
