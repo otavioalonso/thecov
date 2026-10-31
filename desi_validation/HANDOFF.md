@@ -1226,3 +1226,23 @@ spectra have 7.27M (nbar 9.1e-4) and P0 3.2 % higher: a different HOD realisatio
   +- 0.2. The cutsky "P2xP2 hard wants 2-3x" (section 21) is therefore not T0. Next: a second box (ph001) to check the
   realisation dependence of the measured discreteness and the P0 diagonal deficit; a sub-Poisson S test (fit S_eff from the
   box P0 diagonal); then the cutsky P2 excess with the box-calibrated T0 (hard P0 x0.3-0.7, squeezed x0, P2 x1).
+
+### b2 from the catalogue's own bispectrum (2026-10-31; `t0_inputs_fit --stage bispectrum`, `responses/t0_review/bispectrum_inputs_mock173.npz`)
+Mock 173 LRG1 NGC Sugiyama diagonal B_000 (41 bins to k 0.2) fitted with the tree RSD bispectrum (b1 1.87, sigma_v 3.75, f 0.762,
+undamped holi P_lin, bs2 = -4/7(b1-1)); B_202 is too weak to constrain b2 (box: -0.18 +- 0.17) and not used.
+- Window: no bispectrum window matrix exists. The P window matrix row sums give d2 = 1.020 (k 0.05-0.2), reproduced by the
+  unbiased cell int W^2 / P norm at 5-10 Mpc/h (1.028 / 1.009), i.e. the estimator's norm is within 2 % of the window at the mode
+  scale. Cell int W^3 moves ~2x as much as int W^2 over the same range, so d3 = 1.00 +- 0.05 (systematic). (The file's B norm
+  1.288 is in a different unit convention from the cell int W^3; the measured B_000 equals the Abacus box mean to 3-7 % at
+  k 0.05-0.08, so the norm is physically consistent.)
+- Errors: one Abacus box's B_000 scatter x sqrt(V_box / V_eff), V_eff = (int W^2)^3 / (int W^3)^2 = 1.75 (Gpc/h)^3 (x2.14).
+  Validated on the boxes: B_000 fit recovers b2 = 0.38 +- 0.02 (mean of 25), single box 0.385 +- 0.063.
+- **Result: b2 = 0.75 +- 0.11 (stat) +- 0.16 (d3) at k 0.04-0.1** (0.73 at 0.04-0.08, 0.76 at 0.03-0.1; 1.0 with chi2 16/14 to
+  k 0.12, tree breaking). Strongly degenerate with b1 and sigma_v: b1 1.83 / 1.91 -> 0.92 / 0.59; sigma_v 2.5 / 5.0 -> 0.63 / 0.92.
+  Total ~ +-0.3. Consistent with b2 from the measured B/n (0.52, k 0.1-0.2) and with the Abacus boxes (0.38-0.46 at the same k).
+  All three exclude Lazeyras(b1) = -0.29 at > 3 sigma.
+- Consequence for T0: the catalogue fixes b2 to 0.4-0.75; across that range the T0 template changes by ~ +-25 % (b2 0.28 -> 0.52
+  raised the cutsky hard P0 template by 1.3x, section 21), and a larger b2 makes T0 larger, i.e. the box P0 hard block (wants
+  0.3 of tree) gets worse, not better. No bias value inside the catalogue's allowed range removes the box pattern (P0 hard 0.3,
+  P0 squeezed ~0, P2 ~1): this is a model failure, to be addressed by model changes tested in the box (internal-leg damping,
+  measured-response squeezed limit, measured P throughout), not by bias tuning.
