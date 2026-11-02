@@ -119,6 +119,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bin', required=True)
     ap.add_argument('--catcov-dir', default=os.path.expanduser('~/thecov/catcov'))
+    ap.add_argument('--catcov-suffix', default='', help="catcov directory suffix, e.g. '_sg' for the runs with --shotnoise-window galaxies")
     ap.add_argument('--report-dir', default=os.path.expanduser('~/thecov_desi/holi_v3_mock173'))
     ap.add_argument('--label', default=None)
     ap.add_argument('--out', default='/global/cfs/cdirs/desicollab/users/oalves/thecov_validation/best_covariances')
@@ -138,7 +139,8 @@ def main():
         norms[r] = float(R[f'{b}/{r}/x1/norm'][keep].mean())
         if r in CAPS:
             s_files = float(R[f'{b}/{r}/x1/num_shotnoise'][keep].mean())
-            k, nb, terms, info = cap_terms(os.path.join(args.catcov_dir, f'best_{b}_{r}'), s_files)
+            k, nb, terms, info = cap_terms(os.path.join(args.catcov_dir, f'best_{b}_{r}{args.catcov_suffix}'), s_files)
+            info['catcov_dir'] = f'best_{b}_{r}{args.catcov_suffix}'
             assert np.allclose(k, R[f'{b}/{r}/x1/k'], rtol=1e-3), 'k binning differs between the catalogue run and the files'
             per[r] = (terms, info)
     w = {r: norms[r] / (norms['NGC'] + norms['SGC']) for r in CAPS}
