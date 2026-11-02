@@ -194,6 +194,8 @@ def main(argv=None):
     ap.add_argument('--workers', type=int, default=min(64, os.cpu_count() or 1))
     ap.add_argument('--ssc-n-near', type=int, default=300000)
     ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--shotnoise-window', default='randoms', choices=['randoms', 'galaxies'],
+                    help="thecov shot-noise window: the randoms' own w^2 (default) or the galaxies' <w^2> at the randoms (desi_compare.build_tracer)")
     ap.add_argument('--poisson', type=int, default=None, metavar='SEED', help='null test: unclustered catalogue drawn from the randoms')
     ap.add_argument('--grf', type=float, nargs=3, default=None, metavar=('SIGMA', 'P0', 'SEED'), help='null test of the P x S term: Poisson sample of a Gaussian field (see grf_loader)')
     ap.add_argument('--own-power', action='store_true', help="thecov Gaussian with the catalogue's own P_l (Paper 2 rule; removes the realised-P leakage into B/n)")
@@ -203,6 +205,7 @@ def main(argv=None):
     ap.add_argument('--discreteness-only', action='store_true', help='stop after the measured discreteness (first job of a split run)')
     ap.add_argument('--grf-power', default='input', choices=['input', 'realised'], help='thecov P for the GRF test: P_in unmasked, or the catalogue\'s realised P_l masked')
     args = ap.parse_args(argv)
+    dc.SHOTNOISE_WINDOW = args.shotnoise_window
     from desi_validation import thinning_closed_form as tcf, thinning_cov as tcv
     if args.poisson is not None:
         poisson_loader(args.poisson)                # wrapped first, so the memoised loader caches the Poisson catalogue
@@ -236,7 +239,8 @@ def main(argv=None):
         log('timings [s]: ' + ', '.join(f'{k_} {v:.0f}' for k_, v in T.items()) + ' (--discreteness-only: stopping here)')
         return
     t0 = time.time()
-    tcv.main(['thecov'] + common + ['--frac', '1', '--tree-params', args.params, '--thecov-random-files', '4']
+    tcv.main(['thecov'] + common + ['--frac', '1', '--tree-params', args.params, '--thecov-random-files', '4',
+                                     '--shotnoise-window', args.shotnoise_window]
              + (['--own-power'] if args.own_power else []))   # shares the 4-file load
     T['gaussian_split_tree_disc'] = time.time() - t0
     cov, tr, res = tcv.LAST['cov'], tcv.LAST['tracer'], tcv.LAST['res']

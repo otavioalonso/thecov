@@ -215,13 +215,13 @@ class GaussianCovariance:
         return self._I_local[key]
 
     def shotnoise_scale(self, A) -> float:
-        """Scale of the shot-noise window S^A: the auto spectrum's shotnoise (the estimator's int S) over the randoms'
-        own (1 + alpha) alpha sum_r w_r^2, or 1."""
+        """Scale of the shot-noise window S^A: the auto spectrum's shotnoise (the estimator's int S) over the window's
+        own integral alpha sum_r s_r (the randoms' (1 + alpha) alpha sum_r w_r^2 by default), or 1."""
         p = self.power_of(A, A)
         if p is None or p.shotnoise is None:
             return 1.0
         T = self._tracer(A)
-        return p.shotnoise / ((1.0 + T.alpha) * T.alpha * float(np.sum(T.weights ** 2)))
+        return p.shotnoise / (T.alpha * float(np.sum(T.shotnoise_weights)))
 
     def _window_scale(self, spectrum) -> float:
         return self.shotnoise_scale(spectrum[1]) if spectrum[0] == 'S' else 1.0

@@ -275,6 +275,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bin', default='LRG1')
     ap.add_argument('--label', default='holi-kcore2-LRG1')
+    ap.add_argument('--shotnoise-window', default='randoms', choices=['randoms', 'galaxies'],
+                    help="thecov shot-noise window: the randoms' own w^2 (default) or the galaxies' <w^2> at the randoms (desi_compare.build_tracer)")
     ap.add_argument('--mode', default='kernel', help='covariance in the dump the SSC is added to')
     ap.add_argument('--dir', default=os.path.expanduser('~/thecov_desi/holi_v3_mock173'))
     ap.add_argument('--out', default='/global/cfs/cdirs/desicollab/users/oalves/thecov_validation')
@@ -301,6 +303,7 @@ def main():
     ap.add_argument('--cs-version', default='holi-v3-altmtl', help='mock catalogues (e.g. abacus-2ndgen-dr2-altmtl)')
     ap.add_argument('--mock', type=int, default=173, help='mock whose randoms / footprint are used (abacus: 0)')
     args = ap.parse_args()
+    dc.SHOTNOISE_WINDOW = args.shotnoise_window
 
     from cosmoprimo.fiducial import DESI
     from scipy.interpolate import CubicSpline

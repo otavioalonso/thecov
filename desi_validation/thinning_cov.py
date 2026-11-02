@@ -270,11 +270,14 @@ def main(argv=None):
     ap.add_argument('--n-randoms-max', type=float, default=8e6)
     ap.add_argument('--target-near-pairs', type=float, default=5e9)
     ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--shotnoise-window', default='randoms', choices=['randoms', 'galaxies'],
+                    help="thecov shot-noise window: the randoms' own w^2 (default) or the galaxies' <w^2> at the randoms (desi_compare.build_tracer)")
     ap.add_argument('--thecov-random-files', type=int, default=None, help='random files for the thecov stage (default: the pipeline config)')
     ap.add_argument('--tree-params', default=None, help='ssc_check npz (<region>/params, damping, plin_*) for the tree discreteness terms')
     ap.add_argument('--cs-version', default=None, help='catalogue/spectra version, e.g. abacus-2ndgen-dr2-complete (default holi-v3-altmtl)')
     ap.add_argument('--own-power', action='store_true', help="thecov stage: the mock's own measured P_l instead of the mocks' mean")
     args = ap.parse_args(argv)
+    dc.SHOTNOISE_WINDOW = args.shotnoise_window
     {'thin': thin, 'thecov': thecov_stage, 'report': report}[args.stage](args)
 
 

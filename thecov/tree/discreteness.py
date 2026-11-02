@@ -61,9 +61,15 @@ class DiscretenessCovariance:
         # int S g = alpha sum_r scale w_r^2 g(x_r) (the data's sum w^2 g, as for the shot-noise window);
         # the local value S(x) = scale nbar <w^2> = scale W <w^2>/<w> (global weight ratio, so that per-object
         # weight scatter does not turn <w^2>^2 into <w^3><w>)
-        r = np.sum(w ** 2) / np.sum(w)
-        J_SWW = a * np.sum(sc * w ** 2 * W ** 2) / norm ** 2
-        J_SS = a * np.sum(sc * w ** 2 * sc * r * W) / norm ** 2
+        g = np.asarray(T.shotnoise_galaxy_weights, float)       # w_r^2 by default; w_r <w_g^2>/<w_g> when given (DESI weights)
+        if T.shotnoise_galaxy_weights is not None and g is not None and np.any(g != w ** 2):
+            with np.errstate(divide='ignore', invalid='ignore'):   # local S(x) = scale W g / w, the galaxies' own <w^2>/<w>
+                S_loc = np.where(w != 0, sc * W * g / w, 0.0)
+        else:
+            r = np.sum(w ** 2) / np.sum(w)
+            S_loc = sc * r * W
+        J_SWW = a * np.sum(sc * g * W ** 2) / norm ** 2
+        J_SS = a * np.sum(sc * g * S_loc) / norm ** 2
         return J_SWW, J_SS
 
     def _B(self, k1, k2):

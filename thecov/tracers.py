@@ -24,9 +24,15 @@ window_weighting (how the clustering window sees the weights). The clustering wi
     the auto window ~ <w^2> instead of <w>^2, too large by 1 + var(w) / <w>^2. 'nearest' (default): W = nbar <w>_k,
     <w>_k the mean weight of the k_nearest nearest other randoms (3D); 'own': W = nbar w_r. Both agree for
     constant weights. Every random still carries its own weight as a sampling weight and in the shot-noise window.
-The shot-noise window has the randoms' own integral, int S = (1 + alpha) alpha sum_r w_r^2; when the estimator
-subtracted a different one (PowerSpectrum.shotnoise, pypower / jaxpower `num_shotnoise`), the covariance scales it
-(GaussianCovariance.shotnoise_scale).
+The shot-noise window S = n_g <w_g^2> + alpha'^2 n_r <w_r^2> is sampled by the randoms with weights
+s_r = g_r + alpha' w_r^2 (Tracer.shotnoise_weights): int S = alpha sum_r s_r. By default g_r = w_r^2 and
+alpha' = alpha, i.e. (1 + alpha) alpha sum_r w_r^2, each random standing for a galaxy with its own weight. That is
+wrong in SHAPE when the randoms' weights are not distributed like the galaxies' -- in DESI the completeness enters the
+galaxies as 1/C and the randoms as C, so n_r <w_r^2> is anti-correlated with n_g <w_g^2> and the shot-noise terms of
+the covariance (int W^2 S, int S^2) come out too large where the weights vary (15 % for ELGs, a few % for LRGs and
+QSOs); pass shotnoise_weights = w_r <w_g^2>/<w_g> (the moments from the nearest galaxies) and alpha_shotnoise for
+the randoms' own noise. When the estimator subtracted a different total (PowerSpectrum.shotnoise, pypower / jaxpower
+`num_shotnoise`), the covariance scales S to it (GaussianCovariance.shotnoise_scale).
 
 Cross windows W^{AB} are sampled by the randoms of A, with W_B taken from the nearest random of B and set to
 zero when that random is farther than `mask_factor` x the LOCAL spacing of B's randoms, so that B's footprint is
@@ -35,7 +41,7 @@ for cross windows, and check I_AB against an independent estimate (it is exposed
 
 Windows (eq. windows of the note), each sampled by the randoms of its host (the first tracer):
     W^{AB}(x) = W_A W_B                  (clustering; or W_A (K_b * W_B) with kernel smoothing)
-    S^{A}(x)  = (1 + alpha_A) W_A w_A    (shot noise)
+    S^{A}(x)  = W_A s_A / w_A            (shot noise; (1 + alpha_A) W_A w_A by default)
     M^{A}(x)  = W_A                      (mean weighted density; used by the super-sample covariance)
 """
 from __future__ import annotations
@@ -112,7 +118,8 @@ class Tracer:
     """
 
     def __init__(self, name: str, positions, weights=None, alpha=None, nbar='auto', window_weighting: str = 'nearest',
-                 k_nearest: int = 32, mask_factor: float = 2.5, mask_knn: int = 8, knn: int = 64):
+                 k_nearest: int = 32, mask_factor: float = 2.5, mask_knn: int = 8, knn: int = 64,
+                 shotnoise_weights=None, alpha_shotnoise=None):
         self.name = str(name)
         legacy = isinstance(positions, dict)
         if legacy:
@@ -129,6 +136,14 @@ class Tracer:
         if self.weights.shape != (self.size,):
             raise ValueError('weights must have one value per random')
         self.alpha = float(alpha)
+        # Shot-noise window S = (galaxies' own sum_g w_g^2 delta_D) + (alpha' randoms' sum_r w_r^2 delta_D), sampled by the
+        # randoms with weights s_r = g_r + alpha' w_r^2: alpha sum_r s_r f(x_r) ~ int S f. Default g_r = w_r^2 (each random
+        # standing for a galaxy with its own weight) and alpha' = alpha. When the randoms' weights are not distributed
+        # like the galaxies' (DESI: completeness enters the galaxies as 1/C and the randoms as C, so n_r <w_r^2> is
+        # anti-correlated with n_g <w_g^2>), pass g_r = w_r <w_g^2>/<w_g> at the random from the nearest galaxies.
+        self.shotnoise_galaxy_weights = (self.weights ** 2 if shotnoise_weights is None
+                                         else self._as_array(shotnoise_weights, 'shotnoise_weights'))
+        self.alpha_shotnoise = self.alpha if alpha_shotnoise is None else float(alpha_shotnoise)
         self._tree = None
         self._subsamples = {}
         if legacy:
@@ -226,13 +241,28 @@ class Tracer:
             self._subsamples[(n, seed)] = np.sort(rng.choice(self.size, size=min(n, self.size), replace=False))
         return self._subsamples[(n, seed)]
 
+    @property
+    def shotnoise_weights(self) -> np.ndarray:
+        """s_r = g_r + alpha' w_r^2: alpha sum_r s_r f(x_r) ~ int S f (the full shot-noise window, galaxies and randoms)."""
+        return self.shotnoise_galaxy_weights + self.alpha_shotnoise * self.weights ** 2
+
+    def _nearest(self, positions: np.ndarray):
+        """(inside, idx) of the nearest random to each position (inside: within mask_factor x the local spacing)."""
+        d, idx = self.tree.query(positions, k=1)
+        return d <= self.mask_factor * self.random_spacing[idx], idx
+
+    def _nearest_at_randoms_of(self, other: "Tracer"):
+        cache = self.__dict__.setdefault('_nearest_of', {})
+        if other.name not in cache:
+            cache[other.name] = self._nearest(other.positions)
+        return cache[other.name]
+
     def density_and_weight_at(self, positions: np.ndarray):
         """(W(x), w(x)) at arbitrary positions: the smooth mean weighted density and the weight of the nearest random
         (both zero outside the footprint)."""
         if positions is self.positions:
             return self.weighted_density, self.weights
-        d, idx = self.tree.query(positions, k=1)
-        inside = d <= self.mask_factor * self.random_spacing[idx]
+        inside, idx = self._nearest(positions)
         return np.where(inside, self.weighted_density[idx], 0.0), np.where(inside, self.weights[idx], 0.0)
 
     def density_and_weight_at_randoms_of(self, other: "Tracer"):
@@ -242,8 +272,21 @@ class Tracer:
             return self.weighted_density, self.weights
         cache = self.__dict__.setdefault('_at_randoms_of', {})
         if other.name not in cache:
-            cache[other.name] = self.density_and_weight_at(other.positions)
+            inside, idx = self._nearest_at_randoms_of(other)
+            cache[other.name] = (np.where(inside, self.weighted_density[idx], 0.0), np.where(inside, self.weights[idx], 0.0))
         return cache[other.name]
+
+    def shotnoise_density_at_randoms_of(self, other: "Tracer"):
+        """S(x) at the randoms of `other`: W s / w of the nearest random of this tracer (nbar <w> x s / w ~ nbar <s>, the
+        mean shot-noise density; (1 + alpha) W w for the default weights). Zero outside the footprint."""
+        if other is self:
+            W, w, s, inside = self.weighted_density, self.weights, self.shotnoise_weights, None
+        else:
+            inside, idx = self._nearest_at_randoms_of(other)
+            W, w, s = self.weighted_density[idx], self.weights[idx], self.shotnoise_weights[idx]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            S = np.where(w != 0, W * s / w, 0.0)
+        return S if inside is None else np.where(inside, S, 0.0)
 
 
 class Window:
@@ -287,7 +330,8 @@ class Window:
 
             W^{AB}: w_r W_B(x_r)              (W_A at the random is carried by the sampling itself)
             W_b^{AB}: w_r (K_b * W_B)(x_r)
-            S^A:    (1 + alpha) w_r^2         (each random with its OWN weight: the shot noise is <w^2>)
+            S^A:    s_r = g_r + alpha' w_r^2  (Tracer.shotnoise_weights; (1 + alpha) w_r^2 by default: each random
+                                              with its OWN weight, the shot noise is <w^2>)
             M^A:    w_r
         """
         A = self.host
@@ -300,14 +344,15 @@ class Window:
             elif self.kind == MEAN_DENSITY:
                 cache[self.key] = np.asarray(A.weights, float).copy()
             else:
-                cache[self.key] = (1.0 + A.alpha) * A.weights ** 2
+                cache[self.key] = np.asarray(A.shotnoise_weights, float)
         return cache[self.key]
 
     def values_at_randoms_of(self, T: Tracer) -> np.ndarray:
         """omega(x) at the randoms of T (nearest-random interpolation of the other tracers; cached on T).
 
-        For S the nearest random's weight stands in for w(x): (1 + alpha) W w, whose average is exact for a smooth
-        weight and ~<w>^2/<w^2> low with per-object weights; it only enters the s = 0 anchor of window pairs with S.
+        For S the nearest random's s / w stands in for <s>/<w> (x): W s / w, i.e. (1 + alpha) W w by default, whose
+        average is exact for a smooth weight and ~<w>^2/<w^2> low with per-object weights; it only enters the s = 0
+        anchor of window pairs with S.
         """
         cache = T.__dict__.setdefault('_window_values', {})
         if self.key not in cache:
@@ -320,7 +365,7 @@ class Window:
             elif self.kind == MEAN_DENSITY:
                 cache[self.key] = W_host
             else:
-                cache[self.key] = (1.0 + self.host.alpha) * W_host * w_host
+                cache[self.key] = self.host.shotnoise_density_at_randoms_of(T)
         return cache[self.key]
 
     def integral(self) -> float:

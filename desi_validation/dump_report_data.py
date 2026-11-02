@@ -46,6 +46,8 @@ def main():
     ap.add_argument('--n-randoms-max', type=float, default=None, help='randoms kept for thecov, all regions (default: Config)')
     ap.add_argument('--regions', nargs='+', default=None, help='regions (default NGC SGC GCcomb)')
     ap.add_argument('--cache-tag', default='', help='separate window/covariance caches for this variant (e.g. _p1e10)')
+    ap.add_argument('--shotnoise-window', default='randoms', choices=['randoms', 'galaxies'],
+                    help="thecov shot-noise window: the randoms' own w^2 (default) or the galaxies' <w^2> at the randoms (desi_compare.build_tracer)")
     ap.add_argument('--factors', nargs='+', type=int, default=[2, 4], help='wider bins: 0.005 x factor')
     ap.add_argument('--no-naive', action='store_true', help='skip the naive (own-weight) window covariance')
     ap.add_argument('--cs-version', default=None)
@@ -53,6 +55,7 @@ def main():
     ap.add_argument('--mock', type=int, default=None)
     ap.add_argument('--synthetic', default=None, help=argparse.SUPPRESS)     # testing on the synthetic set
     args = ap.parse_args()
+    dc.SHOTNOISE_WINDOW = args.shotnoise_window
 
     paths = dc.Paths(kind='holi_v3', mock=173)
     paths.catalog_names.update({'ELG_LOPnotqso': 'ELGnotqso', 'LRG+ELG_LOPnotqso': 'LRG+ELGnotqso'})
@@ -64,7 +67,8 @@ def main():
         paths.spectra_dir = args.spectra_dir or paths.spectra_dir
         paths.mock = paths.mock if args.mock is None else args.mock
         OUT = os.path.expanduser(f'~/thecov_desi/{paths.cs_version}_mock{paths.mock}')
-    extra = dict(fill_nside=args.fill_nside, cache_tag=args.cache_tag)
+    # the S window changes the cached covariances (not the clustering windows' kernels): separate caches
+    extra = dict(fill_nside=args.fill_nside, cache_tag=args.cache_tag + ('_sg' if args.shotnoise_window == 'galaxies' else ''))
     if args.target_near_pairs:
         extra['target_near_pairs'] = args.target_near_pairs
     if args.kernel_cell:

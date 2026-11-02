@@ -46,6 +46,10 @@ TRACER_SPECS = {
     'QSO': ('QSO', (0.8, 2.1)),
 }
 
+# Shot-noise window of build_tracer when not given: 'randoms' (thecov default) or 'galaxies' (see build_tracer);
+# scripts set it from --shotnoise-window
+SHOTNOISE_WINDOW = 'randoms'
+
 # FKP P0 of the DESI LSS catalogues (only used to cross-check WEIGHT_FKP against NX)
 FKP_P0 = {'LRG': 1e4, 'ELG': 4e3, 'QSO': 6e3, 'BGS': 7e3}
 
@@ -715,7 +719,7 @@ def _median_ratio(m, r, sel):
 
 def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, surface_density_deg2=2500.0,
                  k_mean=32, k_ang=128, nside=8, shotnoise='realised', nw='random-density', seed=0, cosmo=None, verbose=True,
-                 shotnoise_target=None, fill=None, kernel_field=None):
+                 shotnoise_target=None, fill=None, kernel_field=None, shotnoise_window=None, k_shotnoise=64):
     """A thecov Tracer from one or several regions (several: the combined NGC+SGC catalogue of a
     single estimate, with each region's randoms renormalised to the global alpha, as in
     catalogs.normalize_and_concatenate).
@@ -739,16 +743,25 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
     shotnoise_target : if given, the integral of S instead (use the spectra's mean `num_shotnoise`:
                 the catalogue value depends on how many random files are loaded here, through
                 alpha^2 sum_r w^2 ~ alpha sum_d w^2, while the spectra used their own number).
+    shotnoise_window : 'randoms' -- S sampled with each random's own w_r^2 (thecov default: the randoms' weights stand
+                for the galaxies'); 'galaxies' -- S = n_g <w_g^2> from the galaxies: each random carries
+                w_r x (sum w_g^2 / sum w_g) of its k_shotnoise nearest galaxies (3D), plus alpha' w_r^2 for the
+                randoms' own noise, alpha' from shotnoise_target (else the loaded randoms' alpha). DESI randoms carry
+                the completeness as a down-weight (C) where the galaxies carry 1/C, so their w^2 is anti-correlated
+                with the galaxies' and 'randoms' overestimates int W^2 S and int S^2 (15 % for ELGs, 3-7 % LRG, 3 % QSO).
     Returns (tracer, info); tracer.shotnoise holds the chosen int S (for PowerSpectrum(shotnoise=...)), which
     thecov_covariance uses.
     """
     from thecov import Tracer
+    if shotnoise_window is None:
+        shotnoise_window = SHOTNOISE_WINDOW
     rng = np.random.default_rng(seed)
     wsum_d = [float(np.sum(total_weight(rc.data, scheme))) for rc in regions]
     wsum_r = [float(np.sum(total_weight(rc.randoms, scheme))) for rc in regions]
     alpha_glob = sum(wsum_d) / sum(wsum_r)
-    pos, w, mw, nz = [], [], [], []
+    pos, w, mw, nz, gsn = [], [], [], [], []
     sn_real = 0.0
+    sum_w2_data = 0.0
     info = {'regions': {}}
     n_tot = sum(len(rc.randoms['Z']) for rc in regions)
     keep_frac = min(1.0, n_randoms_max / n_tot)
@@ -758,6 +771,7 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
         wr = total_weight(r, scheme)
         wd = total_weight(rc.data, scheme)
         sn_real += float(np.sum(wd ** 2) + a_reg ** 2 * np.sum(wr ** 2))
+        sum_w2_data += float(np.sum(wd ** 2))
         p = sky_to_cartesian(r['RA'], r['DEC'], r['Z'], cosmo)
         rho, omega = random_density(rc, surface_density_deg2, cosmo=cosmo)
         sel = rng.random(len(wr)) < keep_frac          # subsample: m is unchanged, alpha rescales
@@ -768,6 +782,16 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
         # renormalise this region's random weights to the global alpha (only matters for >1 region)
         wsc = wr[sel] * (a_reg / alpha_glob)
         pos.append(p[sel]); w.append(wsc)
+        if shotnoise_window == 'galaxies':                  # q(x) = <w_g^2>/<w_g> of the nearest galaxies at each random
+            from scipy.spatial import cKDTree
+            pd_ = sky_to_cartesian(rc.data['RA'], rc.data['DEC'], rc.data['Z'], cosmo)
+            kq = min(int(k_shotnoise), len(wd))
+            _, idx = cKDTree(pd_).query(p[sel], k=kq, workers=-1)
+            q = np.sum(wd[idx] ** 2, axis=1) / np.sum(wd[idx], axis=1)
+            gsn.append(wsc * q)                             # alpha sum_r w_r q f -> int W q f = sum_g w_g^2 f
+            del pd_, idx
+        elif shotnoise_window != 'randoms':
+            raise ValueError(f"shotnoise_window must be 'randoms' or 'galaxies', not {shotnoise_window!r}")
         if m is not None:
             mw.append(m)
         nz.append(np.asarray(r['NX'], float)[sel] if 'NX' in r else np.zeros(sel.sum()))
@@ -782,17 +806,27 @@ def build_tracer(name, regions, scheme='default-FKP', n_randoms_max=4_000_000, s
         randoms['NZ'] = nz
     else:
         randoms['NW'] = np.concatenate(mw)
-    sn_rand = (1 + alpha) * alpha * float(np.sum(w ** 2))
+    tracer_kw = {}
+    if shotnoise_window == 'galaxies':
+        g = np.concatenate(gsn)
+        target = float(shotnoise_target) if shotnoise_target is not None else sn_real
+        a_sn = max((target - sum_w2_data), 0.0) / (alpha * float(np.sum(w ** 2)))   # alpha': alpha sum_r a' w_r^2 = the randoms' noise
+        tracer_kw = dict(shotnoise_weights=g, alpha_shotnoise=a_sn)
+        sn_rand = alpha * float(np.sum(g + a_sn * w ** 2))
+        info.update(shotnoise_galaxies_over_data=alpha * float(np.sum(g)) / sum_w2_data, alpha_shotnoise=a_sn,
+                    shotnoise_randoms_over_own=alpha * float(np.sum(w ** 2)) / sum_w2_data)
+    else:
+        sn_rand = (1 + alpha) * alpha * float(np.sum(w ** 2))
     scale = sn_real / sn_rand if shotnoise == 'realised' else 1.0
     if shotnoise_target is not None:
         scale = float(shotnoise_target) / sn_rand
-    tr = Tracer(name, randoms, alpha)
+    tr = Tracer(name, randoms, alpha, **tracer_kw)
     tr.shotnoise = scale * sn_rand        # the estimator's int S for this catalogue: give it to the PowerSpectrum
     info.update(alpha=alpha, shotnoise_scale=scale, shotnoise_numerator=sn_real, keep_frac=keep_frac,
-                nw=nw, n_randoms=len(w))
+                nw=nw, n_randoms=len(w), shotnoise_window=shotnoise_window)
     if verbose:
         print(f"[{name}] {len(w)} randoms (fraction {keep_frac:.3f}), alpha={alpha:.4g}, "
-              f"shot-noise scale {scale:.4f}, NW from '{nw}'")
+              f"shot-noise scale {scale:.4f}, NW from '{nw}', S window from {shotnoise_window}")
     return tr, info
 
 

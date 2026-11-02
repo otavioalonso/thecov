@@ -55,7 +55,8 @@ J_alpha = int nbar<w^2> W / int W, J_D = int nbar<w^2> W^2 / int W^2 (a galaxy c
 pair), J3_alpha = int W^3 / int W, J3_D = int W^4 / int W^2 (the collapsed tree-level bispectrum
 B_c = 2 Z2(k, -k) Z1^2 P_lin^2, Z2(k, -k) = b2/2 + bs2/3). For a uniform window, unit weights and alpha
 only this is WS20's -2/N, -2/N, +1/N (their eq. 44 discreteness terms); with jaxpower's norm, -8/N + 4/N.
-Galaxy sums use the randoms: sum_g w^2 g = alpha sum_r scale w_r^2 g (scale = GaussianCovariance.shotnoise_scale).
+Galaxy sums use the randoms: sum_g w^2 g = alpha sum_r scale g_r g (g_r = Tracer.shotnoise_galaxy_weights, w_r^2 by
+default; scale = GaussianCovariance.shotnoise_scale).
 
 Scope: auto-spectra of one tracer (cross spectra need the responses of two tracers; not implemented).
 The local window W_A W_B is used for the long-mode shape (long modes do not resolve veto holes); its
@@ -277,7 +278,7 @@ class SuperSampleCovariance:
         """Var_P(eps_N) and (J_alpha + J_D, J3_alpha + J3_D) from the host randoms (see module docstring)."""
         T = self.cov._tracer(A)
         a, w, W = T.alpha, np.asarray(T.weights, float), np.asarray(T.weighted_density, float)
-        w2 = a * self.cov.shotnoise_scale(A) * w ** 2                    # sum_g w^2 g  ->  sum_r w2_r g(x_r)
+        w2 = a * self.cov.shotnoise_scale(A) * np.asarray(T.shotnoise_galaxy_weights, float)   # sum_g w^2 g -> sum_r w2_r g(x_r)
         I_M, I_W = a * np.sum(w), a * np.sum(w * W)
         # alpha sum w W is the randoms' int W^2; cov.I(A, A) may instead be the estimator's own norm (DESI: the cell-based
         # alpha sum_c D_c R_c / V_c, ~ 0.82 int W^2 for LRG1). The Poisson weights below use the randoms' integrals in both
