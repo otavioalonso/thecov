@@ -37,6 +37,16 @@ from desi_validation import disc_multipoles as dm  # noqa: E402
 CAPS = ('NGC', 'SGC')
 ELLS = (0, 2, 4)
 EXCLUDED_LRG = [122, 131, 166, 218, 470, 573, 664, 667, 699, 746, 793, 880]    # HANDOFF 8.4 (defective n(z)); also the >5-sigma
+# ELG mocks 24-41 (26 and 34 are in the dubious set already): a coherent P0 offset in every one of them, +2% (ELG1, k > 0.05)
+# and -2 to -3% (ELG2, k > 0.15), 4-8 sigma per mock, with unchanged N_gal; LRG and QSO of the same ids are normal. Their
+# common offset masqueraded as a +6% non-Gaussian excess in the high-k P0 covariance of the ELGs (2026-11-04).
+EXCLUDED_ELG = [24, 25, 27, 28, 29, 30, 31, 32, 33, 35, 36, 37, 38, 39, 40, 41]
+EXCLUDED = {'LRG': EXCLUDED_LRG, 'ELG': EXCLUDED_ELG}
+
+
+def excluded_for(tracer_bin):
+    """mock ids excluded for a tracer bin (by tracer prefix)"""
+    return next((v for k_, v in EXCLUDED.items() if tracer_bin.startswith(k_)), [])
                                                                                # high-k P0 outliers of LRG3 (and LRG2): excluded for every LRG bin
 KB = ((0.02, 0.1), (0.1, 0.2), (0.2, 0.3))
 
@@ -134,7 +144,7 @@ def main():
     for r in CAPS + ('GCcomb',):
         V, ids = R[f'{b}/{r}/x1/V'].astype(float), R[f'{b}/{r}/x1/mock_ids']
         ids = np.array([int(str(i).replace('mock', '')) for i in ids])          # ids are 'mock<N>' strings
-        keep = ~np.isin(ids, EXCLUDED_LRG) if b.startswith('LRG') else np.ones(len(ids), bool)
+        keep = ~np.isin(ids, excluded_for(b))
         vecs[r] = V[keep]
         norms[r] = float(R[f'{b}/{r}/x1/norm'][keep].mean())
         if r in CAPS:
