@@ -1312,3 +1312,27 @@ units sqrt(lin_ii lin_jj)): Poisson null, 12 realisations, 12x randoms: lin - li
 and 0.141 (|i-j| = 1). Gaussian field (sigma 0.2, B = 0), 12 realisations: quad_R = 0.0024 +- 0.0001 (diag and |i-j| = 1 alike,
 no ridge) and lin - lin_R - 2 quad_R = -0.0001 +- 0.0013 (diag), -0.0008 +- 0.0009 (|i-j| = 1). Real-footprint Poisson test pending
 (Perlmutter key).
+
+**Real-footprint results (2026-11-11; `catcov/LRG1_NGC_mock173_{poisson1_rs,rs_randoms,rs_galaxies}`, `responses/rand_sub/`).**
+- Poisson null (mock 173 footprint, production binning, 1.41M randoms in lin_R): quad_R / lin = -0.00002 in every band at |i-j| = 0, 1, 2, 4
+  (galaxy-only quad 0.46 / 0.16 / 0.028 / 0.0075); (lin - lin_R) / sqrt(lin_ii lin_jj) within +-0.0036 in all nine blocks and offsets, no
+  ridge structure. Passes; the |i-j| <= 1 ridge cancels in the real binning.
+- lin_R vs thecov's g1 (= G_PS/r + 2 G_SS/r) on mock 173: with thecov's galaxies-window run (`best_LRG1_NGC_sg`, ce233a8) and s from the
+  galaxies, lin_R exceeds g1 by +1.2-1.8 % (P0, P2) and +2.3-3.6 % (P4), the same sign and size as the Poisson-test S x S offset
+  (section 17): thecov's shot-noise terms are ~1.5 % low, P x S included (GRF test, 28 Oct runs: residual after the per-bin S x S
+  calibration within +-3 % of G_PS/r for P0, P2, +-6 % for P4). With s = w_r^2 (randoms' weights) lin_R is 3 % higher than with s from
+  the galaxies: the randoms' w^2 misplace the galaxies' w^2 density (completeness carried as C vs 1/C).
+- **The negative l > 0 B/n of sections 16-18 was an S-window artefact.** B/n = lin - lin_R - 2 P/n^2 with s from the galaxies (units G,
+  bands 0.02-0.05/0.05-0.1/0.1-0.2/0.2-0.3): P0xP0 0.0058/0.0239/0.0759/0.1437 (tree 0.0063/0.0254/0.0637/0.0829); P2xP2
+  -0.0003/0.0016/0.0107/0.0252 (tree 0.0006/0.0039/0.0148/0.0253); P4xP4 -0.0011/-0.0006/0.0022/0.0076 (tree -0.0001/0.0005/0.0048/
+  0.0124); cross blocks as before. With s = w_r^2 the l > 0 terms go negative (P4xP4 down to -0.019): the old route used thecov's
+  randoms-window g1, which carries the same misplacement. P/n^2 (0,0) = quad_R: 0.0069/0.0252 at 0.1-0.2/0.2-0.3 (tree 0.0064/0.0209;
+  off-diagonal ratio 1.12), smooth across |i-j| = 0..5 (0.0252/0.0252/0.0250/0.0248/.../0.0242): the old route's 0.0212 on the diagonal
+  was depressed by the ridge (0.024 at |i-j| >= 2). B/n (0,0) at 0.2-0.3 vs |i-j| = 0..5: 0.144/0.147/0.149/0.150/0.149/0.150 (old route
+  0.136/0.134/0.144/...): the continuity patch is no longer needed.
+- Consequence for section 18's Abacus conclusion ("fibre assignment flips the l > 0 B/n sign"): suspect, since the altmtl randoms carry
+  completeness and the complete ones do not; Abacus complete/altmtl and mock 174 rerun with --rand-sub 2 --rand-sw galaxies (queued).
+- Wishart vs 848 mocks, + SSC, G at the files' S (P0/P2/P4/P0+P2/P0+P2+P4; min eig): G(randoms window) + old hybrid 881/902/826/3548/8119
+  (0.925); G(galaxies window) + tree 929/901/832/3593/8294; G(galaxies window) + new measured everywhere 882/911/841/3551/8215 (0.903);
+  G(galaxies window) + new hybrid 882/901/832/3539/8416 (0.710: mixing measured (0,0) with tree cross blocks costs PD margin). With the
+  galaxies window the P0 mock/model diagonal at 0.2-0.3 is 1.077 (measured disc) without T0.
