@@ -1336,3 +1336,17 @@ no ridge) and lin - lin_R - 2 quad_R = -0.0001 +- 0.0013 (diag), -0.0008 +- 0.00
   (0.925); G(galaxies window) + tree 929/901/832/3593/8294; G(galaxies window) + new measured everywhere 882/911/841/3551/8215 (0.903);
   G(galaxies window) + new hybrid 882/901/832/3539/8416 (0.710: mixing measured (0,0) with tree cross blocks costs PD margin). With the
   galaxies window the P0 mock/model diagonal at 0.2-0.3 is 1.077 (measured disc) without T0.
+
+**Abacus complete/altmtl and holi mock 174 with --rand-sub 2 --rand-sw galaxies (2026-11-11; `responses/rand_sub/abacus_and_mock174_rs_galaxies.txt`).**
+Units: complete (Abacus) / mock-173 (holi) G diagonal; bands 0.02-0.05/0.05-0.1/0.1-0.2/0.2-0.3; ratios to tree at 0.1-0.2 / 0.2-0.3.
+- Abacus P0xP0 B/n: complete 0.055/0.101 (1.19x/1.53x tree), altmtl 0.080/0.143 (0.98x/1.22x). P2xP2: complete 0.010/0.024 (1.0x/1.2x),
+  altmtl 0.012/0.032 (0.64x/0.89x). P4xP4: complete 0.0034/0.0096 (1.0x/0.95x), altmtl 0.0008/0.0067 (0.13x/0.37x). P/n^2 off-diagonal
+  ratio to tree 1.34 (complete) / 1.13 (altmtl).
+  => **Section 18's "fibre assignment flips the l > 0 B/n sign" is retracted**: it was the randoms' w^2 window (altmtl randoms carry
+  completeness). Fibre assignment SUPPRESSES the anisotropic one-shared-galaxy term relative to tree (P4 0.1-0.4x, P2 0.6-0.9x; the
+  removal of close transverse pairs) and removes most of the P0 and P/n^2 one-halo excess; it does not make it negative.
+- holi 173 vs 174 now agree to <= 0.005 G in every block (previous route: ~0.01 G): P0xP0 0.0759/0.1437 vs 0.0746/0.1386; P2xP2 0.0107/0.0252
+  vs 0.0112/0.0252; P4xP4 0.0022/0.0076 vs 0.0015/0.0063; P0xP2 0.0100/0.0107 vs 0.0082/0.0050; P/n^2 (0,0) 0.0069/0.0252 vs 0.0069/0.0251.
+  The realised-P leakage is gone, as expected from the random subtraction using the catalogue's own long modes.
+Recommendation: random subtraction with the galaxies' w^2 density (`--rand-sub 2 --rand-sw galaxies`) for the measured terms in every block
+(no hybrid, no continuity patch); thecov's Gaussian with the galaxies shot-noise window; its ~1.5 % shot-noise deficit is a separate Paper 1 item.
