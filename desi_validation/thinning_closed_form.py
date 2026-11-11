@@ -35,7 +35,8 @@ from desi_validation.grf_randoms import NTH, log  # noqa: E402
 from desi_validation.thinning_cov import KR, setup_mock  # noqa: E402
 
 
-def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum0, Wd=None, shells=None, part_fn=None):
+def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum0, Wd=None, shells=None, part_fn=None,
+                     rsub=None):
     """Linear (one shared galaxy, B/n-like) thinning term for the multipoles, all (l, l') blocks.
 
     With the end-point line of sight of the estimator, F_l(k) = sum w L_l(k.x_g) e_g(k) (galaxies minus alpha randoms)
@@ -46,6 +47,12 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
     (L_2 = 3/2 (k.x)^2 - 1/2, L_4 = 35/8 (k.x)^4 - 15/4 (k.x)^2 + 3/8; (k.x)^n = sum_T mult_T k^T x^T), so per shell
     the galaxies need type-2 transforms of F_0^* k^T (6 + 15 tensors), of F_0^*, F_2^*, F_4^*, batched. The g = h
     terms vanish for l > 0 up to the grid anisotropy of a shell (<L_l>_shell = 0), as in the estimator.
+
+    rsub = dict(x, w, s) (random subtraction, 2026-11-11): the same sum over a subsample of the randoms, each random r carrying
+    the galaxies' w^2 density s_r (normalised to sum_g w_g^2), with the realised F (its own -alpha w_r e_r removed) and a
+    galaxy-like self term: lin_R = sum_r c_r a_r a_r^T. In expectation lin_R is the unclustered part of lin, i.e. thecov's g1
+    = G_PS/r + 2 G_SS/r, but evaluated with THIS catalogue's long modes and on the grid shells, so lin - lin_R = B/n + 2 P/n^2
+    without thecov's model (and without its realised-P leakage, shell-count and pair-sampling errors). Returned as lin_ell_R.
     """
     import finufft
     import scipy.fft as sfft  # noqa: F401
@@ -103,10 +110,47 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
     Gb = {l: np.empty((nb, len(wd))) for l in ells}
     thd = [t.astype(np.float32) for t in th(xd)] if single else th(xd)
     opts2 = dict(opts, eps=max(opts['eps'], 1e-5)) if single else opts
+    if rsub is not None:                               # random subtraction: positions, x-hat tensors, weights of the subsample
+        xs, ws_, ss_ = rsub['x'], rsub['w'], rsub['s']
+        c_r = ss_ * (float(np.sum(wd ** 2)) / float(np.sum(ss_)))      # sum_r c_r f(x_r) ~ sum_g w_g^2 f(x_g)
+        weff = rsub.get('weff', ws_)                   # galaxy-equivalent weight in the self term (w_r when s = w_r^2)
+        sq = np.sqrt(c_r)
+        thr = [t.astype(np.float32) for t in th(xs)] if single else th(xs)
+        xhs = xs / np.linalg.norm(xs, axis=1)[:, None]
+        xtens_r = {}
+        for o in (2, 4):
+            xtens_r[o] = []
+            for t, mu in zip(*orders[o]):
+                xt = mu * np.ones(len(ws_))
+                for i_ in t:
+                    xt = xt * xhs[:, i_]
+                xtens_r[o].append(xt)
+        del xhs
+        Rb = {l: np.empty((nb, len(ws_))) for l in ells}
+        log(f'  random subtraction: {len(ws_)} randoms (sum c_r = sum_g w_g^2 = {float(np.sum(c_r)):.6g})')
     for i in (range(nb) if shells is None else shells):
         m = io3 == i
         stack = [np.where(m, Flc[l], 0) for l in ells] + [np.where(m, F0c * kt, 0) for o in (2, 4) for kt in ktens[o]]
-        v = finufft.nufft3d2(*thd, np.ascontiguousarray(np.array(stack, dtype=cdt)), isign=-1, **opts2).astype(np.complex128)
+        stack = np.ascontiguousarray(np.array(stack, dtype=cdt))
+        v = finufft.nufft3d2(*thd, stack, isign=-1, **opts2).astype(np.complex128)
+        if rsub is not None:
+            vr = finufft.nufft3d2(*thr, stack, isign=-1, **opts2).astype(np.complex128)
+            Kb = {o: [float(np.mean(kt[m])) for kt in ktens[o]] for o in (2, 4)}      # shell means of the k-hat tensors
+            vFr = {l: vr[j] for j, l in enumerate(ells)}
+            off = len(ells); Sr, Sb = {}, {}
+            for o in (2, 4):
+                Sr[o] = np.zeros(len(ws_), complex); Sb[o] = np.zeros(len(ws_))
+                for xt, kb in zip(xtens_r[o], Kb[o]):
+                    Sr[o] += xt * vr[off]; Sb[o] += xt * kb; off += 1
+            v0r = vFr[0]
+            Lr = {0: v0r, 2: 1.5 * Sr[2] - 0.5 * v0r, 4: 35 / 8 * Sr[4] - 15 / 4 * Sr[2] + 3 / 8 * v0r}
+            Lbar = {0: 1.0, 2: 1.5 * Sb[2] - 0.5, 4: 35 / 8 * Sb[4] - 15 / 4 * Sb[2] + 3 / 8}    # <L_l(k.x_r)>_shell
+            for l in ells:
+                a_r = ((2 * l + 1) * (vFr[l] + Lr[l]).real / nsh[i]
+                       + 2 * (2 * l + 1) * alpha * ws_ * Lbar[l]                          # remove the random's own -alpha w_r e_r
+                       + weff * (2 * (2 * l + 1) * Lbar[l] - (2.0 if l == 0 else 0.0))) / norm   # galaxy-like self term
+                Rb[l][i] = sq * a_r
+            del vr
         vF = {l: v[j] for j, l in enumerate(ells)}
         off = len(ells)
         S = {}
@@ -124,7 +168,8 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
     if part_fn is not None:                            # one job of a shell-split run: save these shells' rows, combine later
         sh = np.asarray(list(shells))
         part = dict(shells=sh, P1_ell=np.concatenate([P1[l] for l in ells]), ells=np.array(ells),
-                    **{f'Gb_{l}': Gb[l][sh].astype(np.float32 if single else np.float64) for l in ells})
+                    **{f'Gb_{l}': Gb[l][sh].astype(np.float32 if single else np.float64) for l in ells},
+                    **({f'Rb_{l}': Rb[l][sh].astype(np.float32 if single else np.float64) for l in ells} if rsub is not None else {}))
         if Wd is not None:
             part.update(u_M=wd / np.sum(wd), u_W=wd * Wd / np.sum(wd * Wd), la_I_M=float(np.sum(wd)), la_I_W=float(np.sum(wd * Wd)))
         np.savez(part_fn, **part)
@@ -133,6 +178,14 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
     G = np.vstack([Gb[l] for l in ells])
     lin = G @ G.T
     out_la = {}
+    if rsub is not None:
+        R = np.vstack([Rb[l] for l in ells])
+        out_la['lin_ell_R'] = R @ R.T
+        out_la['n_rsub'] = len(ws_)
+        d0 = np.diag(lin)[:nb]
+        log(f'  random-subtracted linear term: (lin - lin_R) / lin on the (0,0) diagonal, first / mid / last bin '
+            f'{1 - out_la["lin_ell_R"][0, 0] / d0[0]:+.3f} {1 - out_la["lin_ell_R"][nb // 2, nb // 2] / d0[nb // 2]:+.3f} '
+            f'{1 - out_la["lin_ell_R"][nb - 1, nb - 1] / d0[-1]:+.3f}')
     if Wd is not None:
         # Poisson noise of the realised normalisation (ssc.py, 'discreteness of the local average'): the estimator's alpha and
         # norm = alpha sum_c D_c R_c are sums over the galaxies, eps_N = sum_g eta_g u_g with u_M = w_g / sum w (alpha) and
@@ -152,6 +205,40 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
     return dict(ells=np.array(ells), lin_ell=lin, P1_ell=np.concatenate([P1[l] for l in ells]), **out_la)
 
 
+def quadratic_terms(thd, thr, wd, s_all, n2, L, edges, nb, nsh, norm, opts):
+    """P/n^2-like thinning term: galaxy-only (quad, contains the unclustered window part g2) and, if s_all is given, with the
+    randoms (positions thr, the galaxies' w^2 density s_all) in the w^2 field (quad_R = P/n^2 directly). n2: padded grid."""
+    import finufft
+    W2 = finufft.nufft3d1(*thd, (wd ** 2).astype(complex), (n2,) * 3, isign=-1, **opts)
+    PWs = [sfft.rfftn((np.abs(W2) ** 2).astype(np.float64), workers=NTH)]
+    if s_all is not None:                          # randoms in the w^2 field: the unclustered pair counts cancel before the shell average
+        a_s = float(np.sum(wd ** 2)) / float(np.sum(s_all))
+        W2 = W2 - a_s * finufft.nufft3d1(*thr, s_all.astype(complex), (n2,) * 3, isign=-1, **opts)
+        PWs.append(sfft.rfftn((np.abs(W2) ** 2).astype(np.float64), workers=NTH))
+        self_R = float(np.sum(wd ** 4)) + a_s ** 2 * float(np.sum(s_all ** 2))
+    del W2
+    ko2 = 2 * np.pi * np.fft.fftfreq(n2, d=L / n2)
+    KO2 = np.meshgrid(ko2, ko2, ko2, indexing='ij')
+    kom2 = np.sqrt(KO2[0] ** 2 + KO2[1] ** 2 + KO2[2] ** 2).ravel()
+    del KO2
+    io2 = np.digitize(kom2, edges) - 1
+    io2[(io2 < 0) | (io2 >= nb)] = nb
+    del kom2
+    assert np.array_equal(np.bincount(io2, minlength=nb + 1)[:nb], nsh), 'shells on the padded grid differ from the output grid'
+    io23 = io2.reshape(n2, n2, n2)
+    Qs = [np.zeros((nb, nb)) for _ in PWs]
+    for i in range(nb):
+        INDi = sfft.rfftn((io23 == i).astype(np.float64), workers=NTH)
+        for Q_, PW in zip(Qs, PWs):
+            corr = sfft.irfftn(np.conj(INDi) * PW, s=(n2,) * 3, workers=NTH).ravel()
+            Q_[i] = np.bincount(io2, corr, nb + 1)[:nb]
+    Qs = [Q_ / np.outer(nsh, nsh) for Q_ in Qs]
+    del PWs, io2, io23
+    quad = (2 * Qs[0] - 2 * float(np.sum(wd ** 4))) / norm ** 2      # M_1 and M_2 pieces (shells are symmetric under k -> -k), each minus g = h
+    quad_R = (2 * Qs[1] - 2 * self_R) / norm ** 2 if len(Qs) > 1 else None   # = P/n^2 directly (window part cancelled)
+    return quad, quad_R
+
+
 def combine_parts(od, nb):
     """assemble the multipole linear term of a shell-split run (tcf_part_*.npz) into the dict multipole_linear returns"""
     import glob
@@ -167,6 +254,13 @@ def combine_parts(od, nb):
     assert done.all(), f'shells missing from the parts: {np.flatnonzero(~done)}'
     G = np.vstack([Gb[l] for l in ells])
     out = dict(ells=np.array(ells), lin_ell=G @ G.T, P1_ell=parts[0]['P1_ell'])
+    if 'Rb_0' in parts[0].files:
+        Rb = {l: np.zeros((nb, len(parts[0][f'Rb_{l}'][0]))) for l in ells}
+        for q in parts:
+            for l in ells:
+                Rb[l][q['shells']] = q[f'Rb_{l}']
+        R = np.vstack([Rb[l] for l in ells])
+        out.update(lin_ell_R=R @ R.T, n_rsub=R.shape[1])
     if 'u_M' in parts[0].files:
         u = {'M': parts[0]['u_M'], 'W': parts[0]['u_W']}
         out.update({f'la_T_{X}': G @ u[X] for X in u})
@@ -193,6 +287,11 @@ def main(argv=None):
     ap.add_argument('--resume', action='store_true', help='reuse tcf_mono.npz (monopole linear + quadratic terms) from an earlier job')
     ap.add_argument('--stop-after-mono', action='store_true', help='save tcf_mono.npz and stop (first job of a split run)')
     ap.add_argument('--shells', type=int, nargs=2, default=None, metavar=('I0', 'I1'), help='multipole linear term for shells I0..I1-1 only, saved to tcf_part_I0_I1.npz')
+    ap.add_argument('--rand-sub', type=float, default=0.0, metavar='FACTOR',
+                    help='random-based subtraction of the unclustered (Gaussian) parts: lin_R from FACTOR x N_gal randoms, quad_R with the '
+                         'randoms in the w^2 field (0 = off)')
+    ap.add_argument('--rand-sw', default='randoms', choices=['randoms', 'galaxies'],
+                    help="the galaxies' w^2 density at the randoms: w_r^2, or w_r <w_g^2>/<w_g> of the 64 nearest galaxies")
     ap.add_argument('--combine', action='store_true', help='assemble the final file from tcf_mono.npz and the tcf_part_*.npz (no catalogue load)')
     args = ap.parse_args(argv)
     paths, cfg, od = setup_mock(args)
@@ -220,6 +319,20 @@ def main(argv=None):
     xr = dc.sky_to_cartesian(rc.randoms['RA'], rc.randoms['DEC'], rc.randoms['Z'])
     del rc
     alpha = float(np.sum(wd) / np.sum(wr))
+    rsub, s_all = None, None
+    if args.rand_sub > 0:                              # the galaxies' w^2 density carried by every random, and the subsample
+        if args.rand_sw == 'galaxies':
+            from scipy.spatial import cKDTree
+            _, idx = cKDTree(xd).query(xr, k=64, workers=-1)
+            s_all = wr * np.sum(wd[idx] ** 2, axis=1) / np.sum(wd[idx], axis=1)
+            del idx
+        else:
+            s_all = wr ** 2
+        nsub = min(len(wr), int(args.rand_sub * len(wd)))
+        sub = np.random.default_rng(2026).choice(len(wr), nsub, replace=False)
+        weff = wr[sub] if args.rand_sw == 'randoms' else np.full(nsub, np.sqrt(float(np.sum(wd ** 4)) / float(np.sum(wd ** 2))))
+        rsub = dict(x=xr[sub], w=wr[sub], s=s_all[sub], weff=weff)
+        log(f'  random subtraction on: {nsub} of {len(wr)} randoms, s from {args.rand_sw}')
     lo, hi = np.minimum(xd.min(0), xr.min(0)), np.maximum(xd.max(0), xr.max(0))
     L = args.pad * float(np.max(hi - lo))
     lo = 0.5 * (lo + hi) - 0.5 * L
@@ -272,31 +385,12 @@ def main(argv=None):
         t0 = time.time()
         qp = int(getattr(args, 'quad_pad', 2))
         n2 = qp * n
-        W2 = finufft.nufft3d1(*thd, (wd ** 2).astype(complex), (n2,) * 3, isign=-1, **opts)
-        pw = (np.abs(W2) ** 2).astype(np.float64)
-        del W2
-        PW = sfft.rfftn(pw, workers=NTH)
-        del pw
-        ko2 = 2 * np.pi * np.fft.fftfreq(n2, d=L / n2)
-        KO2 = np.meshgrid(ko2, ko2, ko2, indexing='ij')
-        kom2 = np.sqrt(KO2[0] ** 2 + KO2[1] ** 2 + KO2[2] ** 2).ravel()
-        del KO2
-        io2 = np.digitize(kom2, edges) - 1
-        io2[(io2 < 0) | (io2 >= nb)] = nb
-        del kom2
-        assert np.array_equal(np.bincount(io2, minlength=nb + 1)[:nb], nsh), 'shells on the padded grid differ from the output grid'
-        io23 = io2.reshape(n2, n2, n2)
-        Q = np.zeros((nb, nb))
-        for i in range(nb):
-            INDi = sfft.rfftn((io23 == i).astype(np.float64), workers=NTH)
-            corr = sfft.irfftn(np.conj(INDi) * PW, s=(n2,) * 3, workers=NTH).ravel()
-            Q[i] = np.bincount(io2, corr, nb + 1)[:nb]
-        Q = Q / np.outer(nsh, nsh)
-        del PW, io2, io23
-        quad = (Q + Q - 2 * float(np.sum(wd ** 4))) / norm ** 2          # M_1 and M_2 pieces (shells are symmetric under k -> -k), each minus g = h
+        quad, quad_R = quadratic_terms(thd, th(xr) if s_all is not None else None, wd, s_all, n2, L, edges, nb, nsh, norm, opts)
         log(f'  quadratic (P/n^2-like) term done ({time.time() - t0:.0f} s)')
 
         out = dict(k=k, P1=P1, lin=Gsum, quad=quad, alpha=alpha, norm=norm, n_gal=len(wd), quad_pad=qp)
+        if quad_R is not None:
+            out.update(quad_R=quad_R, rand_sw=args.rand_sw)
         np.savez(mono_fn, **out)
     if args.stop_after_mono:
         log(f'saved {mono_fn}; stopping (--stop-after-mono)')
@@ -307,9 +401,9 @@ def main(argv=None):
         if args.shells is not None:
             i0, i1 = args.shells
             multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum, Wd=Wd,
-                             shells=range(i0, i1), part_fn=os.path.join(od, f'tcf_part_{i0:02d}_{i1:02d}.npz'))
+                             shells=range(i0, i1), part_fn=os.path.join(od, f'tcf_part_{i0:02d}_{i1:02d}.npz'), rsub=rsub)
             return
-        out.update(multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum, Wd=Wd))
+        out.update(multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, norm, opts, th, Gsum, Wd=Wd, rsub=rsub))
     fn = os.path.join(od, 'thinning_closed_form.npz' if max(ells) == 0 else 'thinning_closed_form_ell' + ''.join(map(str, ells)) + '.npz')
     np.savez(fn, **out)
     if max(ells) > 0:                                  # the l = 0 report below needs thecov_p*.npz with the same ells; decompose offline

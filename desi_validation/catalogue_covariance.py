@@ -202,6 +202,8 @@ def main(argv=None):
     ap.add_argument('--grf-f', type=float, default=0.762); ap.add_argument('--grf-kc', type=float, default=0.4)
     ap.add_argument('--resume', action='store_true', help='skip the thinning stub and the measured discreteness when their outputs '
                     'are already in --out-dir (split one catalogue over several short jobs, e.g. the 30-min debug queue)')
+    ap.add_argument('--rand-sub', type=float, default=0.0, help='random-based subtraction in the measured discreteness (x N_gal randoms; 0 = off)')
+    ap.add_argument('--rand-sw', default='randoms', choices=['randoms', 'galaxies'])
     ap.add_argument('--discreteness-only', action='store_true', help='stop after the measured discreteness (first job of a split run)')
     ap.add_argument('--grf-power', default='input', choices=['input', 'realised'], help='thecov P for the GRF test: P_in unmasked, or the catalogue\'s realised P_l masked')
     args = ap.parse_args(argv)
@@ -233,7 +235,8 @@ def main(argv=None):
     if args.resume and os.path.exists(os.path.join(od, cf_name)):
         log(f'  resume: {cf_name} found, skipped')
     else:
-        tcf.main(common + ['--ells'] + ells + (['--single'] if args.single else []))
+        tcf.main(common + ['--ells'] + ells + (['--single'] if args.single else [])
+                 + (['--rand-sub', str(args.rand_sub), '--rand-sw', args.rand_sw] if args.rand_sub > 0 else []))
     T['measured_discreteness'] = time.time() - t0
     if args.discreteness_only:
         log('timings [s]: ' + ', '.join(f'{k_} {v:.0f}' for k_, v in T.items()) + ' (--discreteness-only: stopping here)')
@@ -260,6 +263,7 @@ def main(argv=None):
     out.update(k=cf['k'], lin_ell=cf['lin_ell'] if 'lin_ell' in cf.files else cf['lin'], quad=cf['quad'],
                P1_ell=cf['P1_ell'] if 'P1_ell' in cf.files else cf['P1'],
                **{key: cf[key] for key in cf.files if key.startswith('la_')})      # measured local-average Poisson vectors
+    out.update({q: cf[q] for q in ('lin_ell_R', 'quad_R', 'n_rsub') if q in cf.files})    # random-subtracted terms (--rand-sub)
     spectra = [(tr.name, tr.name)]
     if not args.no_t0:
         from thecov import TrispectrumCovariance

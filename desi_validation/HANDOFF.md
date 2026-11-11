@@ -1291,3 +1291,24 @@ HODDIES boxes x 3 LOS (x/y/z_rsd), 75 files, ~1 min each on one node.
 - Status of T0: the tree shape is right where it is perturbative (P2 hard 1.00); the squeezed blocks are 0.45 (P0, P0xP2) and 0.7 (P2)
   of tree; P0 hard 0.2-0.5. Measured per catalogue the squeezed amplitude would be ~ +-0.4 (one cutsky volume), so as a Paper 1/2
   input it is a simulation calibration (Abacus boxes), to be tested out of sample on the holi cutsky ensemble.
+
+## 23. Random-based subtraction of the unclustered parts of the measured discreteness (2026-11-11; `--rand-sub`, `rand_sub_toy.py`)
+
+Suggestion (user): subtract g1, g2 inside the estimator, by evaluating the same sums on the randoms, instead of from thecov's model.
+Implemented in `thinning_closed_form` (`--rand-sub FACTOR --rand-sw {randoms,galaxies}`, passed through `catalogue_covariance`):
+- lin_ell_R = sum_r c_r a_r a_r^T over FACTOR x N_gal randoms (subsample of the estimator's randoms), a_r the galaxy row G^l/w
+  evaluated at the random with the realised F (its own -alpha w_r e_r removed: + 2 (2l+1) alpha w_r <L_l>_shell / norm) plus a
+  galaxy-like self term w_eff [2 (2l+1) <L_l>_shell - 2 delta_l0] / norm; c_r = s_r sum_g w_g^2 / sum_r s_r, s_r the galaxies' w^2
+  density at the random (w_r^2, or w_r <w_g^2>/<w_g> of the 64 nearest galaxies for catalogues whose randoms carry completeness
+  differently, cf. ce233a8). Then lin - lin_R = B/n + 2 P/n^2 in expectation, with this catalogue's long modes on both sides.
+- quad_R: randoms in the w^2 field, W2 = sum_g w_g^2 e_g - a_s sum_r s_r e_r, self pairs sum w_g^4 + a_s^2 sum s_r^2 removed:
+  quad_R = P/n^2 directly (the unclustered pair counts of the |i-j| <= 1 ridge cancel before the shell average). `quadratic_terms()`
+  now a function (also returns the galaxy-only quad).
+So B/n = lin - lin_R - 2 quad_R and P/n^2 = quad_R, without thecov's g1, g2 (assembled C = G_thecov + B/n + P/n^2: thecov's PS, SS
+terms now enter at full strength; lin_R vs thecov's g1 is a direct per-catalogue test of them).
+Toy validation (local, finufft; sector survey with n(r) gradient and a cubic hole, FKP-like weights, 11 bins 2 k_f wide, ells 0 2 4;
+units sqrt(lin_ii lin_jj)): Poisson null, 12 realisations, 12x randoms: lin - lin_R in all nine blocks, diagonal, |i-j| = 1 and
+|i-j| >= 2, between -0.0024 and +0.0008 (+- 0.0003-0.0010), quad_R = 0.0000 +- 0.0001 where the galaxy-only quad is 0.475 (diag)
+and 0.141 (|i-j| = 1). Gaussian field (sigma 0.2, B = 0), 12 realisations: quad_R = 0.0024 +- 0.0001 (diag and |i-j| = 1 alike,
+no ridge) and lin - lin_R - 2 quad_R = -0.0001 +- 0.0013 (diag), -0.0008 +- 0.0009 (|i-j| = 1). Real-footprint Poisson test pending
+(Perlmutter key).
