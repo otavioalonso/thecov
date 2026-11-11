@@ -194,7 +194,7 @@ def multipole_linear(args, ells, xd, wd, xr, wr, alpha, lo, L, n, io, nsh, nb, n
         # T_X,l(i) = sum_g G^l_g(i) u_X,g is the catalogue's <P_raw eps_X> (tree: 2 P J_X / norm + B_c J3_X / norm), so
         # C_LA = -T P^T - P T^T + Var P P^T with T = T_M + T_W, Var = sum_XY (data-randoms convention), P = the measured P_l.
         u = {'M': wd / np.sum(wd), 'W': wd * Wd / np.sum(wd * Wd)}
-        out_la = {f'la_T_{X}': G @ u[X] for X in u}
+        out_la.update({f'la_T_{X}': G @ u[X] for X in u})
         out_la.update({f'la_var_{X}{Y}': float(np.sum(u[X] * u[Y])) for X in u for Y in u if X <= Y})
         out_la.update(la_I_M=float(np.sum(wd)), la_I_W=float(np.sum(wd * Wd)))
         log(f'  local-average Poisson vectors: Var(eps) = {out_la["la_var_MM"] + 2 * out_la["la_var_MW"] + out_la["la_var_WW"]:.3e} '
